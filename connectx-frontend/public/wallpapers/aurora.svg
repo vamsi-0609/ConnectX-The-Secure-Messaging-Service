@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1600" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <filter id="blur" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="130" />
+    </filter>
+  </defs>
+  <!-- Dark deep space background -->
+  <rect width="1200" height="1600" fill="#0f1123" />
+  
+  <!-- Glowing colored shapes blurred together -->
+  <g filter="url(#blur)">
+    <!-- Electric Indigo -->
+    <circle cx="300" cy="400" r="450" fill="#4f46e5" opacity="0.6" />
+    <!-- Vibrant Violet/Purple -->
+    <circle cx="900" cy="1200" r="500" fill="#7c3aed" opacity="0.55" />
+    <!-- Cyan Aurora glow -->
+    <ellipse cx="200" cy="1100" rx="400" ry="600" fill="#06b6d4" opacity="0.45" />
+    <!-- Emerald Green Aurora wave -->
+    <ellipse cx="1000" cy="300" rx="500" ry="400" fill="#10b981" opacity="0.35" />
+  </g>
+</svg>

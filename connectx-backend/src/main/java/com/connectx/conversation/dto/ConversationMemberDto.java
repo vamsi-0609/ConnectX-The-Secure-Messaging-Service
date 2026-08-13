@@ -1,0 +1,56 @@
+package com.connectx.conversation.dto;
+
+import com.connectx.conversation.entity.ConversationMember;
+import com.connectx.user.dto.UserDto;
+import java.time.Instant;
+
+public class ConversationMemberDto {
+
+    private Long id;
+    private UserDto user;
+    private Instant joinedAt;
+    private Long lastReadMessageId;
+
+    public ConversationMemberDto() {}
+
+    public static ConversationMemberDto fromEntity(ConversationMember member) {
+        ConversationMemberDto dto = new ConversationMemberDto();
+        dto.setId(member.getId());
+        dto.setUser(UserDto.fromEntity(member.getUser()));
+        dto.setJoinedAt(member.getJoinedAt());
+        dto.setLastReadMessageId(member.getLastReadMessageId());
+        return dto;
+    }
+
+    public Long getId() {
+        return id;
+    }
+
+    public void setId(Long id) {
+        this.id = id;
+    }
+
+    public UserDto getUser() {
+        return user;
+    }
+
+    public void setUser(UserDto user) {
+        this.user = user;
+    }
+
+    public Instant getJoinedAt() {
+        return joinedAt;
+    }
+
+    public void setJoinedAt(Instant joinedAt) {
+        this.joinedAt = joinedAt;
+    }
+
+    public Long getLastReadMessageId() {
+        return lastReadMessageId;
+    }
+
+    public void setLastReadMessageId(Long lastReadMessageId) {
+        this.lastReadMessageId = lastReadMessageId;
+    }
+}

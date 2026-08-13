@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1600" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <filter id="blur" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="120" />
+    </filter>
+  </defs>
+  <!-- Deep warm background -->
+  <rect width="1200" height="1600" fill="#2d0b1e" />
+  
+  <g filter="url(#blur)">
+    <!-- Deep Plum -->
+    <circle cx="200" cy="300" r="450" fill="#581c87" opacity="0.75" />
+    <!-- Fiery Orange -->
+    <circle cx="1000" cy="1200" r="550" fill="#ea580c" opacity="0.65" />
+    <!-- Hot Magenta -->
+    <ellipse cx="100" cy="1100" rx="450" ry="550" fill="#db2777" opacity="0.5" />
+    <!-- Golden Yellow Sun glow -->
+    <circle cx="750" cy="650" r="400" fill="#eab308" opacity="0.55" />
+  </g>
+</svg>

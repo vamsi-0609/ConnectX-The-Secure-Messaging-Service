@@ -1,0 +1,9 @@
+target/
+.m2/
+uploads/*
+!uploads/.gitkeep
+*.class
+*.jar
+*.war
+*.ear
+*.log

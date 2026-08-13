@@ -1,0 +1,44 @@
+# Operating System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE and Editor Files
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+
+# Node / Frontend Dependencies & Build Output
+**/node_modules/
+**/dist/
+**/dist-ssr/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+connectx-frontend/.env
+connectx-frontend/.env.local
+connectx-frontend/.env.development.local
+connectx-frontend/.env.test.local
+connectx-frontend/.env.production.local
+
+# Java / Spring Boot / Maven Dependencies & Build Output
+**/target/
+**/.m2/
+connectx-backend/uploads/*
+!connectx-backend/uploads/.gitkeep
+*.class
+*.jar
+*.war
+*.ear
+*.rar
+
+# Log files
+*.log

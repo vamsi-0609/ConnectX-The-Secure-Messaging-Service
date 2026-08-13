@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1600" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <filter id="blur" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="140" />
+    </filter>
+  </defs>
+  <!-- Deepest space black -->
+  <rect width="1200" height="1600" fill="#030712" />
+  
+  <!-- Blurred deep space nebulae -->
+  <g filter="url(#blur)">
+    <circle cx="350" cy="450" r="500" fill="#1e1b4b" opacity="0.85" />
+    <circle cx="850" cy="1150" r="550" fill="#311042" opacity="0.75" />
+    <ellipse cx="200" cy="1200" rx="450" ry="500" fill="#0f172a" opacity="0.6" />
+    <ellipse cx="900" cy="350" rx="400" ry="450" fill="#4c1d95" opacity="0.5" />
+  </g>
+  
+  <!-- Starfield overlay (crisp stars) -->
+  <g opacity="0.85">
+    <circle cx="150" cy="150" r="1.5" fill="#ffffff" opacity="0.9" />
+    <circle cx="450" cy="200" r="1" fill="#ffffff" opacity="0.6" />
+    <circle cx="750" cy="100" r="2" fill="#ffffff" opacity="0.8" />
+    <circle cx="1050" cy="250" r="1.5" fill="#ffffff" opacity="0.75" />
+    <circle cx="280" cy="550" r="2" fill="#ffffff" opacity="0.85" />
+    <circle cx="620" cy="480" r="1" fill="#ffffff" opacity="0.5" />
+    <circle cx="920" cy="600" r="1.5" fill="#ffffff" opacity="0.7" />
+    <circle cx="110" cy="850" r="1" fill="#ffffff" opacity="0.65" />
+    <circle cx="500" cy="900" r="2" fill="#ffffff" opacity="0.85" />
+    <circle cx="820" cy="780" r="1.5" fill="#ffffff" opacity="0.9" />
+    <circle cx="1080" cy="980" r="2" fill="#ffffff" opacity="0.8" />
+    <circle cx="320" cy="1250" r="1" fill="#ffffff" opacity="0.55" />
+    <circle cx="680" cy="1350" r="1.5" fill="#ffffff" opacity="0.75" />
+    <circle cx="950" cy="1200" r="2" fill="#ffffff" opacity="0.85" />
+    <circle cx="200" cy="1500" r="1.5" fill="#ffffff" opacity="0.6" />
+    <circle cx="550" cy="1480" r="1" fill="#ffffff" opacity="0.7" />
+    <circle cx="880" cy="1550" r="2" fill="#ffffff" opacity="0.9" />
+  </g>
+</svg>

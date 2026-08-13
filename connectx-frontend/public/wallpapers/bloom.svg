@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1600" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <filter id="blur" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="120" />
+    </filter>
+  </defs>
+  <!-- Deep burgundy/rose background -->
+  <rect width="1200" height="1600" fill="#310618" />
+  
+  <g filter="url(#blur)">
+    <!-- Deep Fuchsia -->
+    <circle cx="200" cy="300" r="450" fill="#701a75" opacity="0.75" />
+    <!-- Coral / Peach -->
+    <circle cx="950" cy="1350" r="500" fill="#f43f5e" opacity="0.6" />
+    <!-- Soft Rose Pink -->
+    <ellipse cx="150" cy="1150" rx="450" ry="550" fill="#ec4899" opacity="0.5" />
+    <!-- Lavender / Indigo -->
+    <ellipse cx="800" cy="400" rx="450" ry="400" fill="#8b5cf6" opacity="0.45" />
+  </g>
+</svg>
