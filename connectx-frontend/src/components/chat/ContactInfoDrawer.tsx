@@ -27,7 +27,7 @@ export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({ recipient,
   if (!recipient) return null;
 
   return (
-    <div className="w-80 h-full bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800/80 flex flex-col flex-shrink-0 z-20 transition-colors duration-300 animate-slide-right overflow-y-auto text-slate-900 dark:text-white">
+    <div className="w-80 h-full bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800/80 flex flex-col flex-shrink-0 z-20 transition-colors duration-300 animate-slide-right overflow-y-auto text-slate-900 dark:text-white select-none">
       {/* Header */}
       <div className="h-16 px-4 border-b border-slate-200 dark:border-slate-800/80 flex items-center justify-between">
         <h3 className="font-bold text-base">Contact Info</h3>
@@ -63,7 +63,7 @@ export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({ recipient,
         ) : publicKeys.length > 0 ? (
           <div className="bg-slate-50 dark:bg-slate-950 p-3 rounded-xl border border-slate-200 dark:border-slate-800 font-mono text-[11px] text-pink-600 dark:text-pink-300 space-y-1.5">
             <div className="text-slate-500 dark:text-slate-400 text-[10px] uppercase font-bold">Public Key Fingerprint</div>
-            <div className="break-all bg-white dark:bg-black/40 p-2 rounded text-[10px] text-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-800">
+            <div className="break-all bg-white dark:bg-black/40 p-2 rounded text-[10px] text-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-800 select-all">
               {publicKeys[0].publicKey.substring(0, 80)}...
             </div>
             <div className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">

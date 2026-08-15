@@ -1,5 +1,18 @@
-import React, { useRef, useState } from 'react';
-import { Send, Lock, Paperclip, Mic, Loader2, ImagePlus, Camera, MapPin, Image as ImageIcon, FileText } from 'lucide-react';
+import React, { useRef, useState, useEffect } from 'react';
+import {
+  Send,
+  Lock,
+  Paperclip,
+  Mic,
+  Loader2,
+  ImagePlus,
+  Camera,
+  MapPin,
+  Image as ImageIcon,
+  FileText,
+  X,
+  CornerUpLeft,
+} from 'lucide-react';
 import { encryptMessage } from '../../crypto/encryption';
 import { keyManager } from '../../crypto/keyManager';
 import { deviceApi } from '../../api/deviceApi';
@@ -9,23 +22,40 @@ import { MEDIA_IMAGE_ACCEPT, validateMediaImageFile } from '../../utils/mediaIma
 import { geolocationErrorMessage, resolveCurrentLocation } from '../../utils/location';
 import { CameraCaptureModal } from './CameraCaptureModal';
 import { MediaBatchPreviewModal } from './MediaBatchPreviewModal';
+import { ReplyTarget } from '../../types';
 
 interface MessageInputProps {
   conversationId: number;
   recipientUserId: number;
   currentUserId: number;
-  onOptimisticMessage: (plaintext: string, ciphertext: string, nonce: string, recipientDeviceId: number) => void;
-  onOptimisticImageMessage: (mediaId: number, caption: string | undefined, localPreviewUrl: string, mimeType: string) => void;
+  replyTarget?: ReplyTarget | null;
+  onCancelReply?: () => void;
+  onOptimisticMessage: (
+    plaintext: string,
+    ciphertext: string,
+    nonce: string,
+    recipientDeviceId: number,
+    replyToMessageId?: number
+  ) => void;
+  onOptimisticImageMessage: (
+    mediaId: number,
+    caption: string | undefined,
+    localPreviewUrl: string,
+    mimeType: string,
+    replyToMessageId?: number
+  ) => void;
   onOptimisticLocationMessage: (
     latitude: number,
     longitude: number,
-    locationLabel: string | undefined
+    locationLabel: string | undefined,
+    replyToMessageId?: number
   ) => void;
   onOptimisticDocumentMessage: (
     mediaId: number,
     filename: string,
     mimeType: string,
-    fileSizeBytes: number
+    fileSizeBytes: number,
+    replyToMessageId?: number
   ) => void;
   onMessageSent?: () => void;
 }
@@ -34,6 +64,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   conversationId,
   recipientUserId,
   currentUserId,
+  replyTarget,
+  onCancelReply,
   onOptimisticMessage,
   onOptimisticImageMessage,
   onOptimisticLocationMessage,
@@ -53,10 +85,19 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const [pendingImages, setPendingImages] = useState<File[]>([]);
   const [pendingDocs, setPendingDocs] = useState<File[]>([]);
 
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const docInputRef = useRef<HTMLInputElement>(null);
+  const isSendingRef = useRef(false);
 
   const closeMediaMenu = () => setShowMediaMenu(false);
+
+  // Focus composer when reply is activated
+  useEffect(() => {
+    if (replyTarget) {
+      textareaRef.current?.focus();
+    }
+  }, [replyTarget]);
 
   const sendImageFile = async (file: File) => {
     const validationError = validateMediaImageFile(file);
@@ -67,6 +108,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
     const caption = text.trim() || undefined;
     const localPreviewUrl = URL.createObjectURL(file);
+    const replyToId = replyTarget?.messageId;
 
     setUploading(true);
     setUploadStatus(`Uploading image ${file.name}...`);
@@ -78,11 +120,22 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         messageType: 'IMAGE',
         mediaId: uploadResponse.mediaId,
         caption,
+        replyToMessageId: replyToId,
       });
 
-      onOptimisticImageMessage(uploadResponse.mediaId, caption, localPreviewUrl, uploadResponse.mimeType);
+      onOptimisticImageMessage(
+        uploadResponse.mediaId,
+        caption,
+        localPreviewUrl,
+        uploadResponse.mimeType,
+        replyToId
+      );
       onMessageSent?.();
       setText('');
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+      }
+      onCancelReply?.();
     } catch (err: unknown) {
       URL.revokeObjectURL(localPreviewUrl);
       console.error('[ConnectX] Image message failure:', err);
@@ -102,6 +155,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     }
 
     const filename = file.name;
+    const replyToId = replyTarget?.messageId;
     setUploading(true);
     setUploadStatus(`Uploading document ${filename}...`);
 
@@ -112,16 +166,22 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         messageType: 'DOCUMENT',
         mediaId: uploadResponse.mediaId,
         caption: filename,
+        replyToMessageId: replyToId,
       });
 
       onOptimisticDocumentMessage(
         uploadResponse.mediaId,
         filename,
         uploadResponse.mimeType,
-        uploadResponse.fileSizeBytes
+        uploadResponse.fileSizeBytes,
+        replyToId
       );
       onMessageSent?.();
       setText('');
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+      }
+      onCancelReply?.();
     } catch (err: unknown) {
       console.error('[ConnectX] Document message failure:', err);
       const message = err instanceof Error ? err.message : 'Unknown error';
@@ -138,12 +198,10 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
     setUploading(true);
     try {
-      // Process images in deterministic selection sequence
       for (let i = 0; i < images.length; i++) {
         setUploadStatus(`Sending image ${i + 1} of ${images.length}...`);
         await sendImageFile(images[i]);
       }
-      // Process documents in deterministic selection sequence
       for (let i = 0; i < docs.length; i++) {
         setUploadStatus(`Sending document ${i + 1} of ${docs.length}...`);
         await sendDocumentFile(docs[i]);
@@ -154,12 +212,23 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     }
   };
 
-  const handleSendText = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSendText = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     const content = text.trim();
-    if (!content || sending || uploading) return;
+    if (!content || isSendingRef.current || uploading) return;
 
+    const replyToId = replyTarget?.messageId;
+
+    isSendingRef.current = true;
     setSending(true);
+
+    // Clear composer text immediately and maintain focus for continuous fast typing
+    setText('');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.focus();
+    }
+    onCancelReply?.();
 
     try {
       const recipientPublicKeys = await deviceApi.getUserPublicKeys(recipientUserId);
@@ -188,19 +257,63 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         encryptionAlgorithm: 'ECDH-P256+AES-256-GCM',
         ciphertext: encrypted.ciphertext,
         nonce: encrypted.nonce,
+        replyToMessageId: replyToId,
       };
 
       await messageApi.sendMessage(sendPayload);
 
-      onOptimisticMessage(content, encrypted.ciphertext, encrypted.nonce, recipientDevice.deviceId);
+      onOptimisticMessage(
+        content,
+        encrypted.ciphertext,
+        encrypted.nonce,
+        recipientDevice.deviceId,
+        replyToId
+      );
       onMessageSent?.();
-      setText('');
     } catch (err: unknown) {
       console.error('[ConnectX E2EE] Message transmission failure:', err);
       const message = err instanceof Error ? err.message : 'Unknown error';
       alert('Failed to send message: ' + message);
+      // Restore unsent text on failure
+      setText(content);
     } finally {
+      isSendingRef.current = false;
       setSending(false);
+      // Ensure focus remains intact after async completion
+      textareaRef.current?.focus();
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      // Enter without shift sends message
+      e.preventDefault();
+      handleSendText();
+    }
+  };
+
+  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setText(e.target.value);
+    const textarea = e.target;
+    textarea.style.height = 'auto';
+    const nextHeight = Math.min(textarea.scrollHeight, 140);
+    textarea.style.height = `${nextHeight}px`;
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!e.clipboardData) return;
+
+    const items = Array.from(e.clipboardData.items);
+    const imageItem = items.find((item) => item.type.startsWith('image/'));
+
+    if (imageItem) {
+      e.preventDefault();
+      const file = imageItem.getAsFile();
+      if (file) {
+        setPendingImages([file]);
+        setPendingDocs([]);
+        setShowBatchModal(true);
+      }
     }
   };
 
@@ -240,6 +353,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     closeMediaMenu();
     setSharingLocation(true);
     setUploadStatus('Getting location...');
+    const replyToId = replyTarget?.messageId;
 
     try {
       const location = await resolveCurrentLocation();
@@ -251,10 +365,17 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         latitude: location.latitude,
         longitude: location.longitude,
         locationLabel: location.locationLabel,
+        replyToMessageId: replyToId,
       });
 
-      onOptimisticLocationMessage(location.latitude, location.longitude, location.locationLabel);
+      onOptimisticLocationMessage(
+        location.latitude,
+        location.longitude,
+        location.locationLabel,
+        replyToId
+      );
       onMessageSent?.();
+      onCancelReply?.();
     } catch (err: unknown) {
       console.error('[ConnectX] Location message failure:', err);
       alert(geolocationErrorMessage(err));
@@ -283,11 +404,34 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     await sendImageFile(file);
   };
 
-  const busy = sending || uploading || sharingLocation;
+  const busy = uploading || sharingLocation;
 
   return (
     <>
-      <div className="flex-shrink-0 border-t border-slate-200/80 dark:border-slate-800/80 bg-white dark:bg-[#0f172a] px-3 py-2 md:min-h-[68px] md:py-3 md:px-8 lg:px-12 xl:px-16">
+      <div className="flex-shrink-0 border-t border-slate-200/80 dark:border-slate-800/80 bg-white dark:bg-[#0f172a] px-3 py-2 md:py-3 md:px-8 lg:px-12 xl:px-16 transition-all select-none">
+        {/* Reply Preview Bar */}
+        {replyTarget && (
+          <div className="max-w-3xl mx-auto mb-2 md:max-w-none md:mx-0 flex items-center justify-between gap-3 p-2.5 bg-indigo-500/10 dark:bg-indigo-950/40 border-l-4 border-indigo-500 rounded-r-xl text-xs animate-pop-in">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 font-bold text-indigo-600 dark:text-indigo-400">
+                <CornerUpLeft className="w-3.5 h-3.5" />
+                <span>Replying to {replyTarget.senderUsername}</span>
+              </div>
+              <p className="text-slate-600 dark:text-slate-300 truncate mt-0.5">
+                {replyTarget.previewText}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onCancelReply}
+              className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg hover:bg-slate-200/50 dark:hover:bg-slate-800 transition-colors"
+              aria-label="Cancel reply"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {uploadStatus && (
           <div className="max-w-3xl mx-auto mb-2 md:max-w-none md:mx-0">
             <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-indigo-500/10 text-indigo-500 text-xs font-medium">
@@ -301,7 +445,10 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           </div>
         )}
 
-        <form onSubmit={handleSendText} className="max-w-3xl mx-auto flex items-center gap-1.5 md:gap-2 md:max-w-none md:mx-0">
+        <form
+          onSubmit={handleSendText}
+          className="max-w-3xl mx-auto flex items-end gap-1.5 md:gap-2 md:max-w-none md:mx-0"
+        >
           <input
             ref={fileInputRef}
             type="file"
@@ -318,7 +465,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             onChange={handleDocSelected}
           />
 
-          <div className="relative flex-shrink-0">
+          <div className="relative flex-shrink-0 mb-1">
             <button
               type="button"
               onClick={() => setShowMediaMenu((open) => !open)}
@@ -411,36 +558,52 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           </div>
 
           <div className="relative flex-1 min-w-0">
-            <input
-              type="text"
+            <textarea
+              ref={textareaRef}
+              rows={1}
               value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder={uploading ? 'Uploading media...' : sharingLocation ? 'Sharing location...' : 'Type a message or add a caption...'}
-              className="w-full pl-4 md:pl-5 pr-10 md:pr-12 py-2.5 md:h-12 md:py-3 bg-slate-100 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700/80 rounded-full text-sm md:text-[15px] text-slate-900 dark:text-white placeholder-slate-400 outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 transition-all"
-              disabled={busy}
+              onChange={handleTextChange}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              placeholder={
+                uploading
+                  ? 'Uploading media...'
+                  : sharingLocation
+                  ? 'Sharing location...'
+                  : replyTarget
+                  ? `Reply to @${replyTarget.senderUsername}...`
+                  : 'Type a message...'
+              }
+              className="w-full pl-4 md:pl-5 pr-10 md:pr-12 py-2.5 md:py-3 bg-slate-100 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700/80 rounded-2xl text-sm md:text-[15px] text-slate-900 dark:text-white placeholder-slate-400 outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 transition-all resize-none max-h-36 overflow-y-auto leading-relaxed select-text"
             />
-            <Lock className="w-3.5 h-3.5 md:w-4 md:h-4 absolute right-3.5 md:right-4 top-1/2 -translate-y-1/2 text-pink-400/70 pointer-events-none" />
+            <Lock className="w-3.5 h-3.5 md:w-4 md:h-4 absolute right-3.5 md:right-4 bottom-3.5 text-pink-400/70 pointer-events-none" />
           </div>
 
-          {text.trim() ? (
-            <button
-              type="submit"
-              disabled={busy}
-              className="p-2.5 md:p-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white rounded-full shadow-md shadow-indigo-600/25 transition-all flex-shrink-0"
-              aria-label="Send message"
-            >
-              {sending ? <Loader2 className="w-5 h-5 md:w-[22px] md:h-[22px] animate-spin" /> : <Send className="w-5 h-5 md:w-[22px] md:h-[22px]" />}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => alert('Voice messages are scheduled for a future milestone.')}
-              className="p-2.5 md:p-3 text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-300 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors flex-shrink-0"
-              aria-label="Record voice message"
-            >
-              <Mic className="w-5 h-5 md:w-[22px] md:h-[22px]" />
-            </button>
-          )}
+          <div className="flex-shrink-0 mb-1">
+            {text.trim() ? (
+              <button
+                type="submit"
+                disabled={busy}
+                className="p-2.5 md:p-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white rounded-full shadow-md shadow-indigo-600/25 transition-all flex items-center justify-center"
+                aria-label="Send message"
+              >
+                {sending ? (
+                  <Loader2 className="w-5 h-5 md:w-[22px] md:h-[22px] animate-spin" />
+                ) : (
+                  <Send className="w-5 h-5 md:w-[22px] md:h-[22px]" />
+                )}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => alert('Voice messages are scheduled for a future milestone.')}
+                className="p-2.5 md:p-3 text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-300 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors"
+                aria-label="Record voice message"
+              >
+                <Mic className="w-5 h-5 md:w-[22px] md:h-[22px]" />
+              </button>
+            )}
+          </div>
         </form>
       </div>
 

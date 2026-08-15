@@ -143,6 +143,8 @@ public class ConversationService {
         if (currentMember != null) {
             dto.setPinned(currentMember.isPinned());
             dto.setPinnedAt(currentMember.getPinnedAt());
+            dto.setMutedUntil(currentMember.getMutedUntil());
+            dto.setMuted(currentMember.getMutedUntil() != null && currentMember.getMutedUntil().isAfter(Instant.now()));
         }
 
         Instant clearedAfter = currentMember != null ? currentMember.getClearedAt() : null;
@@ -334,5 +336,39 @@ public class ConversationService {
                 )
         );
         messagingTemplate.convertAndSendToUser(currentUser.getUsername(), "/queue/messages", clearEvent);
+    }
+
+    @Transactional
+    public ConversationDto muteConversation(Long currentUserId, Long conversationId, Instant mutedUntil) {
+        ConversationMember member = conversationMemberRepository.findByConversationIdAndUserId(conversationId, currentUserId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
+
+        if (member.getDeletedAt() != null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found");
+        }
+
+        member.setMutedUntil(mutedUntil != null ? mutedUntil : Instant.parse("9999-12-31T23:59:59Z"));
+        conversationMemberRepository.save(member);
+
+        Conversation conversation = conversationRepository.findById(conversationId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
+        return enrichConversationDto(conversation, currentUserId);
+    }
+
+    @Transactional
+    public ConversationDto unmuteConversation(Long currentUserId, Long conversationId) {
+        ConversationMember member = conversationMemberRepository.findByConversationIdAndUserId(conversationId, currentUserId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
+
+        if (member.getDeletedAt() != null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found");
+        }
+
+        member.setMutedUntil(null);
+        conversationMemberRepository.save(member);
+
+        Conversation conversation = conversationRepository.findById(conversationId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
+        return enrichConversationDto(conversation, currentUserId);
     }
 }

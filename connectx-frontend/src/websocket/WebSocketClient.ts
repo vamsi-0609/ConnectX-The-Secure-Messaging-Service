@@ -27,6 +27,17 @@ export class WebSocketClient {
 
   constructor() {
     this.token = localStorage.getItem('connectx_token');
+    if (typeof window !== 'undefined') {
+      window.addEventListener('connectx_token_refreshed', (e: Event) => {
+        const customEvent = e as CustomEvent<{ token: string }>;
+        if (customEvent.detail?.token) {
+          this.token = customEvent.detail.token;
+          if (this.status === 'ERROR' || this.status === 'DISCONNECTED') {
+            this.connect();
+          }
+        }
+      });
+    }
   }
 
   public setToken(token: string | null) {

@@ -47,6 +47,12 @@ body {
   font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+[role="button"] {
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* Application shell */

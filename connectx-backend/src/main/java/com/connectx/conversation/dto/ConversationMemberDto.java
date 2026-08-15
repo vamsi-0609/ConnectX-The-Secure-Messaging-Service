@@ -12,6 +12,8 @@ public class ConversationMemberDto {
     private Long lastReadMessageId;
     private boolean pinned;
     private Instant pinnedAt;
+    private Instant mutedUntil;
+    private boolean muted;
 
     public ConversationMemberDto() {}
 
@@ -23,6 +25,8 @@ public class ConversationMemberDto {
         dto.setLastReadMessageId(member.getLastReadMessageId());
         dto.setPinned(member.isPinned());
         dto.setPinnedAt(member.getPinnedAt());
+        dto.setMutedUntil(member.getMutedUntil());
+        dto.setMuted(member.getMutedUntil() != null && member.getMutedUntil().isAfter(Instant.now()));
         return dto;
     }
 
@@ -72,5 +76,21 @@ public class ConversationMemberDto {
 
     public void setPinnedAt(Instant pinnedAt) {
         this.pinnedAt = pinnedAt;
+    }
+
+    public Instant getMutedUntil() {
+        return mutedUntil;
+    }
+
+    public void setMutedUntil(Instant mutedUntil) {
+        this.mutedUntil = mutedUntil;
+    }
+
+    public boolean isMuted() {
+        return muted;
+    }
+
+    public void setMuted(boolean muted) {
+        this.muted = muted;
     }
 }

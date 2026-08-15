@@ -275,7 +275,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-end p-3 sm:p-4 bg-black/40 backdrop-blur-[2px]" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-end p-3 sm:p-4 bg-black/40 backdrop-blur-[2px] select-none" onClick={onClose}>
       <div
         className="w-full max-w-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-2xl overflow-hidden animate-pop-in mt-12 sm:mt-14 mr-0 sm:mr-2"
         onClick={(e) => e.stopPropagation()}
@@ -375,7 +375,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   type="text"
                   value={editUsername}
                   onChange={(e) => setEditUsername(e.target.value)}
-                  className="w-full px-3 py-1.5 rounded-lg text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white outline-none focus:border-indigo-500"
+                  className="w-full px-3 py-1.5 rounded-lg text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white outline-none focus:border-indigo-500 select-text"
                   placeholder="Username"
                 />
               </div>
@@ -386,7 +386,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   type="text"
                   value={editDisplayName}
                   onChange={(e) => setEditDisplayName(e.target.value)}
-                  className="w-full px-3 py-1.5 rounded-lg text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white outline-none focus:border-indigo-500"
+                  className="w-full px-3 py-1.5 rounded-lg text-xs bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white outline-none focus:border-indigo-500 select-text"
                   placeholder="Display name"
                 />
               </div>
@@ -514,7 +514,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   value={newEmail}
                   onChange={(e) => setNewEmail(e.target.value)}
                   placeholder="newemail@example.com"
-                  className="w-full px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-sm text-white outline-none focus:border-pink-500"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-800 border border-slate-700 text-sm text-white outline-none focus:border-pink-500 select-text"
                 />
                 {emailError && <p className="text-xs text-rose-400">{emailError}</p>}
                 <button
@@ -539,7 +539,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                     value={otpCode}
                     onChange={(e) => setOtpCode(e.target.value)}
                     placeholder="123456"
-                    className="w-full px-3 py-2 tracking-widest text-center text-lg font-mono rounded-xl bg-slate-800 border border-slate-700 text-white outline-none focus:border-pink-500"
+                    className="w-full px-3 py-2 tracking-widest text-center text-lg font-mono rounded-xl bg-slate-800 border border-slate-700 text-white outline-none focus:border-pink-500 select-text"
                   />
                   <KeyRound className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
                 </div>

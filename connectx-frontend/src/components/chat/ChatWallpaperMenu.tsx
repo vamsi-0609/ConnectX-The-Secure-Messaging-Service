@@ -42,7 +42,7 @@ export const ChatWallpaperMenu: React.FC<ChatWallpaperMenuProps> = ({
   const customSelected = selected.type === 'custom';
 
   return (
-    <div className="p-2">
+    <div className="p-2 select-none">
       <button
         type="button"
         onClick={onBack}

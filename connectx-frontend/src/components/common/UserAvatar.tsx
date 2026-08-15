@@ -68,7 +68,7 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
   return (
     <>
       <div
-        className={`rounded-full overflow-hidden bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center font-semibold text-white flex-shrink-0 ${SIZE_CLASSES[size]} ${className} ${canView ? 'cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
+        className={`rounded-full overflow-hidden bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center font-semibold text-white flex-shrink-0 select-none ${SIZE_CLASSES[size]} ${className} ${canView ? 'cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
         {...(canView
           ? {
               onClick: handleOpenViewer,

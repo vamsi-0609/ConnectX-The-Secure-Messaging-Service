@@ -44,7 +44,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-[80] flex flex-col bg-black/95 backdrop-blur-sm"
+      className="fixed inset-0 z-[80] flex flex-col bg-black/95 backdrop-blur-sm select-none"
       onClick={onClose}
       role="dialog"
       aria-modal="true"

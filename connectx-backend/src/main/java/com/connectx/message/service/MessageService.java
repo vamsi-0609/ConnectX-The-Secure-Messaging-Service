@@ -46,6 +46,7 @@ public class MessageService {
     private final UserRepository userRepository;
     private final MediaService mediaService;
     private final MessageMediaRepository messageMediaRepository;
+    private final com.connectx.message.repository.MessageReactionRepository messageReactionRepository;
     private final SimpMessagingTemplate messagingTemplate;
     private final AfterCommitExecutor afterCommitExecutor;
     private final com.connectx.push.service.WebPushService webPushService;
@@ -59,6 +60,7 @@ public class MessageService {
                           UserRepository userRepository,
                           MediaService mediaService,
                           MessageMediaRepository messageMediaRepository,
+                          com.connectx.message.repository.MessageReactionRepository messageReactionRepository,
                           SimpMessagingTemplate messagingTemplate,
                           AfterCommitExecutor afterCommitExecutor,
                           com.connectx.push.service.WebPushService webPushService) {
@@ -71,6 +73,7 @@ public class MessageService {
         this.userRepository = userRepository;
         this.mediaService = mediaService;
         this.messageMediaRepository = messageMediaRepository;
+        this.messageReactionRepository = messageReactionRepository;
         this.messagingTemplate = messagingTemplate;
         this.afterCommitExecutor = afterCommitExecutor;
         this.webPushService = webPushService;
@@ -136,6 +139,14 @@ public class MessageService {
                 ? dto.getEncryptionAlgorithm()
                 : (messageType == MessageType.IMAGE || messageType == MessageType.LOCATION || messageType == MessageType.DOCUMENT ? "NONE" : "ECDH-P256+AES-256-GCM");
 
+        Message replyToMessage = null;
+        if (dto.getReplyToMessageId() != null) {
+            replyToMessage = messageRepository.findById(dto.getReplyToMessageId()).orElse(null);
+            if (replyToMessage != null && !replyToMessage.getConversation().getId().equals(conversation.getId())) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "CROSS_CONVERSATION_REPLY_NOT_ALLOWED", "Cannot reply to a message from a different conversation");
+            }
+        }
+
         Message message = new Message();
         message.setConversation(conversation);
         message.setSenderUser(currentUser);
@@ -143,6 +154,7 @@ public class MessageService {
         message.setRecipientDevice(recipientDevice);
         message.setMessageType(messageType);
         message.setEncryptionAlgorithm(algorithm);
+        message.setReplyToMessage(replyToMessage);
 
         if (messageType == MessageType.IMAGE || messageType == MessageType.DOCUMENT) {
             message.setMediaId(linkedMedia.getId());
@@ -207,6 +219,19 @@ public class MessageService {
         recvPayload.put("nonce", messageType == MessageType.TEXT ? dto.getNonce() : "");
         recvPayload.put("sentAt", savedMessage.getSentAt().toString());
 
+        if (savedMessage.getReplyToMessage() != null) {
+            Message reply = savedMessage.getReplyToMessage();
+            recvPayload.put("replyToMessageId", reply.getId());
+            if (reply.getSenderUser() != null) {
+                recvPayload.put("replyToSenderUsername", reply.getSenderUser().getUsername());
+            } else if (reply.getSenderDevice() != null && reply.getSenderDevice().getUser() != null) {
+                recvPayload.put("replyToSenderUsername", reply.getSenderDevice().getUser().getUsername());
+            }
+            recvPayload.put("replyToMessageType", reply.getMessageType() != null ? reply.getMessageType().name() : "TEXT");
+            recvPayload.put("replyToCaption", reply.getCaption());
+            recvPayload.put("replyToDeleted", reply.isDeletedForEveryone());
+        }
+
         WsEvent recvEvent = WsEvent.of("MESSAGE_RECEIVED", recvPayload);
         WsEvent restoredEvent = WsEvent.of(
                 "CONVERSATION_RESTORED",
@@ -221,14 +246,17 @@ public class MessageService {
                     messagingTemplate.convertAndSendToUser(member.getUser().getUsername(), "/queue/messages", recvEvent);
 
                     if (!member.getUser().getId().equals(currentUserId)) {
-                        String pushTitle = "New message from " + currentUser.getUsername();
-                        String pushBody = switch (savedMessage.getMessageType()) {
-                            case IMAGE -> "📷 Photo";
-                            case LOCATION -> "📍 Location";
-                            case DOCUMENT -> "📄 " + (savedMessage.getCaption() != null ? savedMessage.getCaption() : "Document");
-                            default -> "Sent you a message";
-                        };
-                        webPushService.sendPushToUserAsync(member.getUser().getId(), pushTitle, pushBody, conversation.getId());
+                        boolean isMuted = member.getMutedUntil() != null && member.getMutedUntil().isAfter(Instant.now());
+                        if (!isMuted) {
+                            String pushTitle = "New message from " + currentUser.getUsername();
+                            String pushBody = switch (savedMessage.getMessageType()) {
+                                case IMAGE -> "📷 Photo";
+                                case LOCATION -> "📍 Location";
+                                case DOCUMENT -> "📄 " + (savedMessage.getCaption() != null ? savedMessage.getCaption() : "Document");
+                                default -> "Sent you a message";
+                            };
+                            webPushService.sendPushToUserAsync(member.getUser().getId(), pushTitle, pushBody, conversation.getId());
+                        }
                     }
                 }
             }
@@ -261,6 +289,18 @@ public class MessageService {
                 currentUserId,
                 clearedAfter
         );
+
+        List<Long> messageIds = visibleMessages.stream().map(Message::getId).collect(Collectors.toList());
+        Map<Long, List<com.connectx.message.dto.MessageReactionDto>> reactionsMap = new HashMap<>();
+        if (!messageIds.isEmpty()) {
+            List<com.connectx.message.entity.MessageReaction> reactions = messageReactionRepository.findByMessageIdInWithUsers(messageIds);
+            reactionsMap = reactions.stream()
+                    .map(com.connectx.message.dto.MessageReactionDto::fromEntity)
+                    .collect(Collectors.groupingBy(com.connectx.message.dto.MessageReactionDto::getMessageId));
+        }
+
+        final Map<Long, List<com.connectx.message.dto.MessageReactionDto>> finalReactionsMap = reactionsMap;
+
         return visibleMessages.stream()
                 .map(message -> {
                     String mimeType = null;
@@ -274,6 +314,7 @@ public class MessageService {
                     }
                     MessageDto resultDto = MessageDto.fromEntity(message, mimeType);
                     resultDto.setFileSizeBytes(fileSizeBytes);
+                    resultDto.setReactions(finalReactionsMap.getOrDefault(message.getId(), List.of()));
                     return resultDto;
                 })
                 .collect(Collectors.toList());
@@ -440,5 +481,114 @@ public class MessageService {
         if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_LOCATION", "Latitude or longitude is out of range");
         }
+    }
+
+    @Transactional
+    public MessageDto addOrUpdateReaction(Long currentUserId, Long messageId, String reaction) {
+        if (reaction == null || reaction.trim().isEmpty()) {
+            return removeReaction(currentUserId, messageId);
+        }
+        String cleanReaction = reaction.trim();
+
+        Message message = messageRepository.findById(messageId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "MESSAGE_NOT_FOUND", "Message not found"));
+
+        Long conversationId = message.getConversation().getId();
+        boolean isMember = conversationMemberRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull(conversationId, currentUserId);
+        if (!isMember) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "NOT_CONVERSATION_MEMBER", "You are not a member of this conversation");
+        }
+
+        User user = userRepository.findById(currentUserId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User not found"));
+
+        com.connectx.message.entity.MessageReaction existingReaction = messageReactionRepository.findByMessageIdAndUserId(messageId, currentUserId).orElse(null);
+        if (existingReaction != null) {
+            if (existingReaction.getReaction().equals(cleanReaction)) {
+                messageReactionRepository.delete(existingReaction);
+            } else {
+                existingReaction.setReaction(cleanReaction);
+                messageReactionRepository.save(existingReaction);
+            }
+        } else {
+            com.connectx.message.entity.MessageReaction newReaction = new com.connectx.message.entity.MessageReaction(message, user, cleanReaction);
+            messageReactionRepository.save(newReaction);
+        }
+
+        List<com.connectx.message.entity.MessageReaction> allReactions = messageReactionRepository.findByMessageIdWithUsers(messageId);
+        List<com.connectx.message.dto.MessageReactionDto> reactionDtos = allReactions.stream()
+                .map(com.connectx.message.dto.MessageReactionDto::fromEntity)
+                .collect(Collectors.toList());
+
+        Map<String, Object> wsPayload = new HashMap<>();
+        wsPayload.put("messageId", messageId);
+        wsPayload.put("conversationId", conversationId);
+        wsPayload.put("userId", currentUserId);
+        wsPayload.put("username", user.getUsername());
+        wsPayload.put("reaction", cleanReaction);
+        wsPayload.put("reactions", reactionDtos);
+
+        WsEvent wsEvent = WsEvent.of("MESSAGE_REACTION_UPDATE", wsPayload);
+
+        afterCommitExecutor.runAfterCommit(() -> {
+            messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, wsEvent);
+            List<ConversationMember> members = conversationMemberRepository.findByConversationIdWithUsers(conversationId);
+            for (ConversationMember m : members) {
+                if (m.getUser() != null) {
+                    messagingTemplate.convertAndSendToUser(m.getUser().getUsername(), "/queue/messages", wsEvent);
+                }
+            }
+        });
+
+        MessageDto resultDto = MessageDto.fromEntity(message);
+        resultDto.setReactions(reactionDtos);
+        return resultDto;
+    }
+
+    @Transactional
+    public MessageDto removeReaction(Long currentUserId, Long messageId) {
+        Message message = messageRepository.findById(messageId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "MESSAGE_NOT_FOUND", "Message not found"));
+
+        Long conversationId = message.getConversation().getId();
+        boolean isMember = conversationMemberRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull(conversationId, currentUserId);
+        if (!isMember) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "NOT_CONVERSATION_MEMBER", "You are not a member of this conversation");
+        }
+
+        User user = userRepository.findById(currentUserId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User not found"));
+
+        messageReactionRepository.findByMessageIdAndUserId(messageId, currentUserId)
+                .ifPresent(messageReactionRepository::delete);
+
+        List<com.connectx.message.entity.MessageReaction> allReactions = messageReactionRepository.findByMessageIdWithUsers(messageId);
+        List<com.connectx.message.dto.MessageReactionDto> reactionDtos = allReactions.stream()
+                .map(com.connectx.message.dto.MessageReactionDto::fromEntity)
+                .collect(Collectors.toList());
+
+        Map<String, Object> wsPayload = new HashMap<>();
+        wsPayload.put("messageId", messageId);
+        wsPayload.put("conversationId", conversationId);
+        wsPayload.put("userId", currentUserId);
+        wsPayload.put("username", user.getUsername());
+        wsPayload.put("reaction", null);
+        wsPayload.put("reactions", reactionDtos);
+
+        WsEvent wsEvent = WsEvent.of("MESSAGE_REACTION_UPDATE", wsPayload);
+
+        afterCommitExecutor.runAfterCommit(() -> {
+            messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, wsEvent);
+            List<ConversationMember> members = conversationMemberRepository.findByConversationIdWithUsers(conversationId);
+            for (ConversationMember m : members) {
+                if (m.getUser() != null) {
+                    messagingTemplate.convertAndSendToUser(m.getUser().getUsername(), "/queue/messages", wsEvent);
+                }
+            }
+        });
+
+        MessageDto resultDto = MessageDto.fromEntity(message);
+        resultDto.setReactions(reactionDtos);
+        return resultDto;
     }
 }

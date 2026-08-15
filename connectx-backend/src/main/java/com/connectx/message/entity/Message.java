@@ -77,6 +77,13 @@ public class Message {
     @Column(name = "deleted_at")
     private Instant deletedAt;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "reply_to_message_id")
+    private Message replyToMessage;
+
+    @OneToMany(mappedBy = "message", cascade = CascadeType.ALL, orphanRemoval = true)
+    private java.util.List<MessageReaction> reactions = new java.util.ArrayList<>();
+
     @PrePersist
     protected void onCreate() {
         if (this.sentAt == null) {
@@ -248,5 +255,21 @@ public class Message {
 
     public void setDeletedAt(Instant deletedAt) {
         this.deletedAt = deletedAt;
+    }
+
+    public Message getReplyToMessage() {
+        return replyToMessage;
+    }
+
+    public void setReplyToMessage(Message replyToMessage) {
+        this.replyToMessage = replyToMessage;
+    }
+
+    public java.util.List<MessageReaction> getReactions() {
+        return reactions;
+    }
+
+    public void setReactions(java.util.List<MessageReaction> reactions) {
+        this.reactions = reactions;
     }
 }

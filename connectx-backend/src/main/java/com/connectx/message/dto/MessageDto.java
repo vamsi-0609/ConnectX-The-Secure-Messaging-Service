@@ -27,6 +27,12 @@ public class MessageDto {
     private Instant deliveredAt;
     private Instant readAt;
     private boolean deletedForEveryone;
+    private Long replyToMessageId;
+    private String replyToSenderUsername;
+    private MessageType replyToMessageType;
+    private String replyToCaption;
+    private boolean replyToDeleted;
+    private java.util.List<MessageReactionDto> reactions = new java.util.ArrayList<>();
 
     public MessageDto() {}
 
@@ -73,6 +79,26 @@ public class MessageDto {
         dto.setDeliveredAt(message.getDeliveredAt());
         dto.setReadAt(message.getReadAt());
         dto.setDeletedForEveryone(message.isDeletedForEveryone());
+
+        if (message.getReplyToMessage() != null) {
+            Message reply = message.getReplyToMessage();
+            dto.setReplyToMessageId(reply.getId());
+            if (reply.getSenderUser() != null) {
+                dto.setReplyToSenderUsername(reply.getSenderUser().getUsername());
+            } else if (reply.getSenderDevice() != null && reply.getSenderDevice().getUser() != null) {
+                dto.setReplyToSenderUsername(reply.getSenderDevice().getUser().getUsername());
+            }
+            dto.setReplyToMessageType(reply.getMessageType());
+            dto.setReplyToCaption(reply.getCaption());
+            dto.setReplyToDeleted(reply.isDeletedForEveryone());
+        }
+
+        if (message.getReactions() != null) {
+            dto.setReactions(message.getReactions().stream()
+                    .map(MessageReactionDto::fromEntity)
+                    .collect(java.util.stream.Collectors.toList()));
+        }
+
         return dto;
     }
 
@@ -242,5 +268,53 @@ public class MessageDto {
 
     public void setFileSizeBytes(Long fileSizeBytes) {
         this.fileSizeBytes = fileSizeBytes;
+    }
+
+    public Long getReplyToMessageId() {
+        return replyToMessageId;
+    }
+
+    public void setReplyToMessageId(Long replyToMessageId) {
+        this.replyToMessageId = replyToMessageId;
+    }
+
+    public String getReplyToSenderUsername() {
+        return replyToSenderUsername;
+    }
+
+    public void setReplyToSenderUsername(String replyToSenderUsername) {
+        this.replyToSenderUsername = replyToSenderUsername;
+    }
+
+    public MessageType getReplyToMessageType() {
+        return replyToMessageType;
+    }
+
+    public void setReplyToMessageType(MessageType replyToMessageType) {
+        this.replyToMessageType = replyToMessageType;
+    }
+
+    public String getReplyToCaption() {
+        return replyToCaption;
+    }
+
+    public void setReplyToCaption(String replyToCaption) {
+        this.replyToCaption = replyToCaption;
+    }
+
+    public boolean isReplyToDeleted() {
+        return replyToDeleted;
+    }
+
+    public void setReplyToDeleted(boolean replyToDeleted) {
+        this.replyToDeleted = replyToDeleted;
+    }
+
+    public java.util.List<MessageReactionDto> getReactions() {
+        return reactions;
+    }
+
+    public void setReactions(java.util.List<MessageReactionDto> reactions) {
+        this.reactions = reactions;
     }
 }

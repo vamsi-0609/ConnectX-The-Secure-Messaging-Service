@@ -32,7 +32,17 @@ public class SendMessageRequestDto {
 
     private String requestId;
 
+    private Long replyToMessageId;
+
     public SendMessageRequestDto() {}
+
+    public Long getReplyToMessageId() {
+        return replyToMessageId;
+    }
+
+    public void setReplyToMessageId(Long replyToMessageId) {
+        this.replyToMessageId = replyToMessageId;
+    }
 
     public Long getConversationId() {
         return conversationId;

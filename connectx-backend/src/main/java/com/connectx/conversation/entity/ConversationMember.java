@@ -40,6 +40,9 @@ public class ConversationMember {
     @Column(name = "pinned_at")
     private Instant pinnedAt;
 
+    @Column(name = "muted_until")
+    private Instant mutedUntil;
+
     @PrePersist
     protected void onCreate() {
         this.joinedAt = Instant.now();
@@ -122,5 +125,13 @@ public class ConversationMember {
 
     public void setPinnedAt(Instant pinnedAt) {
         this.pinnedAt = pinnedAt;
+    }
+
+    public Instant getMutedUntil() {
+        return mutedUntil;
+    }
+
+    public void setMutedUntil(Instant mutedUntil) {
+        this.mutedUntil = mutedUntil;
     }
 }

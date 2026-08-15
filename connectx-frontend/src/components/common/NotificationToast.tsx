@@ -37,7 +37,7 @@ export const NotificationToast: React.FC<NotificationToastProps> = ({
   const avatarUrl = resolveProfileImageUrl(toast.senderAvatar);
 
   return (
-    <div className="fixed top-4 right-4 z-50 max-w-sm w-full bg-slate-900/95 dark:bg-slate-900/95 text-white border border-indigo-500/30 rounded-2xl shadow-2xl backdrop-blur-md p-4 transition-all duration-300 transform translate-y-0 animate-in fade-in slide-in-from-top-3">
+    <div className="fixed top-4 right-4 z-50 max-w-sm w-full bg-slate-900/95 dark:bg-slate-900/95 text-white border border-indigo-500/30 rounded-2xl shadow-2xl backdrop-blur-md p-4 transition-all duration-300 transform translate-y-0 animate-in fade-in slide-in-from-top-3 select-none">
       <div className="flex items-start gap-3">
         <div
           onClick={() => onClickToast(toast.conversationId)}

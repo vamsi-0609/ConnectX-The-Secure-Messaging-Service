@@ -76,4 +76,27 @@ public class ConversationController {
         ConversationDto conversation = conversationService.unpinConversation(currentUser.getId(), conversationId);
         return ResponseEntity.ok(ApiResponse.success("Conversation unpinned", conversation));
     }
+
+    @PostMapping("/{conversationId}/mute")
+    public ResponseEntity<ApiResponse<ConversationDto>> muteConversation(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long conversationId,
+            @RequestBody(required = false) java.util.Map<String, String> body) {
+        java.time.Instant mutedUntil = null;
+        if (body != null && body.containsKey("mutedUntil") && body.get("mutedUntil") != null) {
+            try {
+                mutedUntil = java.time.Instant.parse(body.get("mutedUntil"));
+            } catch (Exception ignored) {}
+        }
+        ConversationDto conversation = conversationService.muteConversation(currentUser.getId(), conversationId, mutedUntil);
+        return ResponseEntity.ok(ApiResponse.success("Conversation muted", conversation));
+    }
+
+    @PostMapping("/{conversationId}/unmute")
+    public ResponseEntity<ApiResponse<ConversationDto>> unmuteConversation(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long conversationId) {
+        ConversationDto conversation = conversationService.unmuteConversation(currentUser.getId(), conversationId);
+        return ResponseEntity.ok(ApiResponse.success("Conversation unmuted", conversation));
+    }
 }

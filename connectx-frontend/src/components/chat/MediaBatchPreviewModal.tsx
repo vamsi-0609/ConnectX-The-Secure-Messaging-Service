@@ -117,7 +117,7 @@ export const MediaBatchPreviewModal: React.FC<MediaBatchPreviewModalProps> = ({
   const totalFiles = imageFiles.length + docFiles.length;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm select-none" onClick={onClose}>
       <div
         className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl space-y-5 animate-pop-in"
         onClick={(e) => e.stopPropagation()}

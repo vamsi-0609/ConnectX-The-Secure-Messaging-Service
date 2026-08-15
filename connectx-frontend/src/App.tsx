@@ -125,6 +125,12 @@ function messageFromWsPayload(payload: Record<string, unknown>): Message {
     nonce: (payload.nonce as string) || '',
     sentAt: payload.sentAt as string,
     deletedForEveryone: false,
+    replyToMessageId: payload.replyToMessageId as number | undefined,
+    replyToSenderUsername: payload.replyToSenderUsername as string | undefined,
+    replyToMessageType: payload.replyToMessageType as Message['messageType'] | undefined,
+    replyToCaption: payload.replyToCaption as string | undefined,
+    replyToDeleted: payload.replyToDeleted as boolean | undefined,
+    reactions: (payload.reactions as Message['reactions']) || [],
   };
 }
 
@@ -239,17 +245,44 @@ export const App: React.FC = () => {
   }, [isDarkMode]);
 
   useEffect(() => {
+    const handleAuthExpired = () => {
+      console.warn('[ConnectX] Authentication session expired. Resetting session state.');
+      wsClient.disconnect();
+      setCurrentUser(null);
+      setConversations([]);
+      pinnedConversationsRef.current.clear();
+      setActiveConversation(null);
+      setMessages([]);
+      setConversationPreviews({});
+    };
+
+    window.addEventListener('connectx_auth_expired', handleAuthExpired);
+
     const token = localStorage.getItem('connectx_token');
-    if (token && currentUser) {
-      ensureLocalCryptoDevice(currentUser).catch((err) => {
-        console.warn('[ConnectX E2EE] Failed to ensure local crypto device on mount:', err);
-      });
-      reconnect();
+    const refreshToken = localStorage.getItem('connectx_refresh_token');
+    if ((token || refreshToken) && currentUser) {
+      userApi.getCurrentUser()
+        .then((freshUser) => {
+          setCurrentUser(freshUser);
+          localStorage.setItem('connectx_user', JSON.stringify(freshUser));
+          return ensureLocalCryptoDevice(freshUser);
+        })
+        .then(() => reconnect())
+        .catch((err) => {
+          console.warn('[ConnectX Auth] Session validation encountered error:', err);
+        });
     }
+
+    return () => {
+      window.removeEventListener('connectx_auth_expired', handleAuthExpired);
+    };
   }, []);
 
   const handleAuthSuccess = (response: AuthResponse) => {
     localStorage.setItem('connectx_token', response.accessToken);
+    if (response.refreshToken) {
+      localStorage.setItem('connectx_refresh_token', response.refreshToken);
+    }
     localStorage.setItem('connectx_user', JSON.stringify(response.user));
     setCurrentUser(response.user);
 
@@ -266,6 +299,7 @@ export const App: React.FC = () => {
       // Session may already be cleared locally.
     }
     localStorage.removeItem('connectx_token');
+    localStorage.removeItem('connectx_refresh_token');
     localStorage.removeItem('connectx_user');
     setCurrentUser(null);
     setConversations([]);
@@ -565,8 +599,14 @@ export const App: React.FC = () => {
             // Mark the whole conversation as read since we're actively viewing it
             wsClient.sendRead(conversationId);
 
-            // Play incoming audio chime
-            soundManager.playIncomingMessageSound();
+            const isMuted =
+              currentActive.isMuted ||
+              (currentActive.mutedUntil && new Date(currentActive.mutedUntil).getTime() > Date.now());
+
+            // Play incoming audio chime only if not muted
+            if (!isMuted) {
+              soundManager.playIncomingMessageSound();
+            }
           } else {
             loadMessages(conversationId, 'merge');
           }
@@ -592,28 +632,34 @@ export const App: React.FC = () => {
             setUnreadConversationIds((prev) => new Set(prev).add(conversationId));
             wsClient.sendDelivered(payload.messageId as number);
 
-            // Play incoming audio chime
-            soundManager.playIncomingMessageSound();
+            const isMuted =
+              conv?.isMuted ||
+              (conv?.mutedUntil && new Date(conv.mutedUntil).getTime() > Date.now());
 
-            const senderName = (payload.senderUsername as string) || 'ConnectX User';
-            const senderAvatar = conv ? getOtherParticipant(conv, currentUser.id)?.profileImageUrl : undefined;
+            if (!isMuted) {
+              // Play incoming audio chime
+              soundManager.playIncomingMessageSound();
 
-            // Show In-App Toast Banner
-            setCurrentToast({
-              id: `toast-${msgId}-${Date.now()}`,
-              senderName,
-              senderAvatar,
-              messageText: preview.text,
-              conversationId,
-              timestamp: (payload.sentAt as string) || new Date().toISOString(),
-            });
+              const senderName = (payload.senderUsername as string) || 'ConnectX User';
+              const senderAvatar = conv ? getOtherParticipant(conv, currentUser.id)?.profileImageUrl : undefined;
 
-            // Show Browser Desktop System Push Notification
-            browserNotifications.showNotification(`New message from ${senderName}`, {
-              body: preview.text,
-              conversationId,
-              onClick: () => handleSelectToastConversation(conversationId),
-            });
+              // Show In-App Toast Banner
+              setCurrentToast({
+                id: `toast-${msgId}-${Date.now()}`,
+                senderName,
+                senderAvatar,
+                messageText: preview.text,
+                conversationId,
+                timestamp: (payload.sentAt as string) || new Date().toISOString(),
+              });
+
+              // Show Browser Desktop System Push Notification
+              browserNotifications.showNotification(`New message from ${senderName}`, {
+                body: preview.text,
+                conversationId,
+                onClick: () => handleSelectToastConversation(conversationId),
+              });
+            }
           }
 
           if (conv) {
@@ -633,6 +679,19 @@ export const App: React.FC = () => {
         }
 
         loadConversations();
+      } else if (event.type === 'MESSAGE_REACTION_UPDATE') {
+        const payload = event.payload as Record<string, unknown>;
+        const msgId = payload.messageId as number;
+        const reactions = payload.reactions as Message['reactions'];
+
+        setMessages((prev) =>
+          prev.map((msg) => {
+            if (msg.id === msgId) {
+              return { ...msg, reactions };
+            }
+            return msg;
+          })
+        );
       } else if (event.type === 'READ_RECEIPT_UPDATE') {
         const payload = event.payload as Record<string, unknown>;
         const msgId = payload.messageId as number | undefined;
@@ -697,7 +756,13 @@ export const App: React.FC = () => {
     return () => unsubscribe();
   }, [currentUser, subscribe, loadMessages, loadConversations, decryptSingleMessage, updatePreviewIfNewer, upsertConversation]);
 
-  const handleOptimisticMessage = (plaintext: string, ciphertext: string, nonce: string, recipientDeviceId: number) => {
+  const handleOptimisticMessage = (
+    plaintext: string,
+    ciphertext: string,
+    nonce: string,
+    recipientDeviceId: number,
+    replyToMessageId?: number
+  ) => {
     if (!activeConversation || !currentUser) return;
 
     const tempMessage: Message = {
@@ -714,6 +779,7 @@ export const App: React.FC = () => {
       deletedForEveryone: false,
       decryptedContent: plaintext,
       decryptionError: false,
+      replyToMessageId,
     };
 
     setMessages((prev) => sortMessages([...prev, tempMessage]));
@@ -732,7 +798,8 @@ export const App: React.FC = () => {
     mediaId: number,
     caption: string | undefined,
     localPreviewUrl: string,
-    mimeType: string
+    mimeType: string,
+    replyToMessageId?: number
   ) => {
     if (!activeConversation || !currentUser) return;
 
@@ -751,6 +818,7 @@ export const App: React.FC = () => {
       sentAt: new Date().toISOString(),
       deletedForEveryone: false,
       localMediaUrl: localPreviewUrl,
+      replyToMessageId,
     };
 
     setMessages((prev) => sortMessages([...prev, tempMessage]));
@@ -770,7 +838,8 @@ export const App: React.FC = () => {
     mediaId: number,
     filename: string,
     mimeType: string,
-    fileSizeBytes: number
+    fileSizeBytes: number,
+    replyToMessageId?: number
   ) => {
     if (!activeConversation || !currentUser) return;
 
@@ -789,6 +858,7 @@ export const App: React.FC = () => {
       nonce: '',
       sentAt: new Date().toISOString(),
       deletedForEveryone: false,
+      replyToMessageId,
     };
 
     setMessages((prev) => sortMessages([...prev, tempMessage]));
@@ -807,7 +877,8 @@ export const App: React.FC = () => {
   const handleOptimisticLocationMessage = (
     latitude: number,
     longitude: number,
-    locationLabel: string | undefined
+    locationLabel: string | undefined,
+    replyToMessageId?: number
   ) => {
     if (!activeConversation || !currentUser) return;
 
@@ -825,6 +896,7 @@ export const App: React.FC = () => {
       nonce: '',
       sentAt: new Date().toISOString(),
       deletedForEveryone: false,
+      replyToMessageId,
     };
 
     setMessages((prev) => sortMessages([...prev, tempMessage]));
@@ -846,6 +918,58 @@ export const App: React.FC = () => {
   const handleMessageSent = useCallback(() => {
     loadConversations();
   }, [loadConversations]);
+
+  const handleReactMessage = async (messageId: number, reaction: string) => {
+    try {
+      await messageApi.addReaction(messageId, reaction);
+    } catch (err: unknown) {
+      console.error('Failed to update reaction:', err);
+    }
+  };
+
+  const handleMuteChat = async (duration: '8_HOURS' | '1_WEEK' | 'ALWAYS') => {
+    if (!activeConversation) return;
+    let mutedUntil: string | undefined;
+    const now = Date.now();
+    if (duration === '8_HOURS') {
+      mutedUntil = new Date(now + 8 * 3600 * 1000).toISOString();
+    } else if (duration === '1_WEEK') {
+      mutedUntil = new Date(now + 7 * 24 * 3600 * 1000).toISOString();
+    } else {
+      mutedUntil = '9999-12-31T23:59:59Z';
+    }
+
+    try {
+      await conversationApi.muteConversation(activeConversation.id, mutedUntil);
+      const updatedConv = {
+        ...activeConversation,
+        isMuted: true,
+        mutedUntil,
+      };
+      upsertConversation(updatedConv);
+      setActiveConversation(updatedConv);
+    } catch (err) {
+      console.error('Failed to mute conversation:', err);
+      alert('Failed to mute conversation');
+    }
+  };
+
+  const handleUnmuteChat = async () => {
+    if (!activeConversation) return;
+    try {
+      await conversationApi.unmuteConversation(activeConversation.id);
+      const updatedConv = {
+        ...activeConversation,
+        isMuted: false,
+        mutedUntil: undefined,
+      };
+      upsertConversation(updatedConv);
+      setActiveConversation(updatedConv);
+    } catch (err) {
+      console.error('Failed to unmute conversation:', err);
+      alert('Failed to unmute conversation');
+    }
+  };
 
   const handleDeleteMessage = async (messageId: number, deleteForEveryone: boolean) => {
     try {
@@ -1009,6 +1133,11 @@ export const App: React.FC = () => {
               showRawCiphertext={showRawCiphertext}
               showInfoDrawer={showInfoDrawer}
               isDarkMode={isDarkMode}
+              isMuted={Boolean(
+                activeConversation.isMuted ||
+                (activeConversation.mutedUntil &&
+                  new Date(activeConversation.mutedUntil).getTime() > Date.now())
+              )}
               onToggleCiphertext={() => setShowRawCiphertext(!showRawCiphertext)}
               onToggleInfoDrawer={() => setShowInfoDrawer(!showInfoDrawer)}
               onBack={() => {
@@ -1026,6 +1155,9 @@ export const App: React.FC = () => {
               onOptimisticDocumentMessage={handleOptimisticDocumentMessage}
               onMessageSent={handleMessageSent}
               onClearChat={handleClearChat}
+              onMuteChat={handleMuteChat}
+              onUnmuteChat={handleUnmuteChat}
+              onReactMessage={handleReactMessage}
             />
 
             {showInfoDrawer && (
@@ -1038,7 +1170,7 @@ export const App: React.FC = () => {
             )}
           </div>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
+          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center select-none">
             <div className="max-w-sm space-y-5">
               <div className="w-16 h-16 rounded-2xl bg-indigo-600/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 mx-auto">
                 <MessageSquare className="w-8 h-8" />

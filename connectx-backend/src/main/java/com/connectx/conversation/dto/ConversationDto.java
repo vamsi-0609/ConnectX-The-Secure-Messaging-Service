@@ -20,6 +20,8 @@ public class ConversationDto {
     private String lastMessageCaption;
     private boolean pinned;
     private Instant pinnedAt;
+    private boolean muted;
+    private Instant mutedUntil;
 
     public ConversationDto() {}
 
@@ -139,5 +141,21 @@ public class ConversationDto {
 
     public void setPinnedAt(Instant pinnedAt) {
         this.pinnedAt = pinnedAt;
+    }
+
+    public boolean isMuted() {
+        return muted;
+    }
+
+    public void setMuted(boolean muted) {
+        this.muted = muted;
+    }
+
+    public Instant getMutedUntil() {
+        return mutedUntil;
+    }
+
+    public void setMutedUntil(Instant mutedUntil) {
+        this.mutedUntil = mutedUntil;
     }
 }

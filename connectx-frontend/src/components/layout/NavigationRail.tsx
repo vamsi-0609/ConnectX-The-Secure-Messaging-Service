@@ -27,7 +27,7 @@ export const NavigationRail: React.FC<NavigationRailProps> = ({
   onLogout,
 }) => {
   return (
-    <div className="w-16 h-full bg-white dark:bg-slate-950 border-r border-slate-200 dark:border-slate-800/80 flex flex-col items-center justify-between py-4 z-20 flex-shrink-0 transition-colors duration-300">
+    <div className="w-16 h-full bg-white dark:bg-slate-950 border-r border-slate-200 dark:border-slate-800/80 flex flex-col items-center justify-between py-4 z-20 flex-shrink-0 transition-colors duration-300 select-none">
       {/* Top Section: Logo & Navigation Options */}
       <div className="flex flex-col items-center gap-6">
         {/* ConnectX canonical brand icon */}

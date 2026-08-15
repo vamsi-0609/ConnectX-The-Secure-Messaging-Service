@@ -35,6 +35,22 @@ export interface UserPublicKey {
   keyAlgorithm: string;
 }
 
+export interface MessageReaction {
+  id?: number;
+  messageId: number;
+  userId: number;
+  username: string;
+  reaction: string;
+  createdAt: string;
+}
+
+export interface ReplyTarget {
+  messageId: number;
+  senderUsername: string;
+  messageType: MessageType;
+  previewText: string;
+}
+
 export interface ConversationMember {
   id: number;
   user: User;
@@ -42,6 +58,8 @@ export interface ConversationMember {
   lastReadMessageId?: number;
   pinned?: boolean;
   pinnedAt?: string;
+  mutedUntil?: string;
+  muted?: boolean;
 }
 
 export type MessageType = 'TEXT' | 'IMAGE' | 'LOCATION' | 'DOCUMENT';
@@ -60,6 +78,8 @@ export interface Conversation {
   lastMessageCaption?: string;
   pinned?: boolean;
   pinnedAt?: string;
+  isMuted?: boolean;
+  mutedUntil?: string;
 }
 
 export interface ConversationPreview {
@@ -94,6 +114,12 @@ export interface Message {
   decryptedContent?: string; // Client-side decrypted plaintext cache
   decryptionError?: boolean;
   localMediaUrl?: string; // Client-only optimistic preview URL
+  replyToMessageId?: number;
+  replyToSenderUsername?: string;
+  replyToMessageType?: MessageType;
+  replyToCaption?: string;
+  replyToDeleted?: boolean;
+  reactions?: MessageReaction[];
 }
 
 export interface ApiResponse<T> {
@@ -119,6 +145,7 @@ export interface WsEvent<T = any> {
     | 'MESSAGE_RECEIVED'
     | 'MESSAGE_DELIVERED'
     | 'MESSAGE_READ'
+    | 'MESSAGE_REACTION_UPDATE'
     | 'READ_RECEIPT_UPDATE'
     | 'CONVERSATION_DELETED'
     | 'CONVERSATION_RESTORED'

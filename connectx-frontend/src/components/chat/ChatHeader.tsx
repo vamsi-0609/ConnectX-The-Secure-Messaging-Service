@@ -10,9 +10,12 @@ import {
   Info,
   Eraser,
   Palette,
+  BellOff,
+  Bell,
 } from 'lucide-react';
 import { User } from '../../types';
 import { ClearChatConfirmDialog } from './ClearChatConfirmDialog';
+import { MuteChatModal } from './MuteChatModal';
 import { UserAvatar } from '../common/UserAvatar';
 import { ChatWallpaperMenu } from './ChatWallpaperMenu';
 import { ChatWallpaperSetting } from '../../utils/chatWallpaper';
@@ -22,11 +25,14 @@ interface ChatHeaderProps {
   showRawCiphertext: boolean;
   showInfoDrawer: boolean;
   wallpaper: ChatWallpaperSetting;
+  isMuted?: boolean;
   onToggleCiphertext: () => void;
   onToggleInfoDrawer: () => void;
   onWallpaperChange: (wallpaper: ChatWallpaperSetting) => void;
   onBack?: () => void;
   onClearChat?: () => Promise<void>;
+  onMuteChat?: (duration: '8_HOURS' | '1_WEEK' | 'ALWAYS') => Promise<void>;
+  onUnmuteChat?: () => Promise<void>;
 }
 
 export const ChatHeader: React.FC<ChatHeaderProps> = ({
@@ -34,15 +40,19 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
   showRawCiphertext,
   showInfoDrawer,
   wallpaper,
+  isMuted,
   onToggleCiphertext,
   onToggleInfoDrawer,
   onWallpaperChange,
   onBack,
   onClearChat,
+  onMuteChat,
+  onUnmuteChat,
 }) => {
   const [showMenu, setShowMenu] = useState(false);
   const [menuView, setMenuView] = useState<'main' | 'wallpaper'>('main');
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [showMuteModal, setShowMuteModal] = useState(false);
   const [clearing, setClearing] = useState(false);
 
   const displayName = recipient?.displayName || recipient?.username || 'Contact';
@@ -71,7 +81,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
 
   return (
     <>
-      <div className="h-[60px] min-h-[60px] md:h-[68px] md:min-h-[68px] px-2 md:px-6 border-b border-slate-200/80 dark:border-slate-800/80 bg-white dark:bg-[#0f172a] flex items-center justify-between">
+      <div className="h-[60px] min-h-[60px] md:h-[68px] md:min-h-[68px] px-2 md:px-6 border-b border-slate-200/80 dark:border-slate-800/80 bg-white dark:bg-[#0f172a] flex items-center justify-between select-none">
         <div className="flex items-center gap-1 min-w-0 flex-1">
           {onBack && (
             <button
@@ -184,6 +194,29 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
                       >
                         <Palette className="w-4 h-4" /> Chat background
                       </button>
+                      {isMuted ? (
+                        <button
+                          onClick={async () => {
+                            if (onUnmuteChat) {
+                              await onUnmuteChat();
+                            }
+                            closeMenu();
+                          }}
+                          className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800 text-indigo-500"
+                        >
+                          <Bell className="w-4 h-4" /> Unmute notifications
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setShowMuteModal(true);
+                            closeMenu();
+                          }}
+                          className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                        >
+                          <BellOff className="w-4 h-4" /> Mute notifications
+                        </button>
+                      )}
                       <button
                         onClick={() => {
                           onToggleCiphertext();
@@ -250,6 +283,19 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
             }
           }}
           onConfirm={handleConfirmClear}
+        />
+      )}
+
+      {showMuteModal && (
+        <MuteChatModal
+          open={showMuteModal}
+          contactName={displayName}
+          onClose={() => setShowMuteModal(false)}
+          onConfirmMute={async (duration) => {
+            if (onMuteChat) {
+              await onMuteChat(duration);
+            }
+          }}
         />
       )}
     </>

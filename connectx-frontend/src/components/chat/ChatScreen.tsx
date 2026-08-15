@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { User, Message } from '../../types';
+import { User, Message, ReplyTarget } from '../../types';
 import { ChatHeader } from './ChatHeader';
 import { MessageFeed } from './MessageFeed';
 import { MessageInput } from './MessageInput';
@@ -19,25 +19,43 @@ interface ChatScreenProps {
   showRawCiphertext: boolean;
   showInfoDrawer: boolean;
   isDarkMode: boolean;
+  isMuted?: boolean;
   onToggleCiphertext: () => void;
   onToggleInfoDrawer: () => void;
   onBack: () => void;
   onDeleteMessage: (messageId: number, deleteForEveryone: boolean) => void;
-  onOptimisticMessage: (plaintext: string, ciphertext: string, nonce: string, recipientDeviceId: number) => void;
-  onOptimisticImageMessage: (mediaId: number, caption: string | undefined, localPreviewUrl: string, mimeType: string) => void;
+  onOptimisticMessage: (
+    plaintext: string,
+    ciphertext: string,
+    nonce: string,
+    recipientDeviceId: number,
+    replyToMessageId?: number
+  ) => void;
+  onOptimisticImageMessage: (
+    mediaId: number,
+    caption: string | undefined,
+    localPreviewUrl: string,
+    mimeType: string,
+    replyToMessageId?: number
+  ) => void;
   onOptimisticLocationMessage: (
     latitude: number,
     longitude: number,
-    locationLabel: string | undefined
+    locationLabel: string | undefined,
+    replyToMessageId?: number
   ) => void;
   onOptimisticDocumentMessage: (
     mediaId: number,
     filename: string,
     mimeType: string,
-    fileSizeBytes: number
+    fileSizeBytes: number,
+    replyToMessageId?: number
   ) => void;
   onMessageSent?: () => void;
   onClearChat?: () => Promise<void>;
+  onMuteChat?: (duration: '8_HOURS' | '1_WEEK' | 'ALWAYS') => Promise<void>;
+  onUnmuteChat?: () => Promise<void>;
+  onReactMessage?: (messageId: number, reaction: string) => Promise<void>;
 }
 
 export const ChatScreen: React.FC<ChatScreenProps> = ({
@@ -48,6 +66,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   showRawCiphertext,
   showInfoDrawer,
   isDarkMode,
+  isMuted,
   onToggleCiphertext,
   onToggleInfoDrawer,
   onBack,
@@ -58,13 +77,18 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   onOptimisticDocumentMessage,
   onMessageSent,
   onClearChat,
+  onMuteChat,
+  onUnmuteChat,
+  onReactMessage,
 }) => {
   const [wallpaper, setWallpaper] = useState<ChatWallpaperSetting>(() =>
     getConversationWallpaper(conversationId)
   );
+  const [replyTarget, setReplyTarget] = useState<ReplyTarget | null>(null);
 
   useEffect(() => {
     setWallpaper(getConversationWallpaper(conversationId));
+    setReplyTarget(null);
   }, [conversationId]);
 
   const wallpaperImageUrl = useMemo(() => getWallpaperImageUrl(wallpaper), [wallpaper]);
@@ -72,6 +96,28 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   const handleWallpaperChange = (nextWallpaper: ChatWallpaperSetting) => {
     setConversationWallpaper(conversationId, nextWallpaper);
     setWallpaper(nextWallpaper);
+  };
+
+  const handleReplyMessage = (message: Message) => {
+    let preview = 'Message';
+    if (message.messageType === 'IMAGE') {
+      preview = '📷 Photo' + (message.caption ? ` — ${message.caption}` : '');
+    } else if (message.messageType === 'LOCATION') {
+      preview = '📍 Location' + (message.locationLabel ? ` — ${message.locationLabel}` : '');
+    } else if (message.messageType === 'DOCUMENT') {
+      preview = '📄 ' + (message.caption || 'Document');
+    } else if (message.decryptedContent) {
+      preview = message.decryptedContent;
+    } else if (message.caption) {
+      preview = message.caption;
+    }
+
+    setReplyTarget({
+      messageId: message.id,
+      senderUsername: message.senderUsername || (message.senderUserId === currentUserId ? 'You' : 'User'),
+      messageType: message.messageType || 'TEXT',
+      previewText: preview,
+    });
   };
 
   return (
@@ -82,11 +128,14 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
           showRawCiphertext={showRawCiphertext}
           showInfoDrawer={showInfoDrawer}
           wallpaper={wallpaper}
+          isMuted={isMuted}
           onToggleCiphertext={onToggleCiphertext}
           onToggleInfoDrawer={onToggleInfoDrawer}
           onWallpaperChange={handleWallpaperChange}
           onBack={onBack}
           onClearChat={onClearChat}
+          onMuteChat={onMuteChat}
+          onUnmuteChat={onUnmuteChat}
         />
       </header>
 
@@ -98,6 +147,8 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
             currentUserId={currentUserId}
             showRawCiphertext={showRawCiphertext}
             onDeleteMessage={onDeleteMessage}
+            onReplyMessage={handleReplyMessage}
+            onReactMessage={onReactMessage}
           />
         </div>
       </main>
@@ -107,6 +158,8 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
           conversationId={conversationId}
           recipientUserId={recipient?.id || 0}
           currentUserId={currentUserId}
+          replyTarget={replyTarget}
+          onCancelReply={() => setReplyTarget(null)}
           onOptimisticMessage={onOptimisticMessage}
           onOptimisticImageMessage={onOptimisticImageMessage}
           onOptimisticLocationMessage={onOptimisticLocationMessage}

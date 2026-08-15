@@ -44,4 +44,22 @@ public class MessageController {
         messageService.deleteMessage(currentUser.getId(), messageId, deleteForEveryone);
         return ResponseEntity.ok(ApiResponse.success("Message deleted", "Deleted"));
     }
+
+    @PostMapping("/messages/{messageId}/reactions")
+    public ResponseEntity<ApiResponse<MessageDto>> addOrUpdateReaction(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long messageId,
+            @RequestBody java.util.Map<String, String> body) {
+        String reaction = body != null ? body.get("reaction") : null;
+        MessageDto updatedMessage = messageService.addOrUpdateReaction(currentUser.getId(), messageId, reaction);
+        return ResponseEntity.ok(ApiResponse.success("Reaction updated", updatedMessage));
+    }
+
+    @DeleteMapping("/messages/{messageId}/reactions")
+    public ResponseEntity<ApiResponse<MessageDto>> removeReaction(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long messageId) {
+        MessageDto updatedMessage = messageService.removeReaction(currentUser.getId(), messageId);
+        return ResponseEntity.ok(ApiResponse.success("Reaction removed", updatedMessage));
+    }
 }

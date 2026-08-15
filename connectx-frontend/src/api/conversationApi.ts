@@ -33,4 +33,15 @@ export const conversationApi = {
     apiRequest<Conversation>(`/conversations/${conversationId}/unpin`, {
       method: 'POST',
     }),
+
+  muteConversation: (conversationId: number, mutedUntil?: string) =>
+    apiRequest<Conversation>(`/conversations/${conversationId}/mute`, {
+      method: 'POST',
+      body: JSON.stringify({ mutedUntil }),
+    }),
+
+  unmuteConversation: (conversationId: number) =>
+    apiRequest<Conversation>(`/conversations/${conversationId}/unmute`, {
+      method: 'POST',
+    }),
 };

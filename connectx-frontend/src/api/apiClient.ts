@@ -1,5 +1,5 @@
 import { config } from '../config/environment';
-import { ApiResponse, ApiError } from '../types';
+import { ApiResponse, ApiError, AuthResponse } from '../types';
 
 export class ApiRequestError extends Error {
   status: number;
@@ -15,9 +15,64 @@ export class ApiRequestError extends Error {
   }
 }
 
+let refreshPromise: Promise<string | null> | null = null;
+
+async function attemptTokenRefresh(): Promise<string | null> {
+  const refreshToken = localStorage.getItem('connectx_refresh_token');
+  if (!refreshToken) {
+    return null;
+  }
+
+  try {
+    const response = await fetch(`${config.apiBaseUrl}/auth/refresh`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ refreshToken }),
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = await response.json().catch(() => null);
+    const authData: AuthResponse = data && data.success !== undefined ? data.data : data;
+
+    if (authData && authData.accessToken) {
+      localStorage.setItem('connectx_token', authData.accessToken);
+      if (authData.refreshToken) {
+        localStorage.setItem('connectx_refresh_token', authData.refreshToken);
+      }
+      if (authData.user) {
+        localStorage.setItem('connectx_user', JSON.stringify(authData.user));
+      }
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('connectx_token_refreshed', { detail: { token: authData.accessToken } })
+        );
+      }
+      return authData.accessToken;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function handleAuthFailure(): void {
+  localStorage.removeItem('connectx_token');
+  localStorage.removeItem('connectx_refresh_token');
+  localStorage.removeItem('connectx_user');
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('connectx_auth_expired'));
+  }
+}
+
 export async function apiRequest<T>(
   endpoint: string,
-  options?: RequestInit
+  options?: RequestInit,
+  isRetry = false
 ): Promise<T> {
   const token = localStorage.getItem('connectx_token');
 
@@ -41,6 +96,28 @@ export async function apiRequest<T>(
       ...options,
       headers,
     });
+
+    // Handle 401 Unauthorized for authenticated endpoints
+    if (
+      response.status === 401 &&
+      !isRetry &&
+      !endpoint.startsWith('/auth/login') &&
+      !endpoint.startsWith('/auth/register') &&
+      !endpoint.startsWith('/auth/refresh')
+    ) {
+      if (!refreshPromise) {
+        refreshPromise = attemptTokenRefresh().finally(() => {
+          refreshPromise = null;
+        });
+      }
+
+      const newToken = await refreshPromise;
+      if (newToken) {
+        return apiRequest<T>(endpoint, options, true);
+      } else {
+        handleAuthFailure();
+      }
+    }
 
     const responseData = await response.json().catch(() => null);
 
@@ -85,3 +162,4 @@ export async function uploadRequest<T>(endpoint: string, formData: FormData): Pr
     body: formData,
   });
 }
+

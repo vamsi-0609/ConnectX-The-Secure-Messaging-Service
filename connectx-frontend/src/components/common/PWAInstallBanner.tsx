@@ -52,6 +52,7 @@ export const PWAInstallBanner: React.FC = () => {
         shadow-[0_8px_32px_rgba(99,102,241,0.2)]
         max-w-sm w-[calc(100%-2rem)]
         animate-slide-up
+        select-none
       "
       role="banner"
       aria-label="Install ConnectX app"
