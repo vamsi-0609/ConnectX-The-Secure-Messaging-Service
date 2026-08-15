@@ -10,6 +10,8 @@ public class ConversationMemberDto {
     private UserDto user;
     private Instant joinedAt;
     private Long lastReadMessageId;
+    private boolean pinned;
+    private Instant pinnedAt;
 
     public ConversationMemberDto() {}
 
@@ -19,6 +21,8 @@ public class ConversationMemberDto {
         dto.setUser(UserDto.fromEntity(member.getUser()));
         dto.setJoinedAt(member.getJoinedAt());
         dto.setLastReadMessageId(member.getLastReadMessageId());
+        dto.setPinned(member.isPinned());
+        dto.setPinnedAt(member.getPinnedAt());
         return dto;
     }
 
@@ -52,5 +56,21 @@ public class ConversationMemberDto {
 
     public void setLastReadMessageId(Long lastReadMessageId) {
         this.lastReadMessageId = lastReadMessageId;
+    }
+
+    public boolean isPinned() {
+        return pinned;
+    }
+
+    public void setPinned(boolean pinned) {
+        this.pinned = pinned;
+    }
+
+    public Instant getPinnedAt() {
+        return pinnedAt;
+    }
+
+    public void setPinnedAt(Instant pinnedAt) {
+        this.pinnedAt = pinnedAt;
     }
 }

@@ -8,6 +8,7 @@ import { mediaApi } from '../../api/mediaApi';
 import { MEDIA_IMAGE_ACCEPT, validateMediaImageFile } from '../../utils/mediaImage';
 import { geolocationErrorMessage, resolveCurrentLocation } from '../../utils/location';
 import { CameraCaptureModal } from './CameraCaptureModal';
+import { MediaBatchPreviewModal } from './MediaBatchPreviewModal';
 
 interface MessageInputProps {
   conversationId: number;
@@ -46,16 +47,18 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const [sharingLocation, setSharingLocation] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
   const [showMediaMenu, setShowMediaMenu] = useState(false);
+
+  // Multi-file batch modal state
+  const [showBatchModal, setShowBatchModal] = useState(false);
+  const [pendingImages, setPendingImages] = useState<File[]>([]);
+  const [pendingDocs, setPendingDocs] = useState<File[]>([]);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const docInputRef = useRef<HTMLInputElement>(null);
 
   const closeMediaMenu = () => setShowMediaMenu(false);
 
   const sendImageFile = async (file: File) => {
-    if (sending || uploading) {
-      throw new Error('Another message is still sending.');
-    }
-
     const validationError = validateMediaImageFile(file);
     if (validationError) {
       alert(validationError);
@@ -66,12 +69,10 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     const localPreviewUrl = URL.createObjectURL(file);
 
     setUploading(true);
-    setUploadStatus('Uploading...');
+    setUploadStatus(`Uploading image ${file.name}...`);
 
     try {
       const uploadResponse = await mediaApi.uploadImage(conversationId, file);
-      setUploadStatus('Upload complete');
-
       await messageApi.sendMessage({
         conversationId,
         messageType: 'IMAGE',
@@ -86,7 +87,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       URL.revokeObjectURL(localPreviewUrl);
       console.error('[ConnectX] Image message failure:', err);
       const message = err instanceof Error ? err.message : 'Unknown error';
-      alert('Failed to send image: ' + message);
+      alert(`Failed to send image ${file.name}: ` + message);
       throw err instanceof Error ? err : new Error(message);
     } finally {
       setUploadStatus(null);
@@ -95,23 +96,17 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   };
 
   const sendDocumentFile = async (file: File) => {
-    if (sending || uploading) {
-      throw new Error('Another message is still sending.');
-    }
-
     if (file.size > 50 * 1024 * 1024) {
-      alert('File must be 50 MB or smaller.');
+      alert(`File "${file.name}" must be 50 MB or smaller.`);
       throw new Error('File too large');
     }
 
     const filename = file.name;
     setUploading(true);
-    setUploadStatus('Uploading file...');
+    setUploadStatus(`Uploading document ${filename}...`);
 
     try {
       const uploadResponse = await mediaApi.uploadMediaFile(conversationId, file);
-      setUploadStatus('Upload complete');
-
       await messageApi.sendMessage({
         conversationId,
         messageType: 'DOCUMENT',
@@ -130,8 +125,29 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     } catch (err: unknown) {
       console.error('[ConnectX] Document message failure:', err);
       const message = err instanceof Error ? err.message : 'Unknown error';
-      alert('Failed to send file: ' + message);
+      alert(`Failed to send file ${filename}: ` + message);
       throw err instanceof Error ? err : new Error(message);
+    } finally {
+      setUploadStatus(null);
+      setUploading(false);
+    }
+  };
+
+  const handleSendBatch = async (images: File[], docs: File[]) => {
+    if (sending || uploading) return;
+
+    setUploading(true);
+    try {
+      // Process images in deterministic selection sequence
+      for (let i = 0; i < images.length; i++) {
+        setUploadStatus(`Sending image ${i + 1} of ${images.length}...`);
+        await sendImageFile(images[i]);
+      }
+      // Process documents in deterministic selection sequence
+      for (let i = 0; i < docs.length; i++) {
+        setUploadStatus(`Sending document ${i + 1} of ${docs.length}...`);
+        await sendDocumentFile(docs[i]);
+      }
     } finally {
       setUploadStatus(null);
       setUploading(false);
@@ -188,28 +204,34 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     }
   };
 
-  const handleImageSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+  const handleImageSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(event.target.files || []);
     event.target.value = '';
-    if (!file) return;
+    if (selectedFiles.length === 0) return;
 
-    try {
-      await sendImageFile(file);
-    } catch {
-      // Error already surfaced to the user.
+    if (selectedFiles.length > 10) {
+      alert('Maximum 10 images can be sent at once.');
+      return;
     }
+
+    setPendingImages(selectedFiles);
+    setPendingDocs([]);
+    setShowBatchModal(true);
   };
 
-  const handleDocSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+  const handleDocSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(event.target.files || []);
     event.target.value = '';
-    if (!file) return;
+    if (selectedFiles.length === 0) return;
 
-    try {
-      await sendDocumentFile(file);
-    } catch {
-      // Error already surfaced to the user.
+    if (selectedFiles.length > 5) {
+      alert('Maximum 5 documents can be sent at once.');
+      return;
     }
+
+    setPendingDocs(selectedFiles);
+    setPendingImages([]);
+    setShowBatchModal(true);
   };
 
   const handleShareLocation = async () => {
@@ -284,12 +306,14 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             ref={fileInputRef}
             type="file"
             accept={MEDIA_IMAGE_ACCEPT}
+            multiple
             className="hidden"
             onChange={handleImageSelected}
           />
           <input
             ref={docInputRef}
             type="file"
+            multiple
             className="hidden"
             onChange={handleDocSelected}
           />
@@ -346,7 +370,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                     </span>
                     <span>
                       <span className="block font-medium">Image</span>
-                      <span className="block text-[11px] text-slate-400">Choose from gallery</span>
+                      <span className="block text-[11px] text-slate-400">Choose images (max 10)</span>
                     </span>
                   </button>
 
@@ -362,7 +386,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                     </span>
                     <span>
                       <span className="block font-medium">Document</span>
-                      <span className="block text-[11px] text-slate-400">Share any file</span>
+                      <span className="block text-[11px] text-slate-400">Share files (max 5)</span>
                     </span>
                   </button>
 
@@ -391,7 +415,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               type="text"
               value={text}
               onChange={(e) => setText(e.target.value)}
-              placeholder={uploading ? 'Uploading image...' : sharingLocation ? 'Sharing location...' : 'Type a message or add a caption...'}
+              placeholder={uploading ? 'Uploading media...' : sharingLocation ? 'Sharing location...' : 'Type a message or add a caption...'}
               className="w-full pl-4 md:pl-5 pr-10 md:pr-12 py-2.5 md:h-12 md:py-3 bg-slate-100 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700/80 rounded-full text-sm md:text-[15px] text-slate-900 dark:text-white placeholder-slate-400 outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 transition-all"
               disabled={busy}
             />
@@ -426,6 +450,15 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         onClose={() => setShowCamera(false)}
         onCaptureSend={handleCameraCaptureSend}
       />
+
+      {showBatchModal && (
+        <MediaBatchPreviewModal
+          initialImageFiles={pendingImages}
+          initialDocFiles={pendingDocs}
+          onClose={() => setShowBatchModal(false)}
+          onSendBatch={handleSendBatch}
+        />
+      )}
     </>
   );
 };

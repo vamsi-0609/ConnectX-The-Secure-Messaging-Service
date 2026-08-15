@@ -17,6 +17,11 @@ import { keyManager } from './crypto/keyManager';
 import { decryptMessage } from './crypto/decryption';
 import { ensureLocalCryptoDevice } from './crypto/deviceSession';
 import { applyTheme, isDarkTheme } from './utils/theme';
+import { soundManager } from './utils/notificationSound';
+import { browserNotifications } from './utils/browserNotifications';
+import { registerWebPushSubscription } from './utils/pushSubscription';
+import { NotificationToast, ToastNotificationData } from './components/common/NotificationToast';
+import { PWAInstallBanner } from './components/common/PWAInstallBanner';
 import { User, Conversation, Message, AuthResponse, ConversationPreview } from './types';
 import { MessageSquare, Plus } from 'lucide-react';
 import {
@@ -156,7 +161,7 @@ export const App: React.FC = () => {
   const [showDeviceModal, setShowDeviceModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
 
-  const { subscribe, reconnect } = useWebSocket();
+  const { subscribe, reconnect, status } = useWebSocket();
 
   const activeConversationRef = useRef<Conversation | null>(null);
   const activeConversationIdRef = useRef<number | null>(null);
@@ -174,6 +179,7 @@ export const App: React.FC = () => {
         next.delete(activeConversation.id);
         return next;
       });
+      wsClient.sendRead(activeConversation.id);
     }
   }, [activeConversation]);
 
@@ -186,6 +192,47 @@ export const App: React.FC = () => {
   useEffect(() => {
     conversationPreviewsRef.current = conversationPreviews;
   }, [conversationPreviews]);
+
+  const [currentToast, setCurrentToast] = useState<ToastNotificationData | null>(null);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => soundManager.isEnabled());
+
+  const handleToggleNotifications = () => {
+    const soundNext = soundManager.toggle();
+    browserNotifications.setEnabled(soundNext);
+    setNotificationsEnabled(soundNext);
+  };
+
+  const handleSelectToastConversation = (convId: number) => {
+    setCurrentToast(null);
+    const target = conversationsRef.current.find((c) => c.id === convId);
+    if (target) {
+      setActiveConversation(target);
+      setUnreadConversationIds((prev) => {
+        const next = new Set(prev);
+        next.delete(convId);
+        return next;
+      });
+    }
+  };
+
+  useEffect(() => {
+    const count = unreadConversationIds.size;
+    if (count > 0) {
+      document.title = `(${count}) ConnectX - Secure Messaging`;
+    } else {
+      document.title = 'ConnectX - Secure Messaging';
+    }
+  }, [unreadConversationIds]);
+
+  useEffect(() => {
+    if (currentUser) {
+      browserNotifications.requestPermission().then((granted) => {
+        if (granted) {
+          registerWebPushSubscription();
+        }
+      }).catch(() => {});
+    }
+  }, [currentUser]);
 
   useEffect(() => {
     applyTheme(isDarkMode);
@@ -311,6 +358,66 @@ export const App: React.FC = () => {
       loadConversations();
     }
   }, [currentUser, loadConversations]);
+
+  // ── P0-1: Reload conversations when WebSocket reconnects ──────────────────
+  // If the WS was dropped and reconnected, fetch fresh conversations to catch
+  // any messages that arrived while the socket was disconnected.
+  const prevWsStatusRef = useRef<string>('');
+  useEffect(() => {
+    const prev = prevWsStatusRef.current;
+    prevWsStatusRef.current = status;
+    // Only reload on a genuine reconnect (DISCONNECTED → CONNECTED)
+    if (prev === 'DISCONNECTED' && status === 'CONNECTED' && currentUser) {
+      console.log('[ConnectX] WebSocket reconnected — reloading conversations to catch missed messages.');
+      loadConversations();
+    }
+  }, [status, currentUser, loadConversations]);
+
+  // ── P0-5: Mobile back-button navigation ──────────────────────────────────
+  // Push a history entry when the user navigates to a sub-screen so the
+  // Android/iOS back button navigates within the app instead of exiting the PWA.
+  const isHandlingPopRef = useRef(false);
+
+  useEffect(() => {
+    const isSubScreen =
+      activeConversation !== null || showProfileModal || showSearchModal || showDeviceModal;
+
+    if (isSubScreen) {
+      // Push a synthetic history entry so there is something to pop back to
+      if (window.history.state?.connectxNav !== true) {
+        window.history.pushState({ connectxNav: true }, '');
+      }
+    }
+  }, [activeConversation, showProfileModal, showSearchModal, showDeviceModal]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      if (isHandlingPopRef.current) return;
+      isHandlingPopRef.current = true;
+
+      // Close the topmost screen in priority order
+      if (showDeviceModal) {
+        setShowDeviceModal(false);
+      } else if (showSearchModal) {
+        setShowSearchModal(false);
+      } else if (showProfileModal) {
+        setShowProfileModal(false);
+      } else if (activeConversation) {
+        setActiveConversation(null);
+      }
+      // Re-push so a second back still works if multiple layers are open
+      const stillSubScreen =
+        showDeviceModal || showSearchModal || showProfileModal || activeConversation !== null;
+      if (stillSubScreen) {
+        window.history.pushState({ connectxNav: true }, '');
+      }
+
+      requestAnimationFrame(() => { isHandlingPopRef.current = false; });
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [activeConversation, showProfileModal, showSearchModal, showDeviceModal]);
 
   const decryptSingleMessage = useCallback(
     async (msg: Message, userId: number, peerUserId?: number | null): Promise<Message> => {
@@ -442,7 +549,7 @@ export const App: React.FC = () => {
             const newMsg = messageFromWsPayload(payload as Record<string, unknown>);
             const peerUserId = getOtherParticipant(currentActive, currentUser.id)?.id;
             const processedMsg =
-              newMsg.messageType === 'IMAGE' || newMsg.messageType === 'LOCATION'
+              newMsg.messageType === 'IMAGE' || newMsg.messageType === 'LOCATION' || newMsg.messageType === 'DOCUMENT'
                 ? newMsg
                 : await decryptSingleMessage(newMsg, currentUser.id, peerUserId);
 
@@ -451,10 +558,15 @@ export const App: React.FC = () => {
               return sortMessages([...prev.filter((m) => m.conversationId === conversationId), processedMsg]);
             });
 
-            updatePreviewIfNewer(conversationId, previewFromMessage(processedMsg));
+            const preview = previewFromMessage(processedMsg);
+            updatePreviewIfNewer(conversationId, preview);
 
-            wsClient.send({ type: 'MESSAGE_DELIVERED', payload: { messageId: payload.messageId } });
-            wsClient.send({ type: 'MESSAGE_READ', payload: { messageId: payload.messageId } });
+            wsClient.sendDelivered(payload.messageId as number);
+            // Mark the whole conversation as read since we're actively viewing it
+            wsClient.sendRead(conversationId);
+
+            // Play incoming audio chime
+            soundManager.playIncomingMessageSound();
           } else {
             loadMessages(conversationId, 'merge');
           }
@@ -472,29 +584,74 @@ export const App: React.FC = () => {
             backgroundMsg.messageType === 'DOCUMENT'
               ? backgroundMsg
               : await decryptSingleMessage(backgroundMsg, currentUser.id, peerUserId);
-          updatePreviewIfNewer(conversationId, previewFromMessage(processedMsg));
+
+          const preview = previewFromMessage(processedMsg);
+          updatePreviewIfNewer(conversationId, preview);
 
           if (payload.senderUserId !== currentUser.id) {
             setUnreadConversationIds((prev) => new Set(prev).add(conversationId));
+            wsClient.sendDelivered(payload.messageId as number);
+
+            // Play incoming audio chime
+            soundManager.playIncomingMessageSound();
+
+            const senderName = (payload.senderUsername as string) || 'ConnectX User';
+            const senderAvatar = conv ? getOtherParticipant(conv, currentUser.id)?.profileImageUrl : undefined;
+
+            // Show In-App Toast Banner
+            setCurrentToast({
+              id: `toast-${msgId}-${Date.now()}`,
+              senderName,
+              senderAvatar,
+              messageText: preview.text,
+              conversationId,
+              timestamp: (payload.sentAt as string) || new Date().toISOString(),
+            });
+
+            // Show Browser Desktop System Push Notification
+            browserNotifications.showNotification(`New message from ${senderName}`, {
+              body: preview.text,
+              conversationId,
+              onClick: () => handleSelectToastConversation(conversationId),
+            });
           }
 
           if (conv) {
             upsertConversation({
               ...conv,
               lastMessageId: msgId,
-              lastMessageSentAt: payload.sentAt,
-              lastMessageSenderUserId: payload.senderUserId,
+              lastMessageSentAt: payload.sentAt as string,
+              lastMessageSenderUserId: payload.senderUserId as number,
               lastMessageType: (payload.messageType as Conversation['lastMessageType']) || 'TEXT',
               lastMessageCaption:
                 payload.messageType === 'LOCATION'
                   ? (payload.locationLabel as string | undefined)
                   : (payload.caption as string | undefined),
-              updatedAt: payload.sentAt,
+              updatedAt: payload.sentAt as string,
             });
           }
         }
 
         loadConversations();
+      } else if (event.type === 'READ_RECEIPT_UPDATE') {
+        const payload = event.payload as Record<string, unknown>;
+        const msgId = payload.messageId as number | undefined;
+        const convId = payload.conversationId as number | undefined;
+        const deliveredAt = payload.deliveredAt as string | undefined;
+        const readAt = payload.readAt as string | undefined;
+
+        setMessages((prev) =>
+          prev.map((msg) => {
+            if (msg.id === msgId || (convId && msg.conversationId === convId && msg.senderUserId === currentUser.id)) {
+              return {
+                ...msg,
+                deliveredAt: deliveredAt || msg.deliveredAt,
+                readAt: readAt || msg.readAt,
+              };
+            }
+            return msg;
+          })
+        );
       } else if (event.type === 'MESSAGE_ACK') {
         const conversationId = event.payload.conversationId as number;
         if (activeConversationRef.current?.id === conversationId) {
@@ -768,6 +925,34 @@ export const App: React.FC = () => {
     setActiveConversation((prev) => (prev ? updateMembers(prev) : null));
   }, []);
 
+  const handlePinConversation = async (conversationId: number) => {
+    try {
+      const updated = await conversationApi.pinConversation(conversationId);
+      upsertConversation(updated);
+      if (activeConversationRef.current?.id === conversationId) {
+        setActiveConversation(updated);
+      }
+      loadConversations();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to pin conversation';
+      alert(message);
+    }
+  };
+
+  const handleUnpinConversation = async (conversationId: number) => {
+    try {
+      const updated = await conversationApi.unpinConversation(conversationId);
+      upsertConversation(updated);
+      if (activeConversationRef.current?.id === conversationId) {
+        setActiveConversation(updated);
+      }
+      loadConversations();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to unpin conversation';
+      alert(message);
+    }
+  };
+
   const getRecipientUser = (conv: Conversation | null): User | null => {
     if (!conv || !currentUser) return null;
     return getOtherParticipant(conv, currentUser.id);
@@ -803,6 +988,8 @@ export const App: React.FC = () => {
             setShowProfileModal(true);
           }}
           onDeleteConversation={handleDeleteConversation}
+          onPinConversation={handlePinConversation}
+          onUnpinConversation={handleUnpinConversation}
         />
       </div>
 
@@ -900,6 +1087,14 @@ export const App: React.FC = () => {
       {showDeviceModal && (
         <DeviceManagerModal currentUser={currentUser} onClose={() => setShowDeviceModal(false)} />
       )}
+
+      <NotificationToast
+        toast={currentToast}
+        onDismiss={() => setCurrentToast(null)}
+        onClickToast={handleSelectToastConversation}
+      />
+
+      <PWAInstallBanner />
     </div>
   );
 };

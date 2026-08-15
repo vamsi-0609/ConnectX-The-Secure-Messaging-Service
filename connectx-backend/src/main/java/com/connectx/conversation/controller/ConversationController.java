@@ -60,4 +60,20 @@ public class ConversationController {
         conversationService.clearConversationForUser(currentUser.getId(), conversationId);
         return ResponseEntity.ok(ApiResponse.success("Conversation cleared for current user", "Cleared"));
     }
+
+    @PostMapping("/{conversationId}/pin")
+    public ResponseEntity<ApiResponse<ConversationDto>> pinConversation(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long conversationId) {
+        ConversationDto conversation = conversationService.pinConversation(currentUser.getId(), conversationId);
+        return ResponseEntity.ok(ApiResponse.success("Conversation pinned", conversation));
+    }
+
+    @PostMapping("/{conversationId}/unpin")
+    public ResponseEntity<ApiResponse<ConversationDto>> unpinConversation(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long conversationId) {
+        ConversationDto conversation = conversationService.unpinConversation(currentUser.getId(), conversationId);
+        return ResponseEntity.ok(ApiResponse.success("Conversation unpinned", conversation));
+    }
 }

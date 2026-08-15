@@ -18,6 +18,8 @@ public class ConversationDto {
     private boolean lastMessageDeletedForEveryone;
     private String lastMessageType;
     private String lastMessageCaption;
+    private boolean pinned;
+    private Instant pinnedAt;
 
     public ConversationDto() {}
 
@@ -121,5 +123,21 @@ public class ConversationDto {
 
     public void setLastMessageCaption(String lastMessageCaption) {
         this.lastMessageCaption = lastMessageCaption;
+    }
+
+    public boolean isPinned() {
+        return pinned;
+    }
+
+    public void setPinned(boolean pinned) {
+        this.pinned = pinned;
+    }
+
+    public Instant getPinnedAt() {
+        return pinnedAt;
+    }
+
+    public void setPinnedAt(Instant pinnedAt) {
+        this.pinnedAt = pinnedAt;
     }
 }

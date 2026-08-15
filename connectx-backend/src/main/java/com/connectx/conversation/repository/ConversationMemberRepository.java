@@ -23,6 +23,8 @@ public interface ConversationMemberRepository extends JpaRepository<Conversation
 
     long countByConversationIdAndDeletedAtIsNull(Long conversationId);
 
+    long countByUserIdAndPinnedTrueAndDeletedAtIsNull(Long userId);
+
     @org.springframework.data.jpa.repository.Modifying
     @org.springframework.data.jpa.repository.Query("DELETE FROM ConversationMember cm WHERE cm.conversation.id = :conversationId")
     void deleteByConversationId(@org.springframework.data.repository.query.Param("conversationId") Long conversationId);

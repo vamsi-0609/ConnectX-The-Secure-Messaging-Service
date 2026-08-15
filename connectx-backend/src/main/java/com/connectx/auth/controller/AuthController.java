@@ -49,4 +49,22 @@ public class AuthController {
         AuthResponse response = authService.refresh(refreshToken);
         return ResponseEntity.ok(ApiResponse.success("Token refreshed successfully", response));
     }
+
+    @PostMapping("/forgot-password/request-otp")
+    public ResponseEntity<ApiResponse<String>> requestForgotPasswordOtp(@Valid @RequestBody com.connectx.auth.dto.ForgotPasswordRequestDto request) {
+        authService.requestForgotPasswordOtp(request.getEmail());
+        return ResponseEntity.ok(ApiResponse.success("Verification code sent if email is registered", "OTP sent"));
+    }
+
+    @PostMapping("/forgot-password/verify-otp")
+    public ResponseEntity<ApiResponse<String>> verifyForgotPasswordOtp(@Valid @RequestBody com.connectx.auth.dto.VerifyOtpRequestDto request) {
+        authService.verifyForgotPasswordOtp(request.getEmail(), request.getOtpCode());
+        return ResponseEntity.ok(ApiResponse.success("Verification code verified successfully", "OTP verified"));
+    }
+
+    @PostMapping("/forgot-password/reset-password")
+    public ResponseEntity<ApiResponse<String>> resetPassword(@Valid @RequestBody com.connectx.auth.dto.ResetPasswordRequestDto request) {
+        authService.resetPasswordWithOtp(request.getEmail(), request.getOtpCode(), request.getNewPassword());
+        return ResponseEntity.ok(ApiResponse.success("Password reset successfully. You can now login with your new password.", "Password reset"));
+    }
 }

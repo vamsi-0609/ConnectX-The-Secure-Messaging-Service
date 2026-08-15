@@ -138,8 +138,8 @@ body {
 }
 
 @keyframes pulseCrypto {
-  0%, 100% { filter: drop-shadow(0 0 6px rgba(99, 102, 241, 0.4)); }
-  50% { filter: drop-shadow(0 0 16px rgba(236, 72, 153, 0.6)); }
+  0%, 100% { filter: drop-shadow(0 0 5px rgba(99, 102, 241, 0.35)); }
+  50%       { filter: drop-shadow(0 0 14px rgba(124, 58, 237, 0.55)); }
 }
 
 .animate-pop-in {
@@ -152,6 +152,15 @@ body {
 
 .animate-pulse-crypto {
   animation: pulseCrypto 3s infinite ease-in-out;
+}
+
+@keyframes slideUp {
+  from { transform: translateX(-50%) translateY(100%); opacity: 0; }
+  to   { transform: translateX(-50%) translateY(0);    opacity: 1; }
+}
+
+.animate-slide-up {
+  animation: slideUp 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 /* ── Desktop-only presentation (768px+) — mobile untouched ── */

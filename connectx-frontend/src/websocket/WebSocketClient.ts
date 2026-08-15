@@ -6,6 +6,8 @@ import { WsEvent, ConnectionStatus } from '../types';
 type MessageHandler = (event: WsEvent) => void;
 type StatusHandler = (status: ConnectionStatus) => void;
 
+const RECONNECT_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 30000];
+
 export class WebSocketClient {
   private stompClient: Client | null = null;
   private status: ConnectionStatus = 'DISCONNECTED';
@@ -13,10 +15,15 @@ export class WebSocketClient {
 
   private messageListeners: Set<MessageHandler> = new Set();
   private statusListeners: Set<StatusHandler> = new Set();
-  
+
   // Track active conversation IDs and active subscriptions
   private activeConversationIds: Set<number> = new Set();
   private conversationSubs: Map<number, StompSubscription> = new Map();
+
+  // Reconnect backoff state
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private isIntentionalDisconnect = false;
 
   constructor() {
     this.token = localStorage.getItem('connectx_token');
@@ -39,23 +46,26 @@ export class WebSocketClient {
       return;
     }
 
+    this.isIntentionalDisconnect = false;
     this.updateStatus('CONNECTING');
 
     const sockJsUrl = this.resolveSockJsUrl();
 
+    // Disable STOMP's built-in reconnect — we manage it ourselves with bounded backoff
     this.stompClient = new Client({
       webSocketFactory: () => new SockJS(sockJsUrl),
       connectHeaders: {
         Authorization: `Bearer ${this.token}`,
         token: this.token,
       },
-      reconnectDelay: 2000,
-      heartbeatIncoming: 10000,
-      heartbeatOutgoing: 10000,
+      reconnectDelay: 0, // We manage reconnect manually with bounded backoff
+      heartbeatIncoming: 20000,
+      heartbeatOutgoing: 20000,
     });
 
     this.stompClient.onConnect = () => {
       console.log('[ConnectX STOMP] Connected to backend STOMP broker');
+      this.reconnectAttempt = 0; // Reset backoff on successful connection
       this.updateStatus('CONNECTED');
 
       // Clear stale subscription references on new connection
@@ -94,9 +104,31 @@ export class WebSocketClient {
 
     this.stompClient.onWebSocketClose = () => {
       this.updateStatus('DISCONNECTED');
+      if (!this.isIntentionalDisconnect && this.token) {
+        this.scheduleReconnect();
+      }
     };
 
     this.stompClient.activate();
+  }
+
+  private scheduleReconnect() {
+    // Clear any existing pending reconnect timer
+    if (this.reconnectTimer != null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    const delayMs = RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)];
+    this.reconnectAttempt++;
+    console.log(`[ConnectX STOMP] Scheduling reconnect in ${delayMs}ms (attempt ${this.reconnectAttempt})`);
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.isIntentionalDisconnect && this.token) {
+        this.connect();
+      }
+    }, delayMs);
   }
 
   public subscribeToConversation(conversationId: number) {
@@ -132,6 +164,11 @@ export class WebSocketClient {
   }
 
   public disconnect() {
+    this.isIntentionalDisconnect = true;
+    if (this.reconnectTimer != null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.activeConversationIds.clear();
     this.conversationSubs.forEach((sub) => sub.unsubscribe());
     this.conversationSubs.clear();
@@ -142,6 +179,9 @@ export class WebSocketClient {
     this.updateStatus('DISCONNECTED');
   }
 
+  /**
+   * Send an encrypted TEXT message to /app/message.send
+   */
   public send(event: WsEvent): boolean {
     if (this.stompClient && this.stompClient.connected) {
       this.stompClient.publish({
@@ -151,6 +191,44 @@ export class WebSocketClient {
       return true;
     }
     console.warn('[ConnectX STOMP] Cannot send message - STOMP client is not connected');
+    return false;
+  }
+
+  /**
+   * Send a MESSAGE_READ event to the correct /app/message.read destination.
+   * Must NOT go through /app/message.send (which requires ciphertext).
+   */
+  public sendRead(conversationId: number): boolean {
+    if (this.stompClient && this.stompClient.connected) {
+      const event: WsEvent = {
+        type: 'MESSAGE_READ',
+        payload: { conversationId },
+      };
+      this.stompClient.publish({
+        destination: '/app/message.read',
+        body: JSON.stringify(event),
+      });
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Send a MESSAGE_DELIVERED event to the correct /app/message.delivered destination.
+   * Must NOT go through /app/message.send (which requires ciphertext).
+   */
+  public sendDelivered(messageId: number): boolean {
+    if (this.stompClient && this.stompClient.connected) {
+      const event: WsEvent = {
+        type: 'MESSAGE_DELIVERED',
+        payload: { messageId },
+      };
+      this.stompClient.publish({
+        destination: '/app/message.delivered',
+        body: JSON.stringify(event),
+      });
+      return true;
+    }
     return false;
   }
 

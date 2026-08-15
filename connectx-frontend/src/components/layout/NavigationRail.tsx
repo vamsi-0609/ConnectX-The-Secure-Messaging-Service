@@ -1,13 +1,16 @@
 import React from 'react';
-import { MessageSquare, Users, Laptop, Shield, LogOut, Sun, Moon } from 'lucide-react';
+import { MessageSquare, Users, Laptop, LogOut, Sun, Moon, Bell, BellOff } from 'lucide-react';
 import { User, ConnectionStatus } from '../../types';
+import { ConnectXLogo } from '../common/ConnectXLogo';
 
 interface NavigationRailProps {
   currentUser: User;
   activeTab: 'chats' | 'search' | 'devices';
   connectionStatus: ConnectionStatus;
   isDarkMode: boolean;
+  notificationsEnabled?: boolean;
   onToggleTheme: () => void;
+  onToggleNotifications?: () => void;
   onTabChange: (tab: 'chats' | 'search' | 'devices') => void;
   onLogout: () => void;
 }
@@ -17,7 +20,9 @@ export const NavigationRail: React.FC<NavigationRailProps> = ({
   activeTab,
   connectionStatus,
   isDarkMode,
+  notificationsEnabled = true,
   onToggleTheme,
+  onToggleNotifications,
   onTabChange,
   onLogout,
 }) => {
@@ -25,9 +30,9 @@ export const NavigationRail: React.FC<NavigationRailProps> = ({
     <div className="w-16 h-full bg-white dark:bg-slate-950 border-r border-slate-200 dark:border-slate-800/80 flex flex-col items-center justify-between py-4 z-20 flex-shrink-0 transition-colors duration-300">
       {/* Top Section: Logo & Navigation Options */}
       <div className="flex flex-col items-center gap-6">
-        {/* ConnectX Logo Icon */}
-        <div className="p-2.5 rounded-2xl bg-indigo-600/10 dark:bg-indigo-600/20 border border-indigo-500/30 text-indigo-600 dark:text-indigo-400 shadow-md">
-          <Shield className="w-6 h-6 animate-pulse-crypto" />
+        {/* ConnectX canonical brand icon */}
+        <div className="flex items-center justify-center">
+          <ConnectXLogo size="md" variant="gradient" />
         </div>
 
         {/* Navigation Action Buttons */}
@@ -79,8 +84,26 @@ export const NavigationRail: React.FC<NavigationRailProps> = ({
         </div>
       </div>
 
-      {/* Bottom Section: Theme Toggle, Connection Indicator, User Profile & Logout */}
+      {/* Bottom Section: Notifications, Theme Toggle, Connection Indicator, User Profile & Logout */}
       <div className="flex flex-col items-center gap-4">
+        {/* Notifications Switcher */}
+        {onToggleNotifications && (
+          <button
+            onClick={onToggleNotifications}
+            className="p-2.5 rounded-2xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:scale-105 transition-all relative group"
+            title={notificationsEnabled ? 'Mute Notifications & Sound' : 'Enable Notifications & Sound'}
+          >
+            {notificationsEnabled ? (
+              <Bell className="w-5 h-5 text-indigo-500" />
+            ) : (
+              <BellOff className="w-5 h-5 text-slate-400" />
+            )}
+            <span className="absolute left-16 bg-slate-900 text-white text-xs font-semibold px-2.5 py-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-md z-30">
+              {notificationsEnabled ? 'Notifications On' : 'Notifications Muted'}
+            </span>
+          </button>
+        )}
+
         {/* Light / Dark Mode Switcher */}
         <button
           onClick={onToggleTheme}

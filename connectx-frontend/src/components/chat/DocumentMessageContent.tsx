@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Loader2, FileText, Download, FileArchive, File as FileIcon } from 'lucide-react';
+import { Loader2, FileText, Download, ExternalLink, FileArchive, File as FileIcon } from 'lucide-react';
 import { mediaApi } from '../../api/mediaApi';
 
 interface DocumentMessageContentProps {
@@ -20,22 +20,22 @@ function formatBytes(bytes?: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-function getFileIcon(mimeType?: string, filename?: string) {
+function getFileBadge(mimeType?: string, filename?: string) {
   const name = (filename || '').toLowerCase();
   const type = (mimeType || '').toLowerCase();
   if (type.includes('pdf') || name.endsWith('.pdf')) {
-    return <FileText className="h-8 w-8 text-rose-400" />;
+    return { icon: <FileText className="h-8 w-8 text-rose-400" />, label: 'PDF DOCUMENT', badgeBg: 'bg-rose-500/15 text-rose-300 border-rose-500/30' };
   }
   if (type.includes('zip') || type.includes('tar') || type.includes('rar') || name.endsWith('.zip') || name.endsWith('.rar') || name.endsWith('.7z')) {
-    return <FileArchive className="h-8 w-8 text-amber-400" />;
+    return { icon: <FileArchive className="h-8 w-8 text-amber-400" />, label: 'ARCHIVE', badgeBg: 'bg-amber-500/15 text-amber-300 border-amber-500/30' };
   }
   if (type.includes('word') || type.includes('office') || name.endsWith('.doc') || name.endsWith('.docx')) {
-    return <FileText className="h-8 w-8 text-blue-400" />;
+    return { icon: <FileText className="h-8 w-8 text-blue-400" />, label: 'WORD DOCUMENT', badgeBg: 'bg-blue-500/15 text-blue-300 border-blue-500/30' };
   }
   if (type.includes('excel') || type.includes('sheet') || name.endsWith('.xls') || name.endsWith('.xlsx')) {
-    return <FileText className="h-8 w-8 text-emerald-400" />;
+    return { icon: <FileText className="h-8 w-8 text-emerald-400" />, label: 'SPREADSHEET', badgeBg: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' };
   }
-  return <FileIcon className="h-8 w-8 text-indigo-400" />;
+  return { icon: <FileIcon className="h-8 w-8 text-indigo-400" />, label: 'DOCUMENT', badgeBg: 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30' };
 }
 
 export const DocumentMessageContent: React.FC<DocumentMessageContentProps> = ({
@@ -51,14 +51,16 @@ export const DocumentMessageContent: React.FC<DocumentMessageContentProps> = ({
   const [downloading, setDownloading] = useState(false);
 
   const filename = caption || 'Document';
+  const badgeInfo = getFileBadge(mimeType, filename);
 
-  const handleOpen = async () => {
+  const handleOpen = async (e: React.MouseEvent) => {
+    e.stopPropagation();
     if (!mediaId || loading || downloading) return;
     setLoading(true);
     try {
       const url = await mediaApi.getMediaObjectUrl(mediaId);
       window.open(url, '_blank');
-    } catch (err) {
+    } catch {
       alert('Failed to open document');
     } finally {
       setLoading(false);
@@ -79,7 +81,7 @@ export const DocumentMessageContent: React.FC<DocumentMessageContentProps> = ({
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-    } catch (err) {
+    } catch {
       alert('Failed to download document');
     } finally {
       setDownloading(false);
@@ -88,48 +90,58 @@ export const DocumentMessageContent: React.FC<DocumentMessageContentProps> = ({
 
   return (
     <div
-      onClick={handleOpen}
-      className={`flex flex-col p-3 rounded-2xl border cursor-pointer select-none transition-all active:scale-[0.98] min-w-[220px] max-w-[280px] ${
+      className={`flex flex-col p-3 rounded-2xl border select-none transition-all shadow-md min-w-[240px] max-w-[300px] ${
         isSelf
-          ? 'bg-gradient-to-br from-indigo-600 to-violet-600 text-white border-indigo-500/20'
-          : 'bg-slate-800/95 border border-slate-700/50 text-slate-100'
+          ? 'bg-gradient-to-br from-indigo-600 to-violet-600 text-white border-indigo-400/30'
+          : 'bg-slate-800/95 border border-slate-700/60 text-slate-100'
       }`}
     >
-      <div className="flex items-center gap-3">
-        <div className="flex-shrink-0">
-          {loading ? (
-            <Loader2 className="h-8 w-8 animate-spin text-indigo-400" />
-          ) : (
-            getFileIcon(mimeType, filename)
-          )}
+      <div className="flex items-start gap-3">
+        <div className="flex-shrink-0 p-2 rounded-xl bg-slate-900/40 border border-slate-700/30">
+          {loading ? <Loader2 className="h-8 w-8 animate-spin text-indigo-300" /> : badgeInfo.icon}
         </div>
 
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium truncate pr-2" title={filename}>
+          <div className={`inline-block px-2 py-0.5 rounded text-[9px] font-semibold tracking-wider border mb-1 ${badgeInfo.badgeBg}`}>
+            {badgeInfo.label}
+          </div>
+          <p className="text-sm font-semibold truncate pr-1" title={filename}>
             {filename}
           </p>
-          <p className={`text-[10px] mt-0.5 font-mono ${isSelf ? 'text-indigo-200/95' : 'text-slate-400/95'}`}>
+          <p className={`text-[11px] font-mono mt-0.5 ${isSelf ? 'text-indigo-200/90' : 'text-slate-400'}`}>
             {formatBytes(fileSizeBytes)}
           </p>
         </div>
+      </div>
 
-        <div className="flex-shrink-0">
-          <button
-            type="button"
-            onClick={handleDownload}
-            disabled={downloading}
-            className={`p-2 rounded-lg hover:bg-black/15 transition-colors disabled:opacity-50 ${
-              isSelf ? 'text-indigo-200 hover:text-white' : 'text-slate-400 hover:text-white'
-            }`}
-            title="Download document"
-          >
-            {downloading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Download className="h-4 w-4" />
-            )}
-          </button>
-        </div>
+      <div className="mt-3 pt-2.5 border-t border-white/10 flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={handleOpen}
+          disabled={loading || downloading}
+          className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors ${
+            isSelf
+              ? 'bg-white/15 hover:bg-white/25 text-white'
+              : 'bg-slate-700/80 hover:bg-slate-700 text-slate-100'
+          } disabled:opacity-50`}
+        >
+          {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ExternalLink className="h-3.5 w-3.5" />}
+          Open
+        </button>
+
+        <button
+          type="button"
+          onClick={handleDownload}
+          disabled={loading || downloading}
+          className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors ${
+            isSelf
+              ? 'bg-white/15 hover:bg-white/25 text-white'
+              : 'bg-indigo-600/80 hover:bg-indigo-600 text-white'
+          } disabled:opacity-50`}
+        >
+          {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+          Download
+        </button>
       </div>
 
       <div className={`mt-2 flex items-center justify-end gap-1 ${isSelf ? 'text-indigo-200/80' : 'text-slate-400'}`}>

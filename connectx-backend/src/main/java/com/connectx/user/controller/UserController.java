@@ -49,6 +49,25 @@ public class UserController {
         return ResponseEntity.ok(ApiResponse.success("Profile updated successfully", updatedUser));
     }
 
+    @PostMapping("/me/email/request-otp")
+    public ResponseEntity<ApiResponse<String>> requestEmailChangeOtp(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @RequestBody java.util.Map<String, String> body) {
+        String newEmail = body.get("newEmail");
+        userService.requestEmailChangeOtp(currentUser.getId(), newEmail);
+        return ResponseEntity.ok(ApiResponse.success("Verification code sent to new email", "OTP sent"));
+    }
+
+    @PostMapping("/me/email/verify-otp")
+    public ResponseEntity<ApiResponse<UserDto>> verifyEmailChangeOtp(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @RequestBody java.util.Map<String, String> body) {
+        String newEmail = body.get("newEmail");
+        String otpCode = body.get("otpCode");
+        UserDto updatedUser = userService.verifyEmailChangeOtp(currentUser.getId(), newEmail, otpCode);
+        return ResponseEntity.ok(ApiResponse.success("Email address updated successfully", updatedUser));
+    }
+
     @PostMapping(value = "/me/profile-photo", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<ApiResponse<UserDto>> uploadProfilePhoto(
             @AuthenticationPrincipal UserPrincipal currentUser,

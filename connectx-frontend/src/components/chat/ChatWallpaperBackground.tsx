@@ -21,10 +21,10 @@ export const ChatWallpaperBackground: React.FC<ChatWallpaperBackgroundProps> = (
       {/* Wallpaper image layer (renders only when preset or custom wallpaper is chosen) */}
       {imageUrl && (
         <div
-          className="absolute inset-0 bg-cover bg-center bg-no-repeat"
+          className="absolute inset-0 bg-cover bg-center bg-no-repeat transition-opacity duration-300"
           style={{
             backgroundImage: `url("${imageUrl}")`,
-            opacity: isDarkMode ? 0.18 : 0.24,
+            opacity: isDarkMode ? 0.38 : 0.28,
           }}
         />
       )}

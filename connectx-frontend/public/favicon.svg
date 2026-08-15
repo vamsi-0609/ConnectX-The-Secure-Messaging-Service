@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none">
+  <defs>
+    <linearGradient id="cx-fav-grad" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+  <!-- Squircle container matching Logo 1 -->
+  <rect width="32" height="32" rx="9" fill="url(#cx-fav-grad)"/>
+  <!-- Clean white shield outline matching Logo 1 -->
+  <path d="M16 25C16 25 23 21 23 15V8.5L16 6L9 8.5V15C9 21 16 25 16 25Z" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

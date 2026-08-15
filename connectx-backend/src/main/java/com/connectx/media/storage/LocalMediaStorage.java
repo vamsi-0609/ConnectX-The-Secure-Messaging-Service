@@ -8,26 +8,17 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
-import javax.imageio.ImageIO;
-import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Locale;
-import java.util.Set;
 
 @Service
 public class LocalMediaStorage implements MediaStorage {
 
-    private static final long MAX_BYTES = 10L * 1024L * 1024L;
-    private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of(
-            "image/jpeg",
-            "image/jpg",
-            "image/png",
-            "image/webp"
-    );
+    private static final long MAX_BYTES = 50L * 1024L * 1024L;
 
     private final Path rootDirectory;
 
@@ -44,8 +35,26 @@ public class LocalMediaStorage implements MediaStorage {
     public StoredMediaFile store(String storageKey, MultipartFile file) {
         validateUpload(file);
 
-        String contentType = normalizeContentType(file.getContentType());
-        String extension = extensionForContentType(contentType);
+        String rawContentType = file.getContentType();
+        String contentType = normalizeContentType(rawContentType);
+        if (contentType.isBlank() || contentType.equals("application/octet-stream")) {
+            String originalName = file.getOriginalFilename();
+            if (originalName != null) {
+                String lower = originalName.toLowerCase(Locale.ROOT);
+                if (lower.endsWith(".docx")) {
+                    contentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+                } else if (lower.endsWith(".doc")) {
+                    contentType = "application/msword";
+                } else if (lower.endsWith(".pdf")) {
+                    contentType = "application/pdf";
+                }
+            }
+            if (contentType.isBlank()) {
+                contentType = "application/octet-stream";
+            }
+        }
+
+        String extension = resolveFileExtension(file.getOriginalFilename(), contentType);
         Path target = resolveStoragePath(storageKey, extension);
 
         try {
@@ -62,21 +71,21 @@ public class LocalMediaStorage implements MediaStorage {
 
     @Override
     public Resource load(String storageKey, String mimeType) {
-        Path imagePath = resolveExistingPath(storageKey, mimeType);
-        if (imagePath == null || !Files.isRegularFile(imagePath)) {
+        Path mediaPath = resolveExistingPath(storageKey, mimeType);
+        if (mediaPath == null || !Files.isRegularFile(mediaPath)) {
             throw new ApiException(HttpStatus.NOT_FOUND, "MEDIA_NOT_FOUND", "Media file was not found");
         }
-        return new FileSystemResource(imagePath);
+        return new FileSystemResource(mediaPath);
     }
 
     @Override
     public void delete(String storageKey, String mimeType) {
-        Path imagePath = resolveExistingPath(storageKey, mimeType);
-        if (imagePath == null) {
+        Path mediaPath = resolveExistingPath(storageKey, mimeType);
+        if (mediaPath == null) {
             return;
         }
         try {
-            Files.deleteIfExists(imagePath);
+            Files.deleteIfExists(mediaPath);
         } catch (IOException ex) {
             throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "MEDIA_DELETE_FAILED", "Failed to delete media file");
         }
@@ -87,21 +96,7 @@ public class LocalMediaStorage implements MediaStorage {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_MEDIA", "Media file is required");
         }
         if (file.getSize() > MAX_BYTES) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "MEDIA_TOO_LARGE", "Image must be 10 MB or smaller");
-        }
-
-        String contentType = normalizeContentType(file.getContentType());
-        if (!ALLOWED_CONTENT_TYPES.contains(contentType)) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_MEDIA_TYPE", "Only JPG, PNG, and WEBP images are allowed");
-        }
-
-        try (InputStream inputStream = file.getInputStream()) {
-            BufferedImage image = ImageIO.read(inputStream);
-            if (image == null) {
-                throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_MEDIA", "Uploaded file is not a valid image");
-            }
-        } catch (IOException ex) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_MEDIA", "Uploaded file is not a valid image");
+            throw new ApiException(HttpStatus.BAD_REQUEST, "MEDIA_TOO_LARGE", "File must be 50 MB or smaller");
         }
     }
 
@@ -110,7 +105,8 @@ public class LocalMediaStorage implements MediaStorage {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_MEDIA", "Invalid media storage key");
         }
 
-        Path target = rootDirectory.resolve(storageKey + "." + extension).normalize();
+        String fileName = (extension == null || extension.isBlank()) ? storageKey : (storageKey + "." + extension);
+        Path target = rootDirectory.resolve(fileName).normalize();
         if (!target.startsWith(rootDirectory)) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_MEDIA", "Invalid media storage path");
         }
@@ -118,21 +114,25 @@ public class LocalMediaStorage implements MediaStorage {
     }
 
     private Path resolveExistingPath(String storageKey, String mimeType) {
-        for (String extension : extensionsForMimeType(mimeType)) {
-            Path candidate = resolveStoragePath(storageKey, extension);
-            if (Files.isRegularFile(candidate)) {
-                return candidate;
-            }
+        if (storageKey == null || storageKey.isBlank() || storageKey.contains("..") || storageKey.contains("/")) {
+            return null;
         }
-        return null;
-    }
 
-    private String[] extensionsForMimeType(String mimeType) {
-        return switch (normalizeContentType(mimeType)) {
-            case "image/png" -> new String[] { "png" };
-            case "image/webp" -> new String[] { "webp" };
-            default -> new String[] { "jpg", "jpeg" };
-        };
+        Path exactPath = rootDirectory.resolve(storageKey).normalize();
+        if (exactPath.startsWith(rootDirectory) && Files.isRegularFile(exactPath)) {
+            return exactPath;
+        }
+
+        try (var stream = Files.newDirectoryStream(rootDirectory, storageKey + ".*")) {
+            for (Path entry : stream) {
+                if (entry.startsWith(rootDirectory) && Files.isRegularFile(entry)) {
+                    return entry;
+                }
+            }
+        } catch (IOException ignored) {
+        }
+
+        return null;
     }
 
     private String normalizeContentType(String contentType) {
@@ -142,11 +142,24 @@ public class LocalMediaStorage implements MediaStorage {
         return contentType.toLowerCase(Locale.ROOT).split(";")[0].trim();
     }
 
-    private String extensionForContentType(String contentType) {
+    private String resolveFileExtension(String originalFilename, String contentType) {
+        if (originalFilename != null && originalFilename.contains(".")) {
+            String ext = originalFilename.substring(originalFilename.lastIndexOf('.') + 1).toLowerCase(Locale.ROOT).trim();
+            if (ext.matches("^[a-z0-9]{1,10}$")) {
+                return ext;
+            }
+        }
         return switch (contentType) {
             case "image/png" -> "png";
             case "image/webp" -> "webp";
-            default -> "jpg";
+            case "image/gif" -> "gif";
+            case "image/jpeg", "image/jpg" -> "jpg";
+            case "application/pdf" -> "pdf";
+            case "text/plain" -> "txt";
+            case "application/zip" -> "zip";
+            case "video/mp4" -> "mp4";
+            case "audio/mpeg" -> "mp3";
+            default -> "bin";
         };
     }
 }

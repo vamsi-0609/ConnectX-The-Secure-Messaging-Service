@@ -22,6 +22,8 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
   const prevMessageCountRef = useRef(0);
   const isNearBottomRef = useRef(true);
 
+  const contentWrapperRef = useRef<HTMLDivElement>(null);
+
   const groups = useMemo(
     () => buildMessageGroups(messages, currentUserId),
     [messages, currentUserId]
@@ -30,9 +32,20 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     const container = scrollContainerRef.current;
     if (!container) return;
-    container.scrollTo({
-      top: container.scrollHeight,
-      behavior,
+    const performScroll = () => {
+      const maxScroll = container.scrollHeight - container.clientHeight;
+      container.scrollTo({
+        top: Math.max(0, maxScroll),
+        behavior,
+      });
+    };
+
+    performScroll();
+    requestAnimationFrame(() => {
+      performScroll();
+      requestAnimationFrame(() => {
+        performScroll();
+      });
     });
   }, []);
 
@@ -41,9 +54,23 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
     if (!container) return;
     const { scrollTop, scrollHeight, clientHeight } = container;
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-    isNearBottomRef.current = distanceFromBottom < 120;
+    isNearBottomRef.current = distanceFromBottom < 100;
     setShowScrollBottomBtn(distanceFromBottom > 150);
   };
+
+  useEffect(() => {
+    const container = contentWrapperRef.current;
+    if (!container) return;
+
+    const observer = new ResizeObserver(() => {
+      if (isNearBottomRef.current) {
+        scrollToBottom('auto');
+      }
+    });
+
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [scrollToBottom]);
 
   useEffect(() => {
     const isNewMessageAdded = messages.length > prevMessageCountRef.current;
@@ -64,7 +91,7 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
         className="message-scroll h-full overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-2 md:px-8 md:py-3 lg:px-12 xl:px-16"
       >
         {/* Mobile: unchanged narrow wrapper. Desktop: full chat width, top-aligned flow */}
-        <div className="max-w-3xl mx-auto w-full pb-1 md:max-w-none md:mx-0 flex flex-col justify-start">
+        <div ref={contentWrapperRef} className="max-w-3xl mx-auto w-full pb-1 md:max-w-none md:mx-0 flex flex-col justify-start">
           {messages.length > 0 && (
             <div className="flex justify-center mb-3 md:mb-4">
               <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 md:px-3 md:py-1 rounded-full bg-slate-900/60 border border-indigo-500/15 text-[10px] md:text-[11px] text-indigo-200/70">

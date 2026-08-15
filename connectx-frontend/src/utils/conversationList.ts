@@ -155,3 +155,11 @@ export function previewFromServerConversation(conv: Conversation): ConversationP
     senderUserId: conv.lastMessageSenderUserId ?? 0,
   };
 }
+
+export function isConversationPinned(conv: Conversation, currentUserId?: number): boolean {
+  if (conv.pinned) return true;
+  if (!currentUserId || !conv.members?.length) return false;
+  const userMember = conv.members.find((m) => m.user?.id === currentUserId);
+  return Boolean(userMember?.pinned);
+}
+

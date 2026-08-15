@@ -40,6 +40,8 @@ export interface ConversationMember {
   user: User;
   joinedAt: string;
   lastReadMessageId?: number;
+  pinned?: boolean;
+  pinnedAt?: string;
 }
 
 export type MessageType = 'TEXT' | 'IMAGE' | 'LOCATION' | 'DOCUMENT';
@@ -56,6 +58,8 @@ export interface Conversation {
   lastMessageDeletedForEveryone?: boolean;
   lastMessageType?: MessageType;
   lastMessageCaption?: string;
+  pinned?: boolean;
+  pinnedAt?: string;
 }
 
 export interface ConversationPreview {
@@ -115,6 +119,7 @@ export interface WsEvent<T = any> {
     | 'MESSAGE_RECEIVED'
     | 'MESSAGE_DELIVERED'
     | 'MESSAGE_READ'
+    | 'READ_RECEIPT_UPDATE'
     | 'CONVERSATION_DELETED'
     | 'CONVERSATION_RESTORED'
     | 'CONVERSATION_CLEARED';

@@ -137,10 +137,15 @@ public class ConversationService {
                 .map(ConversationMemberDto::fromEntity)
                 .collect(Collectors.toList()));
 
-        Instant clearedAfter = conversationMemberRepository
+        ConversationMember currentMember = conversationMemberRepository
                 .findByConversationIdAndUserId(conversation.getId(), currentUserId)
-                .map(ConversationMember::getClearedAt)
                 .orElse(null);
+        if (currentMember != null) {
+            dto.setPinned(currentMember.isPinned());
+            dto.setPinnedAt(currentMember.getPinnedAt());
+        }
+
+        Instant clearedAfter = currentMember != null ? currentMember.getClearedAt() : null;
 
         List<Message> latestMessages = messageRepository.findLatestMessageInConversation(
                 conversation.getId(),
@@ -166,6 +171,46 @@ public class ConversationService {
             }
         }
         return dto;
+    }
+
+    @Transactional
+    public ConversationDto pinConversation(Long currentUserId, Long conversationId) {
+        ConversationMember member = conversationMemberRepository.findByConversationIdAndUserId(conversationId, currentUserId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
+
+        if (member.getDeletedAt() != null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found");
+        }
+
+        if (!member.isPinned()) {
+            long pinnedCount = conversationMemberRepository.countByUserIdAndPinnedTrueAndDeletedAtIsNull(currentUserId);
+            if (pinnedCount >= 2) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "PIN_LIMIT_EXCEEDED", "You can pin up to 2 chats.");
+            }
+            member.setPinned(true);
+            member.setPinnedAt(Instant.now());
+            conversationMemberRepository.save(member);
+        }
+
+        Conversation conversation = conversationRepository.findById(conversationId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
+        return enrichConversationDto(conversation, currentUserId);
+    }
+
+    @Transactional
+    public ConversationDto unpinConversation(Long currentUserId, Long conversationId) {
+        ConversationMember member = conversationMemberRepository.findByConversationIdAndUserId(conversationId, currentUserId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
+
+        if (member.isPinned()) {
+            member.setPinned(false);
+            member.setPinnedAt(null);
+            conversationMemberRepository.save(member);
+        }
+
+        Conversation conversation = conversationRepository.findById(conversationId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
+        return enrichConversationDto(conversation, currentUserId);
     }
 
     /**

@@ -107,9 +107,15 @@ public class WebSocketMessageController {
 
     @MessageMapping("/message.read")
     public void handleMessageRead(@Payload WsEvent event, Principal principal) {
-        if (event.getPayload() != null && event.getPayload().containsKey("messageId")) {
-            Long messageId = ((Number) event.getPayload().get("messageId")).longValue();
-            messageService.markRead(messageId);
+        Long currentUserId = resolveCurrentUserId(principal);
+        if (event.getPayload() != null) {
+            if (event.getPayload().containsKey("conversationId") && currentUserId != null) {
+                Long conversationId = ((Number) event.getPayload().get("conversationId")).longValue();
+                messageService.markConversationAsRead(conversationId, currentUserId);
+            } else if (event.getPayload().containsKey("messageId")) {
+                Long messageId = ((Number) event.getPayload().get("messageId")).longValue();
+                messageService.markRead(messageId);
+            }
         }
     }
 }

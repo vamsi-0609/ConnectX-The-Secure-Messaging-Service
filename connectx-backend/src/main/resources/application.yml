@@ -24,8 +24,19 @@ spring:
       path: /h2-console
   servlet:
     multipart:
-      max-file-size: 16MB
-      max-request-size: 18MB
+      max-file-size: 50MB
+      max-request-size: 55MB
+  mail:
+    host: ${SPRING_MAIL_HOST:smtp.gmail.com}
+    port: ${SPRING_MAIL_PORT:587}
+    username: ${SPRING_MAIL_USERNAME:vamsi8202@gmail.com}
+    password: ${SPRING_MAIL_PASSWORD:cdix pnoo iusq dtvi}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
 
 connectx:
   jwt:
@@ -37,6 +48,12 @@ connectx:
   upload:
     profile-dir: ${CONNECTX_PROFILE_UPLOAD_DIR:uploads/profiles}
     media-dir: ${CONNECTX_MEDIA_UPLOAD_DIR:uploads/media}
+  mail:
+    from: ${CONNECTX_MAIL_FROM:vamsi8202@gmail.com}
+  push:
+    vapid:
+      private-key: ${CONNECTX_VAPID_PRIVATE_KEY:MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQg2akBQxMTkOw9tYGxJD8AB5DCoWDVBC8n45IH9IQ/NVegCgYIKoZIzj0DAQehRANCAAQs7vaQAhsdG1ZcfzWDGalHuuBJydidRU5uiewJB/3iwVLvM12w+kzFXmFXht9xY/gMplGaH2GGHiBXNuH40Bgd}
+      public-key: ${CONNECTX_VAPID_PUBLIC_KEY:MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAELO72kAIbHRtWXH81gxmpR7rgScnYnUVObonsCQf94sFS7zNdsPpMxV5hV4bfcWP4DKZRmh9hhh4gVzbh+NAYHQ==}
 
 logging:
   level:

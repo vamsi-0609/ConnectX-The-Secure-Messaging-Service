@@ -34,6 +34,12 @@ public class ConversationMember {
     @Column(name = "last_read_message_id")
     private Long lastReadMessageId;
 
+    @Column(name = "is_pinned", nullable = false)
+    private boolean pinned = false;
+
+    @Column(name = "pinned_at")
+    private Instant pinnedAt;
+
     @PrePersist
     protected void onCreate() {
         this.joinedAt = Instant.now();
@@ -100,5 +106,21 @@ public class ConversationMember {
 
     public void setLastReadMessageId(Long lastReadMessageId) {
         this.lastReadMessageId = lastReadMessageId;
+    }
+
+    public boolean isPinned() {
+        return pinned;
+    }
+
+    public void setPinned(boolean pinned) {
+        this.pinned = pinned;
+    }
+
+    public Instant getPinnedAt() {
+        return pinnedAt;
+    }
+
+    public void setPinnedAt(Instant pinnedAt) {
+        this.pinnedAt = pinnedAt;
     }
 }

@@ -48,6 +48,7 @@ public class MessageService {
     private final MessageMediaRepository messageMediaRepository;
     private final SimpMessagingTemplate messagingTemplate;
     private final AfterCommitExecutor afterCommitExecutor;
+    private final com.connectx.push.service.WebPushService webPushService;
 
     public MessageService(MessageRepository messageRepository,
                           MessageUserStateRepository messageUserStateRepository,
@@ -59,7 +60,8 @@ public class MessageService {
                           MediaService mediaService,
                           MessageMediaRepository messageMediaRepository,
                           SimpMessagingTemplate messagingTemplate,
-                          AfterCommitExecutor afterCommitExecutor) {
+                          AfterCommitExecutor afterCommitExecutor,
+                          com.connectx.push.service.WebPushService webPushService) {
         this.messageRepository = messageRepository;
         this.messageUserStateRepository = messageUserStateRepository;
         this.conversationRepository = conversationRepository;
@@ -71,6 +73,7 @@ public class MessageService {
         this.messageMediaRepository = messageMediaRepository;
         this.messagingTemplate = messagingTemplate;
         this.afterCommitExecutor = afterCommitExecutor;
+        this.webPushService = webPushService;
     }
 
     @Transactional
@@ -216,6 +219,17 @@ public class MessageService {
             for (ConversationMember member : allMembers) {
                 if (member.getUser() != null) {
                     messagingTemplate.convertAndSendToUser(member.getUser().getUsername(), "/queue/messages", recvEvent);
+
+                    if (!member.getUser().getId().equals(currentUserId)) {
+                        String pushTitle = "New message from " + currentUser.getUsername();
+                        String pushBody = switch (savedMessage.getMessageType()) {
+                            case IMAGE -> "📷 Photo";
+                            case LOCATION -> "📍 Location";
+                            case DOCUMENT -> "📄 " + (savedMessage.getCaption() != null ? savedMessage.getCaption() : "Document");
+                            default -> "Sent you a message";
+                        };
+                        webPushService.sendPushToUserAsync(member.getUser().getId(), pushTitle, pushBody, conversation.getId());
+                    }
                 }
             }
 
@@ -302,8 +316,22 @@ public class MessageService {
     public void markDelivered(Long messageId) {
         messageRepository.findById(messageId).ifPresent(m -> {
             if (m.getDeliveredAt() == null) {
-                m.setDeliveredAt(Instant.now());
+                Instant now = Instant.now();
+                m.setDeliveredAt(now);
                 messageRepository.save(m);
+
+                if (m.getSenderUser() != null) {
+                    Map<String, Object> payload = new HashMap<>();
+                    payload.put("messageId", m.getId());
+                    payload.put("conversationId", m.getConversation().getId());
+                    payload.put("deliveredAt", now.toString());
+                    payload.put("readAt", m.getReadAt() != null ? m.getReadAt().toString() : null);
+
+                    WsEvent event = WsEvent.of("READ_RECEIPT_UPDATE", payload);
+                    afterCommitExecutor.runAfterCommit(() -> {
+                        messagingTemplate.convertAndSendToUser(m.getSenderUser().getUsername(), "/queue/messages", event);
+                    });
+                }
             }
         });
     }
@@ -312,14 +340,78 @@ public class MessageService {
     public void markRead(Long messageId) {
         messageRepository.findById(messageId).ifPresent(m -> {
             Instant now = Instant.now();
+            boolean updated = false;
             if (m.getDeliveredAt() == null) {
                 m.setDeliveredAt(now);
+                updated = true;
             }
             if (m.getReadAt() == null) {
                 m.setReadAt(now);
+                updated = true;
             }
-            messageRepository.save(m);
+            if (updated) {
+                messageRepository.save(m);
+
+                if (m.getSenderUser() != null) {
+                    Map<String, Object> payload = new HashMap<>();
+                    payload.put("messageId", m.getId());
+                    payload.put("conversationId", m.getConversation().getId());
+                    payload.put("deliveredAt", m.getDeliveredAt().toString());
+                    payload.put("readAt", m.getReadAt().toString());
+
+                    WsEvent event = WsEvent.of("READ_RECEIPT_UPDATE", payload);
+                    afterCommitExecutor.runAfterCommit(() -> {
+                        messagingTemplate.convertAndSendToUser(m.getSenderUser().getUsername(), "/queue/messages", event);
+                    });
+                }
+            }
         });
+    }
+
+    @Transactional
+    public void markConversationAsRead(Long conversationId, Long currentUserId) {
+        // Fetch only the unread messages from other users — avoids loading the entire conversation history
+        List<Message> unreadMessages = messageRepository.findUnreadMessagesFromOthersInConversation(conversationId, currentUserId);
+        if (unreadMessages.isEmpty()) {
+            return;
+        }
+
+        Instant now = Instant.now();
+        Map<String, List<Map<String, Object>>> senderUpdates = new HashMap<>();
+
+        for (Message m : unreadMessages) {
+            boolean updated = false;
+            if (m.getDeliveredAt() == null) {
+                m.setDeliveredAt(now);
+                updated = true;
+            }
+            if (m.getReadAt() == null) {
+                m.setReadAt(now);
+                updated = true;
+            }
+            if (updated) {
+                messageRepository.save(m);
+
+                String senderUsername = m.getSenderUser().getUsername();
+                senderUpdates.computeIfAbsent(senderUsername, k -> new ArrayList<>()).add(Map.of(
+                        "messageId", m.getId(),
+                        "conversationId", conversationId,
+                        "deliveredAt", m.getDeliveredAt().toString(),
+                        "readAt", m.getReadAt().toString()
+                ));
+            }
+        }
+
+        if (!senderUpdates.isEmpty()) {
+            afterCommitExecutor.runAfterCommit(() -> {
+                senderUpdates.forEach((senderUsername, updates) -> {
+                    for (Map<String, Object> updatePayload : updates) {
+                        WsEvent event = WsEvent.of("READ_RECEIPT_UPDATE", updatePayload);
+                        messagingTemplate.convertAndSendToUser(senderUsername, "/queue/messages", event);
+                    }
+                });
+            });
+        }
     }
 
     private String normalizeCaption(String caption) {

@@ -23,4 +23,14 @@ export const conversationApi = {
     apiRequest<string>(`/conversations/${conversationId}/clear`, {
       method: 'POST',
     }),
+
+  pinConversation: (conversationId: number) =>
+    apiRequest<Conversation>(`/conversations/${conversationId}/pin`, {
+      method: 'POST',
+    }),
+
+  unpinConversation: (conversationId: number) =>
+    apiRequest<Conversation>(`/conversations/${conversationId}/unpin`, {
+      method: 'POST',
+    }),
 };

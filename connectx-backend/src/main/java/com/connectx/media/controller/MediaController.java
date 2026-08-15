@@ -38,8 +38,10 @@ public class MediaController {
             @PathVariable Long mediaId) {
         MessageMedia media = mediaService.getMediaEntityForUser(currentUser.getId(), mediaId);
         Resource resource = mediaService.getMediaForUser(currentUser.getId(), mediaId);
+        String filename = media.getOriginalFilename() != null ? media.getOriginalFilename() : "document";
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, "private, max-age=3600")
+                .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename + "\"")
                 .contentType(MediaType.parseMediaType(media.getMimeType()))
                 .body(resource);
     }

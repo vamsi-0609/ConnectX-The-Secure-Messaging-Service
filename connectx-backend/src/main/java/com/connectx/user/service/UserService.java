@@ -1,6 +1,9 @@
 package com.connectx.user.service;
 
+import com.connectx.auth.entity.OtpToken;
+import com.connectx.auth.repository.OtpTokenRepository;
 import com.connectx.common.exception.ApiException;
+import com.connectx.common.service.EmailService;
 import com.connectx.user.dto.UserDto;
 import com.connectx.user.dto.UserProfileUpdateDto;
 import com.connectx.user.entity.User;
@@ -11,18 +14,31 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.security.SecureRandom;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
 public class UserService {
 
+    private static final Pattern USERNAME_PATTERN = Pattern.compile("^[a-zA-Z0-9_]{3,30}$");
+
     private final UserRepository userRepository;
     private final ProfileImageStorage profileImageStorage;
+    private final OtpTokenRepository otpTokenRepository;
+    private final EmailService emailService;
 
-    public UserService(UserRepository userRepository, ProfileImageStorage profileImageStorage) {
+    public UserService(UserRepository userRepository,
+                       ProfileImageStorage profileImageStorage,
+                       OtpTokenRepository otpTokenRepository,
+                       EmailService emailService) {
         this.userRepository = userRepository;
         this.profileImageStorage = profileImageStorage;
+        this.otpTokenRepository = otpTokenRepository;
+        this.emailService = emailService;
     }
 
     public UserDto getUserById(Long userId) {
@@ -46,13 +62,103 @@ public class UserService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User was not found"));
 
-        if (updateDto.getDisplayName() != null && !updateDto.getDisplayName().trim().isEmpty()) {
-            user.setDisplayName(updateDto.getDisplayName().trim());
+        if (updateDto.getUsername() != null && !updateDto.getUsername().trim().isEmpty()) {
+            String newUsername = updateDto.getUsername().trim();
+            if (!USERNAME_PATTERN.matcher(newUsername).matches()) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_USERNAME", "Username must be 3-30 characters containing only letters, numbers, and underscores");
+            }
+            if (!newUsername.equalsIgnoreCase(user.getUsername()) && userRepository.existsByUsername(newUsername)) {
+                throw new ApiException(HttpStatus.CONFLICT, "USERNAME_EXISTS", "Username is already taken");
+            }
+            user.setUsername(newUsername);
         }
+
+        if (updateDto.getDisplayName() != null && !updateDto.getDisplayName().trim().isEmpty()) {
+            String newDisplayName = updateDto.getDisplayName().trim();
+            if (newDisplayName.length() > 50) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_DISPLAY_NAME", "Display name cannot exceed 50 characters");
+            }
+            user.setDisplayName(newDisplayName);
+        }
+
         if (updateDto.getProfileImageUrl() != null) {
             user.setProfileImageUrl(updateDto.getProfileImageUrl());
         }
 
+        User updatedUser = userRepository.save(user);
+        return UserDto.fromEntity(updatedUser);
+    }
+
+    @Transactional
+    public void requestEmailChangeOtp(Long userId, String newEmail) {
+        if (newEmail == null || newEmail.trim().isEmpty()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "EMAIL_REQUIRED", "New email address is required");
+        }
+        String normalizedEmail = newEmail.trim().toLowerCase();
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User was not found"));
+
+        if (normalizedEmail.equalsIgnoreCase(user.getEmail())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "SAME_EMAIL", "New email must be different from your current email");
+        }
+
+        if (userRepository.existsByEmail(normalizedEmail)) {
+            throw new ApiException(HttpStatus.CONFLICT, "EMAIL_EXISTS", "Email address is already in use");
+        }
+
+        otpTokenRepository.findByEmailAndPurposeAndUsedFalseOrderByCreatedAtDesc(normalizedEmail, "EMAIL_CHANGE")
+                .forEach(t -> {
+                    t.setUsed(true);
+                    otpTokenRepository.save(t);
+                });
+
+        SecureRandom random = new SecureRandom();
+        String otpCode = String.format("%06d", random.nextInt(1000000));
+        Instant expiresAt = Instant.now().plus(10, ChronoUnit.MINUTES);
+
+        OtpToken token = new OtpToken(normalizedEmail, otpCode, "EMAIL_CHANGE", expiresAt);
+        otpTokenRepository.save(token);
+
+        emailService.sendOtpEmail(normalizedEmail, otpCode, "Email Address Change");
+    }
+
+    @Transactional
+    public UserDto verifyEmailChangeOtp(Long userId, String newEmail, String otpCode) {
+        String normalizedEmail = newEmail.trim().toLowerCase();
+
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User was not found"));
+
+        if (userRepository.existsByEmail(normalizedEmail)) {
+            throw new ApiException(HttpStatus.CONFLICT, "EMAIL_EXISTS", "Email address is already in use");
+        }
+
+        OtpToken token = otpTokenRepository.findTopByEmailAndPurposeAndUsedFalseOrderByCreatedAtDesc(normalizedEmail, "EMAIL_CHANGE")
+                .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "INVALID_OTP", "Invalid or expired verification code"));
+
+        if (token.getExpiresAt().isBefore(Instant.now())) {
+            token.setUsed(true);
+            otpTokenRepository.save(token);
+            throw new ApiException(HttpStatus.BAD_REQUEST, "EXPIRED_OTP", "Verification code has expired. Please request a new code.");
+        }
+
+        if (token.getAttempts() >= 5) {
+            token.setUsed(true);
+            otpTokenRepository.save(token);
+            throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "OTP_LOCKED", "Too many failed attempts. Please request a new code.");
+        }
+
+        if (!token.getOtpCode().equals(otpCode.trim())) {
+            token.setAttempts(token.getAttempts() + 1);
+            otpTokenRepository.save(token);
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_OTP", "Incorrect verification code. Please try again.");
+        }
+
+        token.setUsed(true);
+        otpTokenRepository.save(token);
+
+        user.setEmail(normalizedEmail);
         User updatedUser = userRepository.save(user);
         return UserDto.fromEntity(updatedUser);
     }

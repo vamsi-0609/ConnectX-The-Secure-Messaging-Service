@@ -24,4 +24,22 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify({ refreshToken }),
     }),
+
+  requestForgotPasswordOtp: (email: string) =>
+    apiRequest<string>('/auth/forgot-password/request-otp', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+
+  verifyForgotPasswordOtp: (email: string, otpCode: string) =>
+    apiRequest<string>('/auth/forgot-password/verify-otp', {
+      method: 'POST',
+      body: JSON.stringify({ email, otpCode }),
+    }),
+
+  resetPassword: (data: { email: string; otpCode: string; newPassword: string }) =>
+    apiRequest<string>('/auth/forgot-password/reset-password', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 };

@@ -66,12 +66,12 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   const renderStatus = () => {
     if (!isSelf || message.id < 0) return null;
     if (message.readAt) {
-      return <CheckCheck className="w-3.5 h-3.5 md:w-4 md:h-4 text-sky-300" aria-label="Read" />;
+      return <CheckCheck className="w-3.5 h-3.5 md:w-4 md:h-4 text-sky-400 drop-shadow-[0_0_2px_rgba(56,189,248,0.5)]" aria-label="Read" />;
     }
     if (message.deliveredAt) {
-      return <CheckCheck className="w-3.5 h-3.5 md:w-4 md:h-4 text-indigo-200/80" aria-label="Delivered" />;
+      return <CheckCheck className="w-3.5 h-3.5 md:w-4 md:h-4 text-slate-300/80" aria-label="Delivered" />;
     }
-    return <Check className="w-3.5 h-3.5 md:w-4 md:h-4 text-indigo-200/70" aria-label="Sent" />;
+    return <Check className="w-3.5 h-3.5 md:w-4 md:h-4 text-slate-300/70" aria-label="Sent" />;
   };
 
   return (

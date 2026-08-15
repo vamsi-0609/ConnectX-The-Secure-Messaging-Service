@@ -11,10 +11,22 @@ export const userApi = {
   getUserById: (userId: number) =>
     apiRequest<User>(`/users/${userId}`),
 
-  updateProfile: (data: { displayName?: string; profileImageUrl?: string; status?: string }) =>
+  updateProfile: (data: { username?: string; displayName?: string; profileImageUrl?: string; status?: string }) =>
     apiRequest<User>('/users/me', {
       method: 'PATCH',
       body: JSON.stringify(data),
+    }),
+
+  requestEmailChangeOtp: (newEmail: string) =>
+    apiRequest<string>('/users/me/email/request-otp', {
+      method: 'POST',
+      body: JSON.stringify({ newEmail }),
+    }),
+
+  verifyEmailChangeOtp: (newEmail: string, otpCode: string) =>
+    apiRequest<User>('/users/me/email/verify-otp', {
+      method: 'POST',
+      body: JSON.stringify({ newEmail, otpCode }),
     }),
 
   uploadProfilePhoto: (file: File) => {
