@@ -169,7 +169,7 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
                   <span className="absolute left-0 top-0 bottom-0 w-[3px] bg-indigo-500 rounded-r-full" />
                 )}
 
-                <UserAvatar user={recipient} size="md" />
+                <UserAvatar user={recipient} size="md" passive />
 
                 {/*
                   Layout: [Name on left, Timestamp anchored to rightmost edge]
@@ -228,7 +228,7 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
                   It NEVER participates in normal flex flow, so the timestamp on the top row
                   remains at the EXACT same pixel position before, during, and after hover.
                 */}
-                <div className="absolute right-2.5 bottom-2 hidden group-hover:flex items-center gap-0.5 bg-white/95 dark:bg-slate-900/95 border border-slate-200/80 dark:border-slate-700/80 rounded-lg p-0.5 shadow-md backdrop-blur-sm z-10">
+                <div className="absolute right-2.5 bottom-2 hidden [@media(hover:hover)]:group-hover:flex items-center gap-0.5 bg-white/95 dark:bg-slate-900/95 border border-slate-200/80 dark:border-slate-700/80 rounded-lg p-0.5 shadow-md backdrop-blur-sm z-10">
                   {isPinned ? (
                     <button
                       onClick={(e) => { e.stopPropagation(); onUnpinConversation?.(conv.id); }}

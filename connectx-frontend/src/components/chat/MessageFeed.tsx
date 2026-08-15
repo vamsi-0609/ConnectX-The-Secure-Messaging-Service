@@ -14,6 +14,16 @@ interface MessageFeedProps {
   onDeleteMessage: (messageId: number, deleteForEveryone: boolean) => void;
   onReplyMessage?: (message: Message) => void;
   onReactMessage?: (messageId: number, reaction: string) => void;
+  onEditMessage?: (message: Message) => void;
+  onPinMessage?: (messageId: number) => void;
+  onUnpinMessage?: (messageId: number) => void;
+  onStarMessage?: (messageId: number) => void;
+  onUnstarMessage?: (messageId: number) => void;
+  onForwardMessage?: (message: Message) => void;
+  selectionMode?: boolean;
+  selectedMessageIds?: Set<number>;
+  onToggleSelect?: (message: Message) => void;
+  onEnterSelectionMode?: (message: Message) => void;
 }
 
 export const MessageFeed: React.FC<MessageFeedProps> = ({
@@ -26,9 +36,20 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
   onDeleteMessage,
   onReplyMessage,
   onReactMessage,
+  onEditMessage,
+  onPinMessage,
+  onUnpinMessage,
+  onStarMessage,
+  onUnstarMessage,
+  onForwardMessage,
+  selectionMode = false,
+  selectedMessageIds,
+  onToggleSelect,
+  onEnterSelectionMode,
 }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [showScrollBottomBtn, setShowScrollBottomBtn] = useState(false);
+  const [unseenCount, setUnseenCount] = useState(0);
   const prevMessageCountRef = useRef(0);
   const isNearBottomRef = useRef(true);
 
@@ -81,6 +102,9 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
     isNearBottomRef.current = distanceFromBottom < 100;
     setShowScrollBottomBtn(distanceFromBottom > 150);
+    if (isNearBottomRef.current) {
+      setUnseenCount(0);
+    }
 
     // Upward scroll detection for keyset pagination
     if (scrollTop < 80 && hasMore && !isLoadingOlder && onLoadOlderMessages) {
@@ -125,6 +149,8 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
 
       if (isInitialLoad || (isNewMessageAdded && (isNearBottomRef.current || isMyOutgoingMessage))) {
         scrollToBottom(isInitialLoad ? 'auto' : 'smooth');
+      } else if (isNewMessageAdded && !isNearBottomRef.current && !isMyOutgoingMessage) {
+        setUnseenCount((prev) => prev + (messages.length - prevMessageCountRef.current));
       }
     }
 
@@ -196,6 +222,16 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
                     onReplyMessage={onReplyMessage}
                     onReactMessage={onReactMessage}
                     onScrollToMessage={scrollToMessage}
+                    onEditMessage={onEditMessage}
+                    onPinMessage={onPinMessage}
+                    onUnpinMessage={onUnpinMessage}
+                    onStarMessage={onStarMessage}
+                    onUnstarMessage={onUnstarMessage}
+                    onForwardMessage={onForwardMessage}
+                    selectionMode={selectionMode}
+                    isSelected={selectedMessageIds?.has(item.message.id) ?? false}
+                    onToggleSelect={onToggleSelect}
+                    onEnterSelectionMode={onEnterSelectionMode}
                   />
                 );
               })}
@@ -206,12 +242,20 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
 
       {showScrollBottomBtn && (
         <button
-          onClick={() => scrollToBottom('smooth')}
+          onClick={() => {
+            scrollToBottom('smooth');
+            setUnseenCount(0);
+          }}
           className="absolute bottom-3 right-4 md:bottom-4 md:right-8 z-10 p-2 md:p-2.5 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg border border-indigo-400/30 transition-all select-none"
           title="Scroll to latest messages"
           aria-label="Scroll to bottom"
         >
           <ChevronDown className="w-4 h-4 md:w-5 md:h-5" />
+          {unseenCount > 0 && (
+            <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-bold flex items-center justify-center border-2 border-white dark:border-[#0f172a] animate-pop-in">
+              {unseenCount > 99 ? '99+' : unseenCount}
+            </span>
+          )}
         </button>
       )}
     </div>

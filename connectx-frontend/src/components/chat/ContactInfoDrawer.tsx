@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ShieldCheck, X, Laptop } from 'lucide-react';
+import { ShieldCheck, X, ArrowLeft, Laptop } from 'lucide-react';
 import { User, UserPublicKey } from '../../types';
 import { deviceApi } from '../../api/deviceApi';
 import { UserAvatar } from '../common/UserAvatar';
@@ -27,13 +27,23 @@ export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({ recipient,
   if (!recipient) return null;
 
   return (
-    <div className="w-80 h-full bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800/80 flex flex-col flex-shrink-0 z-20 transition-colors duration-300 animate-slide-right overflow-y-auto text-slate-900 dark:text-white select-none">
+    <div className="fixed inset-0 z-40 md:static md:inset-auto md:z-20 w-full md:w-80 h-full bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800/80 flex flex-col flex-shrink-0 transition-colors duration-300 animate-slide-right overflow-y-auto text-slate-900 dark:text-white select-none">
       {/* Header */}
       <div className="h-16 px-4 border-b border-slate-200 dark:border-slate-800/80 flex items-center justify-between">
-        <h3 className="font-bold text-base">Contact Info</h3>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onClose}
+            className="md:hidden p-1.5 -ml-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            aria-label="Back"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h3 className="font-bold text-base">Contact Info</h3>
+        </div>
         <button
           onClick={onClose}
-          className="p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+          className="hidden md:block p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+          aria-label="Close"
         >
           <X className="w-5 h-5" />
         </button>

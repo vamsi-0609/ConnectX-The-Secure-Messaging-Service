@@ -69,4 +69,55 @@ public class MessageController {
         MessageDto updatedMessage = messageService.removeReaction(currentUser.getId(), messageId);
         return ResponseEntity.ok(ApiResponse.success("Reaction removed", updatedMessage));
     }
+
+    @PutMapping("/messages/{messageId}")
+    public ResponseEntity<ApiResponse<MessageDto>> editMessage(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long messageId,
+            @RequestBody java.util.Map<String, String> body) {
+        String ciphertext = body != null ? body.get("ciphertext") : null;
+        String nonce = body != null ? body.get("nonce") : null;
+        MessageDto updatedMessage = messageService.editMessage(currentUser.getId(), messageId, ciphertext, nonce);
+        return ResponseEntity.ok(ApiResponse.success("Message edited", updatedMessage));
+    }
+
+    @PostMapping("/messages/{messageId}/pin")
+    public ResponseEntity<ApiResponse<MessageDto>> pinMessage(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long messageId) {
+        MessageDto updatedMessage = messageService.pinMessage(currentUser.getId(), messageId);
+        return ResponseEntity.ok(ApiResponse.success("Message pinned", updatedMessage));
+    }
+
+    @DeleteMapping("/messages/{messageId}/pin")
+    public ResponseEntity<ApiResponse<MessageDto>> unpinMessage(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long messageId) {
+        MessageDto updatedMessage = messageService.unpinMessage(currentUser.getId(), messageId);
+        return ResponseEntity.ok(ApiResponse.success("Message unpinned", updatedMessage));
+    }
+
+    @GetMapping("/conversations/{conversationId}/pinned-message")
+    public ResponseEntity<ApiResponse<MessageDto>> getPinnedMessage(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long conversationId) {
+        MessageDto pinned = messageService.getPinnedMessage(currentUser.getId(), conversationId);
+        return ResponseEntity.ok(ApiResponse.success("Pinned message", pinned));
+    }
+
+    @PostMapping("/messages/{messageId}/star")
+    public ResponseEntity<ApiResponse<String>> starMessage(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long messageId) {
+        messageService.starMessage(currentUser.getId(), messageId);
+        return ResponseEntity.ok(ApiResponse.success("Message starred", "Starred"));
+    }
+
+    @DeleteMapping("/messages/{messageId}/star")
+    public ResponseEntity<ApiResponse<String>> unstarMessage(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long messageId) {
+        messageService.unstarMessage(currentUser.getId(), messageId);
+        return ResponseEntity.ok(ApiResponse.success("Message unstarred", "Unstarred"));
+    }
 }

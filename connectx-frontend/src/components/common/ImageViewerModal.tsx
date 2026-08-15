@@ -1,5 +1,5 @@
-import React, { useEffect } from 'react';
-import { X, Download, Loader2 } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { X, Download, Loader2, Check, ShieldCheck } from 'lucide-react';
 
 interface ImageViewerModalProps {
   open: boolean;
@@ -9,6 +9,8 @@ interface ImageViewerModalProps {
   onClose: () => void;
   onSave?: () => Promise<void>;
   saving?: boolean;
+  /** Profile photos: hides Save, blocks right-click/drag-out as a deterrent. */
+  restrictSaving?: boolean;
 }
 
 export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
@@ -19,7 +21,10 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   onClose,
   onSave,
   saving = false,
+  restrictSaving = false,
 }) => {
+  const [justSaved, setJustSaved] = useState(false);
+
   useEffect(() => {
     if (!open) return;
 
@@ -38,6 +43,21 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     };
   }, [open, onClose]);
 
+  useEffect(() => {
+    if (!open) setJustSaved(false);
+  }, [open]);
+
+  const handleSaveClick = async () => {
+    if (!onSave || saving || justSaved) return;
+    try {
+      await onSave();
+      setJustSaved(true);
+      window.setTimeout(() => setJustSaved(false), 1500);
+    } catch {
+      // Parent surfaces the error (e.g. via alert); nothing further to do here.
+    }
+  };
+
   if (!open || !imageUrl) {
     return null;
   }
@@ -55,16 +75,34 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
           {title && <h3 className="text-sm font-medium text-white truncate">{title}</h3>}
         </div>
         <div className="flex items-center gap-2">
-          {onSave && (
-            <button
-              type="button"
-              onClick={() => void onSave()}
-              disabled={saving}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-sm font-medium disabled:opacity-60"
+          {restrictSaving ? (
+            <span
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white/5 text-white/50 text-xs font-medium select-none"
+              title="Profile photos are protected and can't be saved"
             >
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-              Save to gallery
-            </button>
+              <ShieldCheck className="w-3.5 h-3.5" />
+              Protected
+            </span>
+          ) : (
+            onSave && (
+              <button
+                type="button"
+                onClick={() => void handleSaveClick()}
+                disabled={saving || justSaved}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-sm font-medium disabled:opacity-90 transition-colors"
+              >
+                {saving ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : justSaved ? (
+                  <Check className="w-4 h-4 text-emerald-400" />
+                ) : (
+                  <Download className="w-4 h-4" />
+                )}
+                <span className={justSaved ? 'text-emerald-400' : undefined}>
+                  {justSaved ? 'Saved' : 'Save to gallery'}
+                </span>
+              </button>
+            )
           )}
           <button
             type="button"
@@ -83,6 +121,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
           alt={alt}
           className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
           draggable={false}
+          onContextMenu={restrictSaving ? (e) => e.preventDefault() : undefined}
         />
       </div>
     </div>

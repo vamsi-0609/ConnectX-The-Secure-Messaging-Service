@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { User } from '../../types';
 import { resolveProfileImageUrl } from '../../utils/profileImage';
 import { ImageViewerModal } from './ImageViewerModal';
-import { saveImageUrlToGallery } from '../../utils/saveMedia';
 
 type AvatarSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl';
 
@@ -31,7 +30,6 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
   passive = false,
 }) => {
   const [viewerOpen, setViewerOpen] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [imageError, setImageError] = useState(false);
 
   const imageUrl = resolveProfileImageUrl(user.profileImageUrl);
@@ -48,20 +46,6 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
     event?.preventDefault();
     if (canView) {
       setViewerOpen(true);
-    }
-  };
-
-  const handleSaveProfilePhoto = async () => {
-    if (!imageUrl || saving) return;
-
-    setSaving(true);
-    try {
-      await saveImageUrlToGallery(imageUrl, `connectx-${user.username || 'profile'}`);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to save photo';
-      alert(message);
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -104,8 +88,7 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
           alt={`${displayName}'s profile photo`}
           title={displayName}
           onClose={() => setViewerOpen(false)}
-          onSave={handleSaveProfilePhoto}
-          saving={saving}
+          restrictSaving
         />
       )}
     </>

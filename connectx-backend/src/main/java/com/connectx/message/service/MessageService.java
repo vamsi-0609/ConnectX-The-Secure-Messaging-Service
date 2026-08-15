@@ -15,9 +15,11 @@ import com.connectx.media.service.MediaService;
 import com.connectx.message.dto.MessageDto;
 import com.connectx.message.dto.SendMessageRequestDto;
 import com.connectx.message.entity.Message;
+import com.connectx.message.entity.MessageStar;
 import com.connectx.message.entity.MessageType;
 import com.connectx.message.entity.MessageUserState;
 import com.connectx.message.repository.MessageRepository;
+import com.connectx.message.repository.MessageStarRepository;
 import com.connectx.message.repository.MessageUserStateRepository;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
@@ -37,8 +39,11 @@ import java.util.stream.Collectors;
 @Service
 public class MessageService {
 
+    private static final long EDIT_WINDOW_MINUTES = 15;
+
     private final MessageRepository messageRepository;
     private final MessageUserStateRepository messageUserStateRepository;
+    private final MessageStarRepository messageStarRepository;
     private final ConversationRepository conversationRepository;
     private final ConversationMemberRepository conversationMemberRepository;
     private final ConversationService conversationService;
@@ -53,6 +58,7 @@ public class MessageService {
 
     public MessageService(MessageRepository messageRepository,
                           MessageUserStateRepository messageUserStateRepository,
+                          MessageStarRepository messageStarRepository,
                           ConversationRepository conversationRepository,
                           ConversationMemberRepository conversationMemberRepository,
                           ConversationService conversationService,
@@ -66,6 +72,7 @@ public class MessageService {
                           com.connectx.push.service.WebPushService webPushService) {
         this.messageRepository = messageRepository;
         this.messageUserStateRepository = messageUserStateRepository;
+        this.messageStarRepository = messageStarRepository;
         this.conversationRepository = conversationRepository;
         this.conversationMemberRepository = conversationMemberRepository;
         this.conversationService = conversationService;
@@ -155,6 +162,7 @@ public class MessageService {
         message.setMessageType(messageType);
         message.setEncryptionAlgorithm(algorithm);
         message.setReplyToMessage(replyToMessage);
+        message.setForwarded(dto.isForwarded());
 
         if (messageType == MessageType.IMAGE || messageType == MessageType.DOCUMENT) {
             message.setMediaId(linkedMedia.getId());
@@ -219,6 +227,7 @@ public class MessageService {
         recvPayload.put("nonce", messageType == MessageType.TEXT ? dto.getNonce() : "");
         recvPayload.put("sentAt", savedMessage.getSentAt().toString());
         recvPayload.put("clientTempId", dto.getRequestId());
+        recvPayload.put("forwarded", savedMessage.isForwarded());
 
         if (savedMessage.getReplyToMessage() != null) {
             Message reply = savedMessage.getReplyToMessage();
@@ -338,6 +347,11 @@ public class MessageService {
 
         final Map<Long, List<com.connectx.message.dto.MessageReactionDto>> finalReactionsMap = reactionsMap;
 
+        // Batch fetch which of these messages the current user has starred
+        final java.util.Set<Long> starredIds = messageIds.isEmpty()
+                ? java.util.Set.of()
+                : new java.util.HashSet<>(messageStarRepository.findStarredMessageIds(currentUserId, messageIds));
+
         // Reverse to chronological order (ASC)
         java.util.Collections.reverse(visibleMessages);
 
@@ -355,6 +369,7 @@ public class MessageService {
                     MessageDto resultDto = MessageDto.fromEntity(message, mimeType);
                     resultDto.setFileSizeBytes(fileSizeBytes);
                     resultDto.setReactions(finalReactionsMap.getOrDefault(message.getId(), List.of()));
+                    resultDto.setStarred(starredIds.contains(message.getId()));
                     return resultDto;
                 })
                 .collect(Collectors.toList());
@@ -384,7 +399,34 @@ public class MessageService {
             }
             message.setDeletedForEveryone(true);
             message.setDeletedAt(Instant.now());
+            boolean wasPinned = message.getPinnedAt() != null;
+            message.setPinnedAt(null);
+            message.setPinnedBy(null);
             messageRepository.save(message);
+
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("messageId", messageId);
+            payload.put("conversationId", conversationId);
+            WsEvent deletedEvent = WsEvent.of("MESSAGE_DELETED", payload);
+
+            Map<String, Object> unpinPayload = wasPinned ? new HashMap<>(Map.of("messageId", messageId, "conversationId", conversationId)) : null;
+            WsEvent unpinnedEvent = unpinPayload != null ? WsEvent.of("MESSAGE_UNPINNED", unpinPayload) : null;
+
+            afterCommitExecutor.runAfterCommit(() -> {
+                messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, deletedEvent);
+                List<ConversationMember> members = conversationMemberRepository.findByConversationIdWithUsers(conversationId);
+                for (ConversationMember m : members) {
+                    if (m.getUser() != null) {
+                        messagingTemplate.convertAndSendToUser(m.getUser().getUsername(), "/queue/messages", deletedEvent);
+                        if (unpinnedEvent != null) {
+                            messagingTemplate.convertAndSendToUser(m.getUser().getUsername(), "/queue/messages", unpinnedEvent);
+                        }
+                    }
+                }
+                if (unpinnedEvent != null) {
+                    messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, unpinnedEvent);
+                }
+            });
         } else {
             if (!messageUserStateRepository.existsByMessageIdAndUserId(messageId, currentUserId)) {
                 User user = userRepository.findById(currentUserId)
@@ -393,6 +435,141 @@ public class MessageService {
                 messageUserStateRepository.save(userState);
             }
         }
+    }
+
+    @Transactional
+    public MessageDto editMessage(Long currentUserId, Long messageId, String newCiphertext, String newNonce) {
+        Message message = messageRepository.findById(messageId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "MESSAGE_NOT_FOUND", "Message not found"));
+
+        Long conversationId = message.getConversation().getId();
+        Long senderUserId = message.getSenderUser() != null ? message.getSenderUser().getId() : null;
+        if (senderUserId == null || !senderUserId.equals(currentUserId)) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "Only the sender can edit this message");
+        }
+        if (message.getMessageType() != MessageType.TEXT) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "NOT_EDITABLE", "Only text messages can be edited");
+        }
+        if (message.isDeletedForEveryone()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "NOT_EDITABLE", "Deleted messages cannot be edited");
+        }
+        if (message.getSentAt().isBefore(Instant.now().minus(EDIT_WINDOW_MINUTES, java.time.temporal.ChronoUnit.MINUTES))) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "EDIT_WINDOW_EXPIRED", "This message can no longer be edited");
+        }
+        if (newCiphertext == null || newCiphertext.isBlank() || newNonce == null || newNonce.isBlank()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "CIPHERTEXT_REQUIRED", "Ciphertext and nonce are required");
+        }
+
+        message.setCiphertext(newCiphertext);
+        message.setNonce(newNonce);
+        Instant editedAt = Instant.now();
+        message.setEditedAt(editedAt);
+        Message saved = messageRepository.save(message);
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("messageId", messageId);
+        payload.put("conversationId", conversationId);
+        payload.put("ciphertext", newCiphertext);
+        payload.put("nonce", newNonce);
+        payload.put("editedAt", editedAt.toString());
+        WsEvent editedEvent = WsEvent.of("MESSAGE_EDITED", payload);
+
+        afterCommitExecutor.runAfterCommit(() -> {
+            messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, editedEvent);
+            List<ConversationMember> members = conversationMemberRepository.findByConversationIdWithUsers(conversationId);
+            for (ConversationMember m : members) {
+                if (m.getUser() != null) {
+                    messagingTemplate.convertAndSendToUser(m.getUser().getUsername(), "/queue/messages", editedEvent);
+                }
+            }
+        });
+
+        return MessageDto.fromEntity(saved);
+    }
+
+    @Transactional
+    public MessageDto pinMessage(Long currentUserId, Long messageId) {
+        return setPinned(currentUserId, messageId, true);
+    }
+
+    @Transactional
+    public MessageDto unpinMessage(Long currentUserId, Long messageId) {
+        return setPinned(currentUserId, messageId, false);
+    }
+
+    private MessageDto setPinned(Long currentUserId, Long messageId, boolean pinned) {
+        Message message = messageRepository.findById(messageId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "MESSAGE_NOT_FOUND", "Message not found"));
+
+        Long conversationId = message.getConversation().getId();
+        boolean isMember = conversationMemberRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull(conversationId, currentUserId);
+        if (!isMember) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "NOT_CONVERSATION_MEMBER", "You are not a member of this conversation");
+        }
+        if (pinned && message.isDeletedForEveryone()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "NOT_PINNABLE", "Deleted messages cannot be pinned");
+        }
+
+        User currentUser = userRepository.findById(currentUserId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User not found"));
+
+        Instant pinnedAt = pinned ? Instant.now() : null;
+        message.setPinnedAt(pinnedAt);
+        message.setPinnedBy(pinned ? currentUser : null);
+        Message saved = messageRepository.save(message);
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("messageId", messageId);
+        payload.put("conversationId", conversationId);
+        payload.put("pinnedAt", pinnedAt != null ? pinnedAt.toString() : null);
+        payload.put("pinnedByUserId", pinned ? currentUserId : null);
+        payload.put("pinnedByUsername", pinned ? currentUser.getUsername() : null);
+        WsEvent pinEvent = WsEvent.of(pinned ? "MESSAGE_PINNED" : "MESSAGE_UNPINNED", payload);
+
+        afterCommitExecutor.runAfterCommit(() -> {
+            messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, pinEvent);
+            List<ConversationMember> members = conversationMemberRepository.findByConversationIdWithUsers(conversationId);
+            for (ConversationMember m : members) {
+                if (m.getUser() != null) {
+                    messagingTemplate.convertAndSendToUser(m.getUser().getUsername(), "/queue/messages", pinEvent);
+                }
+            }
+        });
+
+        return MessageDto.fromEntity(saved);
+    }
+
+    @Transactional(readOnly = true)
+    public MessageDto getPinnedMessage(Long currentUserId, Long conversationId) {
+        boolean isMember = conversationMemberRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull(conversationId, currentUserId);
+        if (!isMember) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "NOT_CONVERSATION_MEMBER", "You are not a member of this conversation");
+        }
+        return messageRepository.findTopByConversationIdAndPinnedAtIsNotNullAndDeletedForEveryoneFalseOrderByPinnedAtDesc(conversationId)
+                .map(MessageDto::fromEntity)
+                .orElse(null);
+    }
+
+    @Transactional
+    public void starMessage(Long currentUserId, Long messageId) {
+        Message message = messageRepository.findById(messageId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "MESSAGE_NOT_FOUND", "Message not found"));
+        boolean isMember = conversationMemberRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull(
+                message.getConversation().getId(), currentUserId);
+        if (!isMember) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "NOT_CONVERSATION_MEMBER", "You are not a member of this conversation");
+        }
+        if (!messageStarRepository.existsByMessageIdAndUserId(messageId, currentUserId)) {
+            User user = userRepository.findById(currentUserId)
+                    .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User not found"));
+            messageStarRepository.save(new MessageStar(message, user));
+        }
+    }
+
+    @Transactional
+    public void unstarMessage(Long currentUserId, Long messageId) {
+        messageStarRepository.findByMessageIdAndUserId(messageId, currentUserId)
+                .ifPresent(messageStarRepository::delete);
     }
 
     @Transactional

@@ -31,6 +31,7 @@ export const messageApi = {
     nonce?: string;
     replyToMessageId?: number;
     requestId?: string;
+    forwarded?: boolean;
   }) =>
     apiRequest<Message>('/messages', {
       method: 'POST',
@@ -50,6 +51,35 @@ export const messageApi = {
 
   removeReaction: (messageId: number) =>
     apiRequest<Message>(`/messages/${messageId}/reactions`, {
+      method: 'DELETE',
+    }),
+
+  editMessage: (messageId: number, ciphertext: string, nonce: string) =>
+    apiRequest<Message>(`/messages/${messageId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ ciphertext, nonce }),
+    }),
+
+  pinMessage: (messageId: number) =>
+    apiRequest<Message>(`/messages/${messageId}/pin`, {
+      method: 'POST',
+    }),
+
+  unpinMessage: (messageId: number) =>
+    apiRequest<Message>(`/messages/${messageId}/pin`, {
+      method: 'DELETE',
+    }),
+
+  getPinnedMessage: (conversationId: number) =>
+    apiRequest<Message | null>(`/conversations/${conversationId}/pinned-message`),
+
+  starMessage: (messageId: number) =>
+    apiRequest<string>(`/messages/${messageId}/star`, {
+      method: 'POST',
+    }),
+
+  unstarMessage: (messageId: number) =>
+    apiRequest<string>(`/messages/${messageId}/star`, {
       method: 'DELETE',
     }),
 };

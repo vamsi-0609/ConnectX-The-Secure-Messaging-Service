@@ -12,6 +12,8 @@ import {
   FileText,
   X,
   CornerUpLeft,
+  Pencil,
+  Check,
 } from 'lucide-react';
 import { encryptMessage } from '../../crypto/encryption';
 import { keyManager } from '../../crypto/keyManager';
@@ -22,7 +24,7 @@ import { MEDIA_IMAGE_ACCEPT, validateMediaImageFile } from '../../utils/mediaIma
 import { geolocationErrorMessage, resolveCurrentLocation } from '../../utils/location';
 import { CameraCaptureModal } from './CameraCaptureModal';
 import { MediaBatchPreviewModal } from './MediaBatchPreviewModal';
-import { ReplyTarget } from '../../types';
+import { ReplyTarget, Message } from '../../types';
 import { conversationCache } from '../../cache/conversationCache';
 
 interface MessageInputProps {
@@ -31,6 +33,9 @@ interface MessageInputProps {
   currentUserId: number;
   replyTarget?: ReplyTarget | null;
   onCancelReply?: () => void;
+  editTarget?: Message | null;
+  onCancelEdit?: () => void;
+  onSubmitEdit?: (newPlaintext: string) => Promise<void>;
   onOptimisticMessage: (
     plaintext: string,
     ciphertext: string,
@@ -69,6 +74,9 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   currentUserId,
   replyTarget,
   onCancelReply,
+  editTarget,
+  onCancelEdit,
+  onSubmitEdit,
   onOptimisticMessage,
   onOptimisticImageMessage,
   onOptimisticLocationMessage,
@@ -77,6 +85,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 }) => {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  const [submittingEdit, setSubmittingEdit] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [sharingLocation, setSharingLocation] = useState(false);
@@ -101,6 +110,23 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       textareaRef.current?.focus();
     }
   }, [replyTarget]);
+
+  // Preload the composer with the original text when entering edit mode
+  useEffect(() => {
+    if (editTarget) {
+      setText(editTarget.decryptedContent || '');
+      const textarea = textareaRef.current;
+      if (textarea) {
+        textarea.focus();
+        textarea.style.height = 'auto';
+        textarea.style.height = `${Math.min(textarea.scrollHeight, 140)}px`;
+        const len = textarea.value.length;
+        textarea.setSelectionRange(len, len);
+      }
+    } else {
+      setText('');
+    }
+  }, [editTarget]);
 
   const sendImageFile = async (file: File) => {
     const validationError = validateMediaImageFile(file);
@@ -215,8 +241,30 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     }
   };
 
+  const handleSubmitEdit = async () => {
+    const content = text.trim();
+    if (!content || submittingEdit || !onSubmitEdit) return;
+    setSubmittingEdit(true);
+    try {
+      await onSubmitEdit(content);
+      setText('');
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to edit message';
+      alert(message);
+    } finally {
+      setSubmittingEdit(false);
+      textareaRef.current?.focus();
+    }
+  };
+
   const handleSendText = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+
+    if (editTarget) {
+      await handleSubmitEdit();
+      return;
+    }
+
     const content = text.trim();
     if (!content || isSendingRef.current || uploading) return;
 
@@ -454,6 +502,26 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           </div>
         )}
 
+        {/* Edit Preview Bar */}
+        {editTarget && (
+          <div className="max-w-3xl mx-auto mb-2 md:max-w-none md:mx-0 flex items-center justify-between gap-3 p-2.5 bg-amber-500/10 dark:bg-amber-950/30 border-l-4 border-amber-500 rounded-r-xl text-xs animate-pop-in">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 font-bold text-amber-600 dark:text-amber-400">
+                <Pencil className="w-3.5 h-3.5" />
+                <span>Editing message</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onCancelEdit}
+              className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg hover:bg-slate-200/50 dark:hover:bg-slate-800 transition-colors"
+              aria-label="Cancel edit"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {uploadStatus && (
           <div className="max-w-3xl mx-auto mb-2 md:max-w-none md:mx-0">
             <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-indigo-500/10 text-indigo-500 text-xs font-medium">
@@ -491,7 +559,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             <button
               type="button"
               onClick={() => setShowMediaMenu((open) => !open)}
-              disabled={busy}
+              disabled={busy || !!editTarget}
               className="p-2.5 md:p-3 text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-300 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors disabled:opacity-50"
               aria-label="Open media options"
               aria-expanded={showMediaMenu}
@@ -504,7 +572,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               )}
             </button>
 
-            {showMediaMenu && (
+            {showMediaMenu && !editTarget && (
               <>
                 <div className="fixed inset-0 z-20" onClick={closeMediaMenu} aria-hidden="true" />
                 <div
@@ -592,6 +660,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                   ? 'Uploading media...'
                   : sharingLocation
                   ? 'Sharing location...'
+                  : editTarget
+                  ? 'Edit message...'
                   : replyTarget
                   ? `Reply to @${replyTarget.senderUsername}...`
                   : 'Type a message...'
@@ -605,12 +675,14 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             {text.trim() ? (
               <button
                 type="submit"
-                disabled={busy}
+                disabled={busy || submittingEdit}
                 className="p-2.5 md:p-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white rounded-full shadow-md shadow-indigo-600/25 transition-all flex items-center justify-center"
-                aria-label="Send message"
+                aria-label={editTarget ? 'Save edit' : 'Send message'}
               >
-                {sending ? (
+                {sending || submittingEdit ? (
                   <Loader2 className="w-5 h-5 md:w-[22px] md:h-[22px] animate-spin" />
+                ) : editTarget ? (
+                  <Check className="w-5 h-5 md:w-[22px] md:h-[22px]" />
                 ) : (
                   <Send className="w-5 h-5 md:w-[22px] md:h-[22px]" />
                 )}
@@ -619,7 +691,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               <button
                 type="button"
                 onClick={() => alert('Voice messages are scheduled for a future milestone.')}
-                className="p-2.5 md:p-3 text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-300 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors"
+                disabled={!!editTarget}
+                className="p-2.5 md:p-3 text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-300 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors disabled:opacity-40"
                 aria-label="Record voice message"
               >
                 <Mic className="w-5 h-5 md:w-[22px] md:h-[22px]" />

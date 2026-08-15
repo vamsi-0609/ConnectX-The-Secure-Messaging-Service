@@ -2,10 +2,21 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { AuthModal } from './features/auth/AuthModal';
 import { ChatListSidebar } from './components/layout/ChatListSidebar';
 import { ChatScreen } from './components/chat/ChatScreen';
-import { ContactInfoDrawer } from './components/chat/ContactInfoDrawer';
-import { UserSearchModal } from './components/chat/UserSearchModal';
-import { DeviceManagerModal } from './components/devices/DeviceManagerModal';
-import { ProfileModal } from './components/profile/ProfileModal';
+
+// Lazily loaded: only fetched when the user actually opens one of these panels,
+// keeping them out of the initial bundle without changing how/when they appear.
+const ContactInfoDrawer = React.lazy(() =>
+  import('./components/chat/ContactInfoDrawer').then((m) => ({ default: m.ContactInfoDrawer }))
+);
+const UserSearchModal = React.lazy(() =>
+  import('./components/chat/UserSearchModal').then((m) => ({ default: m.UserSearchModal }))
+);
+const DeviceManagerModal = React.lazy(() =>
+  import('./components/devices/DeviceManagerModal').then((m) => ({ default: m.DeviceManagerModal }))
+);
+const ProfileModal = React.lazy(() =>
+  import('./components/profile/ProfileModal').then((m) => ({ default: m.ProfileModal }))
+);
 import { useWebSocket } from './websocket/WebSocketContext';
 import { wsClient } from './websocket/WebSocketClient';
 import { conversationApi } from './api/conversationApi';
@@ -15,6 +26,7 @@ import { deviceApi } from './api/deviceApi';
 import { authApi } from './api/authApi';
 import { keyManager } from './crypto/keyManager';
 import { decryptMessage } from './crypto/decryption';
+import { encryptMessage } from './crypto/encryption';
 import { ensureLocalCryptoDevice } from './crypto/deviceSession';
 import { conversationCache } from './cache/conversationCache';
 import { applyTheme, isDarkTheme } from './utils/theme';
@@ -132,6 +144,7 @@ function messageFromWsPayload(payload: Record<string, unknown>): Message {
     replyToCaption: payload.replyToCaption as string | undefined,
     replyToDeleted: payload.replyToDeleted as boolean | undefined,
     reactions: (payload.reactions as Message['reactions']) || [],
+    forwarded: payload.forwarded as boolean | undefined,
   };
 }
 
@@ -161,6 +174,8 @@ export const App: React.FC = () => {
   const [isLoadingOlder, setIsLoadingOlder] = useState<boolean>(false);
   const [unreadConversationIds, setUnreadConversationIds] = useState<Set<number>>(new Set());
   const [conversationPreviews, setConversationPreviews] = useState<Record<number, ConversationPreview>>({});
+  const [pinnedMessage, setPinnedMessage] = useState<Message | null>(null);
+  const pinnedMessageRequestSeqRef = useRef<number>(0);
 
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => isDarkTheme());
   const [showRawCiphertext, setShowRawCiphertext] = useState(false);
@@ -191,8 +206,10 @@ export const App: React.FC = () => {
         return next;
       });
       wsClient.sendRead(activeConversation.id);
+      setPinnedMessage(null);
     } else {
       wsClient.setActiveConversation(null);
+      setPinnedMessage(null);
     }
   }, [activeConversation]);
 
@@ -525,6 +542,70 @@ export const App: React.FC = () => {
     []
   );
 
+  // Edited ciphertext must bypass both the in-memory `decryptedContent` field and the
+  // IndexedDB decrypted-message cache (both would otherwise serve stale pre-edit plaintext),
+  // so this deliberately does not reuse decryptSingleMessage's cache-first shortcuts.
+  const reDecryptEditedMessage = useCallback(
+    async (ciphertext: string, nonce: string, userId: number, peerUserId?: number | null): Promise<{ decryptedContent?: string; decryptionError: boolean }> => {
+      try {
+        const myPrivateKey = await keyManager.getPrivateKey(userId);
+        if (!myPrivateKey || !peerUserId) {
+          return { decryptionError: true };
+        }
+        let userKeys = conversationCache.getPublicKeys(peerUserId);
+        if (!userKeys || userKeys.length === 0) {
+          userKeys = await deviceApi.getUserPublicKeys(peerUserId);
+          if (userKeys && userKeys.length > 0) {
+            conversationCache.setPublicKeys(peerUserId, userKeys);
+          }
+        }
+        if (!userKeys || userKeys.length === 0) {
+          return { decryptionError: true };
+        }
+        const decrypted = await decryptMessage(myPrivateKey, userKeys[0].publicKey, ciphertext, nonce);
+        return { decryptedContent: decrypted, decryptionError: false };
+      } catch (err) {
+        console.warn('[ConnectX E2EE] Re-decryption after edit failed:', err);
+        return { decryptionError: true };
+      }
+    },
+    []
+  );
+
+  const refreshPinnedMessage = useCallback(
+    async (conversationId: number) => {
+      const requestSeq = ++pinnedMessageRequestSeqRef.current;
+      try {
+        const pinned = await messageApi.getPinnedMessage(conversationId);
+        if (requestSeq !== pinnedMessageRequestSeqRef.current || activeConversationIdRef.current !== conversationId) {
+          return;
+        }
+        if (!pinned) {
+          setPinnedMessage(null);
+          return;
+        }
+        const activeConv = activeConversationRef.current;
+        const peerUserId = activeConv ? getOtherParticipant(activeConv, currentUser!.id)?.id : undefined;
+        const processed =
+          pinned.messageType === 'IMAGE' || pinned.messageType === 'LOCATION' || pinned.messageType === 'DOCUMENT'
+            ? pinned
+            : await decryptSingleMessage(pinned, currentUser!.id, peerUserId);
+        if (requestSeq === pinnedMessageRequestSeqRef.current && activeConversationIdRef.current === conversationId) {
+          setPinnedMessage(processed);
+        }
+      } catch (err) {
+        console.warn('[ConnectX] Failed to fetch pinned message:', err);
+      }
+    },
+    [currentUser, decryptSingleMessage]
+  );
+
+  useEffect(() => {
+    if (activeConversation) {
+      refreshPinnedMessage(activeConversation.id);
+    }
+  }, [activeConversation, refreshPinnedMessage]);
+
   const updatePreviewIfNewer = useCallback((conversationId: number, preview: ConversationPreview) => {
     setConversationPreviews((prev) => {
       const existing = prev[conversationId];
@@ -699,7 +780,11 @@ export const App: React.FC = () => {
               soundManager.playIncomingMessageSound();
             }
           } else {
-            // Reconcile our own message that was sent optimistically
+            // Reconcile our own message that was sent optimistically. If there's no
+            // matching optimistic entry (e.g. a forwarded message, which is sent
+            // without one), treat it as new and append it instead of silently
+            // dropping it from the currently-open conversation.
+            let matched = false;
             setMessages((prev) => {
               const updated = prev.map((m) => {
                 if (
@@ -708,6 +793,7 @@ export const App: React.FC = () => {
                     (payload.mediaId && m.mediaId === payload.mediaId) ||
                     (m.ciphertext && m.ciphertext === payload.ciphertext))
                 ) {
+                  matched = true;
                   return {
                     ...m,
                     id: msgId,
@@ -724,6 +810,29 @@ export const App: React.FC = () => {
               });
               return updated;
             });
+
+            if (!matched) {
+              const newMsg = messageFromWsPayload(payload as Record<string, unknown>);
+              const peerUserId = getOtherParticipant(currentActive, currentUser.id)?.id;
+              const processedMsg =
+                newMsg.messageType === 'IMAGE' || newMsg.messageType === 'LOCATION' || newMsg.messageType === 'DOCUMENT'
+                  ? newMsg
+                  : await decryptSingleMessage(newMsg, currentUser.id, peerUserId);
+
+              setMessages((prev) => {
+                if (prev.some((m) => m.id === processedMsg.id)) return prev;
+                const next = sortMessages([...prev, processedMsg]);
+                conversationCache.setConversation(conversationId, {
+                  messages: next,
+                  hasMore: conversationCache.getConversation(conversationId)?.hasMore ?? false,
+                  oldestCursor: conversationCache.getConversation(conversationId)?.oldestCursor ?? null,
+                });
+                return next;
+              });
+
+              const preview = previewFromMessage(processedMsg);
+              updatePreviewIfNewer(conversationId, preview);
+            }
           }
         } else {
           // Background conversation event
@@ -826,6 +935,99 @@ export const App: React.FC = () => {
           }
           return updated;
         });
+      } else if (event.type === 'MESSAGE_EDITED') {
+        const payload = event.payload as Record<string, unknown>;
+        const msgId = payload.messageId as number;
+        const convId = payload.conversationId as number;
+        const newCiphertext = (payload.ciphertext as string) || '';
+        const newNonce = (payload.nonce as string) || '';
+        const editedAt = payload.editedAt as string | undefined;
+
+        const activeConv = activeConversationRef.current;
+        if (activeConv && activeConv.id === convId) {
+          const peerUserId = getOtherParticipant(activeConv, currentUser.id)?.id;
+          const { decryptedContent, decryptionError } = await reDecryptEditedMessage(
+            newCiphertext,
+            newNonce,
+            currentUser.id,
+            peerUserId
+          );
+
+          setMessages((prev) => {
+            const updated = prev.map((m) =>
+              m.id === msgId
+                ? { ...m, ciphertext: newCiphertext, nonce: newNonce, editedAt, decryptedContent, decryptionError }
+                : m
+            );
+            conversationCache.setConversation(convId, {
+              messages: updated,
+              hasMore: conversationCache.getConversation(convId)?.hasMore ?? false,
+              oldestCursor: conversationCache.getConversation(convId)?.oldestCursor ?? null,
+            });
+            return updated;
+          });
+
+          setPinnedMessage((prev) =>
+            prev && prev.id === msgId ? { ...prev, ciphertext: newCiphertext, nonce: newNonce, editedAt, decryptedContent, decryptionError } : prev
+          );
+        }
+      } else if (event.type === 'MESSAGE_DELETED') {
+        const payload = event.payload as Record<string, unknown>;
+        const msgId = payload.messageId as number;
+        const convId = payload.conversationId as number;
+
+        const activeConv = activeConversationRef.current;
+        if (activeConv && activeConv.id === convId) {
+          setMessages((prev) => {
+            const updated = prev.map((m) =>
+              m.id === msgId
+                ? { ...m, deletedForEveryone: true, pinnedAt: undefined, pinnedByUserId: undefined, pinnedByUsername: undefined }
+                : m
+            );
+            conversationCache.setConversation(convId, {
+              messages: updated,
+              hasMore: conversationCache.getConversation(convId)?.hasMore ?? false,
+              oldestCursor: conversationCache.getConversation(convId)?.oldestCursor ?? null,
+            });
+            return updated;
+          });
+        }
+        setPinnedMessage((prev) => (prev && prev.id === msgId ? null : prev));
+      } else if (event.type === 'MESSAGE_PINNED' || event.type === 'MESSAGE_UNPINNED') {
+        const payload = event.payload as Record<string, unknown>;
+        const msgId = payload.messageId as number;
+        const convId = payload.conversationId as number;
+        const isPinned = event.type === 'MESSAGE_PINNED';
+        const pinnedAt = payload.pinnedAt as string | undefined;
+        const pinnedByUserId = payload.pinnedByUserId as number | undefined;
+        const pinnedByUsername = payload.pinnedByUsername as string | undefined;
+
+        const activeConv = activeConversationRef.current;
+        if (activeConv && activeConv.id === convId) {
+          setMessages((prev) => {
+            const updated = prev.map((m) =>
+              m.id === msgId
+                ? {
+                    ...m,
+                    pinnedAt: isPinned ? pinnedAt : undefined,
+                    pinnedByUserId: isPinned ? pinnedByUserId : undefined,
+                    pinnedByUsername: isPinned ? pinnedByUsername : undefined,
+                  }
+                : m
+            );
+            conversationCache.setConversation(convId, {
+              messages: updated,
+              hasMore: conversationCache.getConversation(convId)?.hasMore ?? false,
+              oldestCursor: conversationCache.getConversation(convId)?.oldestCursor ?? null,
+            });
+            return updated;
+          });
+
+          // Re-fetch the header's pinned-message summary rather than reconstructing it
+          // from local state, which may not have the target message loaded (e.g. it's
+          // further back in history than the current pagination window).
+          refreshPinnedMessage(convId);
+        }
       } else if (event.type === 'READ_RECEIPT_UPDATE') {
         const payload = event.payload as Record<string, unknown>;
         const msgId = payload.messageId as number | undefined;
@@ -957,6 +1159,8 @@ export const App: React.FC = () => {
     fetchAndSetMessagesForConversation,
     loadConversations,
     decryptSingleMessage,
+    reDecryptEditedMessage,
+    refreshPinnedMessage,
     updatePreviewIfNewer,
     upsertConversation,
   ]);
@@ -1169,13 +1373,217 @@ export const App: React.FC = () => {
     // Zero full reload on send!
   }, []);
 
-  const handleReactMessage = async (messageId: number, reaction: string) => {
+  const handleReactMessage = useCallback(async (messageId: number, reaction: string) => {
     try {
       await messageApi.addReaction(messageId, reaction);
     } catch (err: unknown) {
       console.error('Failed to update reaction:', err);
     }
-  };
+  }, []);
+
+  const handleEditMessage = useCallback(
+    async (messageId: number, newPlaintext: string) => {
+      const activeConv = activeConversationRef.current;
+      if (!activeConv || !currentUser) return;
+
+      const peerUser = getOtherParticipant(activeConv, currentUser.id);
+      if (!peerUser) {
+        throw new Error('Recipient not found for this conversation.');
+      }
+
+      let recipientPublicKeys = conversationCache.getPublicKeys(peerUser.id);
+      if (!recipientPublicKeys || recipientPublicKeys.length === 0) {
+        recipientPublicKeys = await deviceApi.getUserPublicKeys(peerUser.id);
+        if (recipientPublicKeys && recipientPublicKeys.length > 0) {
+          conversationCache.setPublicKeys(peerUser.id, recipientPublicKeys);
+        }
+      }
+      if (!recipientPublicKeys || recipientPublicKeys.length === 0) {
+        throw new Error('Recipient has no registered public keys on the server.');
+      }
+
+      const senderPrivateKey = await keyManager.getPrivateKey(currentUser.id);
+      if (!senderPrivateKey) {
+        throw new Error('Sender private key is missing from local browser vault.');
+      }
+
+      const encrypted = await encryptMessage(senderPrivateKey, recipientPublicKeys[0].publicKey, newPlaintext);
+      const updated = await messageApi.editMessage(messageId, encrypted.ciphertext, encrypted.nonce);
+
+      setMessages((prev) => {
+        const next = prev.map((m) =>
+          m.id === messageId
+            ? {
+                ...m,
+                ciphertext: encrypted.ciphertext,
+                nonce: encrypted.nonce,
+                editedAt: updated.editedAt,
+                decryptedContent: newPlaintext,
+                decryptionError: false,
+              }
+            : m
+        );
+        conversationCache.setConversation(activeConv.id, {
+          messages: next,
+          hasMore: conversationCache.getConversation(activeConv.id)?.hasMore ?? false,
+          oldestCursor: conversationCache.getConversation(activeConv.id)?.oldestCursor ?? null,
+        });
+        return next;
+      });
+      await keyManager.saveDecryptedMessage(messageId, newPlaintext);
+    },
+    [currentUser]
+  );
+
+  const handlePinMessage = useCallback(async (messageId: number) => {
+    try {
+      await messageApi.pinMessage(messageId);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to pin message';
+      alert(message);
+    }
+  }, []);
+
+  const handleUnpinMessage = useCallback(async (messageId: number) => {
+    try {
+      await messageApi.unpinMessage(messageId);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to unpin message';
+      alert(message);
+    }
+  }, []);
+
+  const handleStarMessage = useCallback(async (messageId: number) => {
+    try {
+      await messageApi.starMessage(messageId);
+      setMessages((prev) => {
+        const next = prev.map((m) => (m.id === messageId ? { ...m, starred: true } : m));
+        const activeConv = activeConversationRef.current;
+        if (activeConv) {
+          conversationCache.setConversation(activeConv.id, {
+            messages: next,
+            hasMore: conversationCache.getConversation(activeConv.id)?.hasMore ?? false,
+            oldestCursor: conversationCache.getConversation(activeConv.id)?.oldestCursor ?? null,
+          });
+        }
+        return next;
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to star message';
+      alert(message);
+    }
+  }, []);
+
+  const handleUnstarMessage = useCallback(async (messageId: number) => {
+    try {
+      await messageApi.unstarMessage(messageId);
+      setMessages((prev) => {
+        const next = prev.map((m) => (m.id === messageId ? { ...m, starred: false } : m));
+        const activeConv = activeConversationRef.current;
+        if (activeConv) {
+          conversationCache.setConversation(activeConv.id, {
+            messages: next,
+            hasMore: conversationCache.getConversation(activeConv.id)?.hasMore ?? false,
+            oldestCursor: conversationCache.getConversation(activeConv.id)?.oldestCursor ?? null,
+          });
+        }
+        return next;
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to unstar message';
+      alert(message);
+    }
+  }, []);
+
+  interface ForwardResult {
+    conversationId: number;
+    success: boolean;
+    error?: string;
+  }
+
+  const handleForwardMessages = useCallback(
+    async (messagesToForward: Message[], targetConversationIds: number[]): Promise<ForwardResult[]> => {
+      if (!currentUser) return [];
+      const results: ForwardResult[] = [];
+
+      for (const targetConvId of targetConversationIds) {
+        const targetConv = conversationsRef.current.find((c) => c.id === targetConvId);
+        if (!targetConv) {
+          results.push({ conversationId: targetConvId, success: false, error: 'Conversation not found' });
+          continue;
+        }
+        const targetPeer = getOtherParticipant(targetConv, currentUser.id);
+
+        try {
+          for (const msg of messagesToForward) {
+            if (msg.messageType === 'IMAGE' || msg.messageType === 'DOCUMENT') {
+              await messageApi.sendMessage({
+                conversationId: targetConvId,
+                messageType: msg.messageType,
+                mediaId: msg.mediaId,
+                caption: msg.caption,
+                forwarded: true,
+              });
+            } else if (msg.messageType === 'LOCATION') {
+              await messageApi.sendMessage({
+                conversationId: targetConvId,
+                messageType: 'LOCATION',
+                latitude: msg.latitude,
+                longitude: msg.longitude,
+                locationLabel: msg.locationLabel,
+                forwarded: true,
+              });
+            } else {
+              if (!targetPeer) {
+                throw new Error('Recipient not found for target conversation.');
+              }
+              const plaintext = msg.decryptedContent;
+              if (!plaintext) {
+                throw new Error('Message content is unavailable to forward.');
+              }
+
+              let recipientPublicKeys = conversationCache.getPublicKeys(targetPeer.id);
+              if (!recipientPublicKeys || recipientPublicKeys.length === 0) {
+                recipientPublicKeys = await deviceApi.getUserPublicKeys(targetPeer.id);
+                if (recipientPublicKeys && recipientPublicKeys.length > 0) {
+                  conversationCache.setPublicKeys(targetPeer.id, recipientPublicKeys);
+                }
+              }
+              if (!recipientPublicKeys || recipientPublicKeys.length === 0) {
+                throw new Error("This user hasn't activated secure messaging yet.");
+              }
+
+              const senderPrivateKey = await keyManager.getPrivateKey(currentUser.id);
+              if (!senderPrivateKey) {
+                throw new Error('Sender private key is missing from local browser vault.');
+              }
+              const senderDevice = await keyManager.getLocalDevice(currentUser.id);
+
+              const encrypted = await encryptMessage(senderPrivateKey, recipientPublicKeys[0].publicKey, plaintext);
+
+              await messageApi.sendMessage({
+                conversationId: targetConvId,
+                messageType: 'TEXT',
+                senderDeviceId: senderDevice?.deviceId,
+                recipientDeviceId: recipientPublicKeys[0].deviceId,
+                encryptionAlgorithm: 'ECDH-P256+AES-256-GCM',
+                ciphertext: encrypted.ciphertext,
+                nonce: encrypted.nonce,
+                forwarded: true,
+              });
+            }
+          }
+          results.push({ conversationId: targetConvId, success: true });
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : 'Failed to forward message';
+          results.push({ conversationId: targetConvId, success: false, error: message });
+        }
+      }
+
+      return results;
+    },
+    [currentUser]
+  );
 
   const handleMuteChat = async (duration: '8_HOURS' | '1_WEEK' | 'ALWAYS') => {
     if (!activeConversation) return;
@@ -1221,7 +1629,7 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleDeleteMessage = async (messageId: number, deleteForEveryone: boolean) => {
+  const handleDeleteMessage = useCallback(async (messageId: number, deleteForEveryone: boolean) => {
     try {
       await messageApi.deleteMessage(messageId, deleteForEveryone);
       setMessages((prev) => {
@@ -1241,7 +1649,7 @@ export const App: React.FC = () => {
     } catch (err: any) {
       alert('Failed to delete message: ' + err.message);
     }
-  };
+  }, []);
 
   const handleDeleteConversation = async (conversationId: number) => {
     if (!window.confirm('Delete this conversation from your list?')) return;
@@ -1460,15 +1868,23 @@ export const App: React.FC = () => {
               onMuteChat={handleMuteChat}
               onUnmuteChat={handleUnmuteChat}
               onReactMessage={handleReactMessage}
+              onEditMessage={handleEditMessage}
+              pinnedMessage={pinnedMessage}
+              onPinMessage={handlePinMessage}
+              onUnpinMessage={handleUnpinMessage}
+              onStarMessage={handleStarMessage}
+              onUnstarMessage={handleUnstarMessage}
+              onForwardMessages={handleForwardMessages}
+              conversations={conversations}
             />
 
             {showInfoDrawer && (
-              <div className="hidden md:block">
+              <React.Suspense fallback={null}>
                 <ContactInfoDrawer
                   recipient={getRecipientUser(activeConversation)}
                   onClose={() => setShowInfoDrawer(false)}
                 />
-              </div>
+              </React.Suspense>
             )}
           </div>
         ) : (
@@ -1497,30 +1913,36 @@ export const App: React.FC = () => {
       </div>
 
       {showProfileModal && (
-        <ProfileModal
-          currentUser={currentUser}
-          isDarkMode={isDarkMode}
-          onToggleTheme={() => setIsDarkMode(!isDarkMode)}
-          onOpenDevices={() => setShowDeviceModal(true)}
-          onClose={() => setShowProfileModal(false)}
-          onLogout={handleLogout}
-          onUserUpdated={handleUserUpdated}
-        />
+        <React.Suspense fallback={null}>
+          <ProfileModal
+            currentUser={currentUser}
+            isDarkMode={isDarkMode}
+            onToggleTheme={() => setIsDarkMode(!isDarkMode)}
+            onOpenDevices={() => setShowDeviceModal(true)}
+            onClose={() => setShowProfileModal(false)}
+            onLogout={handleLogout}
+            onUserUpdated={handleUserUpdated}
+          />
+        </React.Suspense>
       )}
 
       {showSearchModal && (
-        <UserSearchModal
-          onClose={() => setShowSearchModal(false)}
-          onSelectConversation={(conv) => {
-            upsertConversation(conv);
-            setActiveConversation(conv);
-            loadConversations();
-          }}
-        />
+        <React.Suspense fallback={null}>
+          <UserSearchModal
+            onClose={() => setShowSearchModal(false)}
+            onSelectConversation={(conv) => {
+              upsertConversation(conv);
+              setActiveConversation(conv);
+              loadConversations();
+            }}
+          />
+        </React.Suspense>
       )}
 
       {showDeviceModal && (
-        <DeviceManagerModal currentUser={currentUser} onClose={() => setShowDeviceModal(false)} />
+        <React.Suspense fallback={null}>
+          <DeviceManagerModal currentUser={currentUser} onClose={() => setShowDeviceModal(false)} />
+        </React.Suspense>
       )}
 
       <NotificationToast

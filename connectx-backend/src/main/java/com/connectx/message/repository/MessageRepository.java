@@ -10,6 +10,7 @@ import org.springframework.stereotype.Repository;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface MessageRepository extends JpaRepository<Message, Long> {
@@ -107,4 +108,6 @@ public interface MessageRepository extends JpaRepository<Message, Long> {
             @Param("now") Instant now);
 
     void deleteByConversationId(Long conversationId);
+
+    Optional<Message> findTopByConversationIdAndPinnedAtIsNotNullAndDeletedForEveryoneFalseOrderByPinnedAtDesc(Long conversationId);
 }

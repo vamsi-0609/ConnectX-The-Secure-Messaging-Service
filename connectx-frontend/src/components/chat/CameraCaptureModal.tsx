@@ -26,6 +26,18 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
+  // The actual facing mode the device reports, which can differ from the
+  // requested `facingMode` (e.g. a laptop webcam always returns the same
+  // single front-facing camera no matter what's requested).
+  const [actualFacingMode, setActualFacingMode] = useState<'user' | 'environment' | undefined>(undefined);
+  // Matches the container to the camera's real stream ratio so the preview
+  // is never stretched or cropped into a mismatched box.
+  const [mediaAspectRatio, setMediaAspectRatio] = useState<number | null>(null);
+
+  // Mirror unless the device explicitly reports a rear ("environment") camera —
+  // single-camera laptops/desktops that don't report facingMode at all are
+  // always a front-facing webcam, so default to mirrored in that case too.
+  const shouldMirror = actualFacingMode !== 'environment';
 
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
@@ -50,6 +62,8 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
     stopCamera();
     setError(null);
     setStarting(true);
+    setMediaAspectRatio(null);
+    setActualFacingMode(undefined);
 
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -66,6 +80,8 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
       });
 
       streamRef.current = stream;
+      const trackSettings = stream.getVideoTracks()[0]?.getSettings();
+      setActualFacingMode(trackSettings?.facingMode as 'user' | 'environment' | undefined);
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
@@ -121,6 +137,12 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
       return;
     }
 
+    // Mirror the capture for the front camera too, so the sent photo matches
+    // what was framed in the mirrored selfie preview (no surprise flip).
+    if (shouldMirror) {
+      context.translate(canvas.width, 0);
+      context.scale(-1, 1);
+    }
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
     canvas.toBlob(
       (blob) => {
@@ -184,7 +206,10 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
           </button>
         </div>
 
-        <div className="relative bg-black aspect-[4/3] sm:aspect-video">
+        <div
+          className={`relative bg-black overflow-hidden ${mediaAspectRatio ? '' : 'aspect-[4/3] sm:aspect-video'}`}
+          style={mediaAspectRatio ? { aspectRatio: mediaAspectRatio } : undefined}
+        >
           {step === 'live' ? (
             <>
               <video
@@ -192,7 +217,17 @@ export const CameraCaptureModal: React.FC<CameraCaptureModalProps> = ({
                 autoPlay
                 playsInline
                 muted
-                className="w-full h-full object-cover"
+                onLoadedMetadata={(e) => {
+                  const v = e.currentTarget;
+                  if (v.videoWidth && v.videoHeight) {
+                    // Clamp to a sane range so an unusual stream report can't blow the
+                    // modal past the viewport height — still fully fixes the mismatch
+                    // between the old fixed box and the real stream shape.
+                    const ratio = v.videoWidth / v.videoHeight;
+                    setMediaAspectRatio(Math.min(1.9, Math.max(0.55, ratio)));
+                  }
+                }}
+                className={`w-full h-full object-cover ${shouldMirror ? 'scale-x-[-1]' : ''}`}
               />
               {(starting || error) && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/60 px-6 text-center">

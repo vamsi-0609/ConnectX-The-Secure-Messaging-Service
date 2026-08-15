@@ -138,7 +138,7 @@ export const ImageMessageContent: React.FC<ImageMessageContentProps> = ({
                 : 'bg-slate-800/95 text-slate-100 border border-slate-700/50'
             }`}
           >
-            <p className="whitespace-pre-wrap break-words text-[13px] leading-snug md:text-[15px] select-text">{caption}</p>
+            <p className="whitespace-pre-wrap break-words text-[13px] leading-snug md:text-[15px] select-none">{caption}</p>
             {formattedTime && (
               <div className={`mt-1 flex items-center justify-end gap-1 select-none ${isSelf ? 'text-indigo-100/80' : 'text-slate-400'}`}>
                 <span className="text-[10px] leading-none md:text-[11px]">{formattedTime}</span>

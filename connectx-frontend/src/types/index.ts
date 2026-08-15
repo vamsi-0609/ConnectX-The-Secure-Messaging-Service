@@ -122,6 +122,12 @@ export interface Message {
   reactions?: MessageReaction[];
   clientTempId?: string;
   status?: 'SENDING' | 'SENT' | 'FAILED';
+  editedAt?: string;
+  forwarded?: boolean;
+  pinnedAt?: string;
+  pinnedByUserId?: number;
+  pinnedByUsername?: string;
+  starred?: boolean;
 }
 
 export interface PagedMessagesResponse {
@@ -155,6 +161,10 @@ export interface WsEvent<T = any> {
     | 'MESSAGE_DELIVERED'
     | 'MESSAGE_READ'
     | 'MESSAGE_REACTION_UPDATE'
+    | 'MESSAGE_EDITED'
+    | 'MESSAGE_DELETED'
+    | 'MESSAGE_PINNED'
+    | 'MESSAGE_UNPINNED'
     | 'READ_RECEIPT_UPDATE'
     | 'CONVERSATION_DELETED'
     | 'CONVERSATION_RESTORED'

@@ -33,6 +33,12 @@ public class MessageDto {
     private String replyToCaption;
     private boolean replyToDeleted;
     private java.util.List<MessageReactionDto> reactions = new java.util.ArrayList<>();
+    private Instant editedAt;
+    private boolean forwarded;
+    private Instant pinnedAt;
+    private Long pinnedByUserId;
+    private String pinnedByUsername;
+    private boolean starred;
 
     public MessageDto() {}
 
@@ -97,6 +103,14 @@ public class MessageDto {
             dto.setReactions(message.getReactions().stream()
                     .map(MessageReactionDto::fromEntity)
                     .collect(java.util.stream.Collectors.toList()));
+        }
+
+        dto.setEditedAt(message.getEditedAt());
+        dto.setForwarded(message.isForwarded());
+        dto.setPinnedAt(message.getPinnedAt());
+        if (message.getPinnedBy() != null) {
+            dto.setPinnedByUserId(message.getPinnedBy().getId());
+            dto.setPinnedByUsername(message.getPinnedBy().getUsername());
         }
 
         return dto;
@@ -316,5 +330,53 @@ public class MessageDto {
 
     public void setReactions(java.util.List<MessageReactionDto> reactions) {
         this.reactions = reactions;
+    }
+
+    public Instant getEditedAt() {
+        return editedAt;
+    }
+
+    public void setEditedAt(Instant editedAt) {
+        this.editedAt = editedAt;
+    }
+
+    public boolean isForwarded() {
+        return forwarded;
+    }
+
+    public void setForwarded(boolean forwarded) {
+        this.forwarded = forwarded;
+    }
+
+    public Instant getPinnedAt() {
+        return pinnedAt;
+    }
+
+    public void setPinnedAt(Instant pinnedAt) {
+        this.pinnedAt = pinnedAt;
+    }
+
+    public Long getPinnedByUserId() {
+        return pinnedByUserId;
+    }
+
+    public void setPinnedByUserId(Long pinnedByUserId) {
+        this.pinnedByUserId = pinnedByUserId;
+    }
+
+    public String getPinnedByUsername() {
+        return pinnedByUsername;
+    }
+
+    public void setPinnedByUsername(String pinnedByUsername) {
+        this.pinnedByUsername = pinnedByUsername;
+    }
+
+    public boolean isStarred() {
+        return starred;
+    }
+
+    public void setStarred(boolean starred) {
+        this.starred = starred;
     }
 }

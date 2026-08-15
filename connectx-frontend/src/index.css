@@ -55,6 +55,28 @@ button,
   -webkit-tap-highlight-color: transparent;
 }
 
+/*
+ * App-wide text selection is disabled by default — the only supported way to
+ * copy text is the explicit "Copy" action in each message's menu. This is a
+ * safe-by-default baseline rather than per-element opt-outs, so a long-press
+ * (e.g. entering multi-select) can never accidentally trigger native text
+ * selection or the OS "search selected text" popup anywhere in the app.
+ * Real inputs are the only opt-back-in, since they need normal editing.
+ */
+body {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+input,
+textarea,
+[contenteditable='true'] {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
 /* Application shell */
 .app-shell {
   display: flex;

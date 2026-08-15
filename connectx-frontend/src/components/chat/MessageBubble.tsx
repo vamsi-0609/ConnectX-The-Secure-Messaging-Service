@@ -12,6 +12,13 @@ import {
   Loader2,
   CornerUpLeft,
   SmilePlus,
+  Pencil,
+  Pin,
+  PinOff,
+  Star,
+  Forward,
+  CheckCircle2,
+  Circle,
 } from 'lucide-react';
 import { Message } from '../../types';
 import { ImageMessageContent } from './ImageMessageContent';
@@ -21,6 +28,8 @@ import { getGoogleMapsLink } from '../../utils/googleMaps';
 import { saveImageToGallery } from '../../utils/saveMedia';
 
 const QUICK_REACTIONS = ['❤️', '😂', '👍', '😮', '😢', '🔥'];
+const EDIT_WINDOW_MS = 15 * 60 * 1000;
+const LONG_PRESS_MS = 450;
 
 const calculateMenuPosition = (
   anchorRect: DOMRect,
@@ -93,6 +102,16 @@ interface MessageBubbleProps {
   onReplyMessage?: (message: Message) => void;
   onReactMessage?: (messageId: number, reaction: string) => void;
   onScrollToMessage?: (messageId: number) => void;
+  onEditMessage?: (message: Message) => void;
+  onPinMessage?: (messageId: number) => void;
+  onUnpinMessage?: (messageId: number) => void;
+  onStarMessage?: (messageId: number) => void;
+  onUnstarMessage?: (messageId: number) => void;
+  onForwardMessage?: (message: Message) => void;
+  selectionMode?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: (message: Message) => void;
+  onEnterSelectionMode?: (message: Message) => void;
 }
 
 const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
@@ -106,10 +125,21 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
   onReplyMessage,
   onReactMessage,
   onScrollToMessage,
+  onEditMessage,
+  onPinMessage,
+  onUnpinMessage,
+  onStarMessage,
+  onUnstarMessage,
+  onForwardMessage,
+  selectionMode = false,
+  isSelected = false,
+  onToggleSelect,
+  onEnterSelectionMode,
 }) => {
   const [showMenu, setShowMenu] = useState(false);
   const [showReactionPicker, setShowReactionPicker] = useState(false);
   const [savingImage, setSavingImage] = useState(false);
+  const [justSavedImage, setJustSavedImage] = useState(false);
 
   const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   const [reactionPickerPos, setReactionPickerPos] = useState<{ top: number; left: number } | null>(null);
@@ -155,7 +185,7 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
     const pos = calculateMenuPosition(
       btnRect,
       menuRect.width || 176,
-      menuRect.height || (isSelf ? 230 : 190),
+      menuRect.height || (isSelf ? 380 : 300),
       isSelf
     );
     setMenuPos((prev) => {
@@ -190,7 +220,7 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
   };
 
   const handleSaveToGallery = async () => {
-    if (message.messageType !== 'IMAGE' || savingImage) return;
+    if (message.messageType !== 'IMAGE' || savingImage || justSavedImage) return;
 
     setSavingImage(true);
     try {
@@ -199,7 +229,11 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
         localMediaUrl: message.localMediaUrl,
         mimeType: message.mimeType,
       });
-      setShowMenu(false);
+      setJustSavedImage(true);
+      window.setTimeout(() => {
+        setJustSavedImage(false);
+        setShowMenu(false);
+      }, 900);
     } catch (err: unknown) {
       const messageText = err instanceof Error ? err.message : 'Failed to save image';
       alert(messageText);
@@ -213,6 +247,55 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
     setShowReactionPicker(false);
   };
 
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressFiredRef = useRef(false);
+
+  const clearLongPressTimer = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  useEffect(() => clearLongPressTimer, []);
+
+  const handleBubblePointerDown = (e: React.PointerEvent) => {
+    if (selectionMode || message.deletedForEveryone || message.id < 0 || e.pointerType === 'mouse') return;
+    longPressFiredRef.current = false;
+    clearLongPressTimer();
+    longPressTimerRef.current = setTimeout(() => {
+      longPressFiredRef.current = true;
+      onEnterSelectionMode?.(message);
+    }, LONG_PRESS_MS);
+  };
+
+  const handleBubblePointerUpOrLeave = () => {
+    clearLongPressTimer();
+  };
+
+  const handleBubbleClick = (e: React.MouseEvent) => {
+    if (longPressFiredRef.current) {
+      // Swallow the trailing click the browser fires after the long-press's
+      // pointerup — onEnterSelectionMode already selects this message.
+      longPressFiredRef.current = false;
+      return;
+    }
+    if (!selectionMode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onToggleSelect?.(message);
+  };
+
+  const isEditable =
+    isSelf &&
+    !selectionMode &&
+    message.messageType === 'TEXT' &&
+    !message.deletedForEveryone &&
+    message.id > 0 &&
+    Date.now() - new Date(message.sentAt).getTime() < EDIT_WINDOW_MS;
+
+  const isPinned = !!message.pinnedAt;
+
   const handleToggleMenu = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (showMenu) {
@@ -221,7 +304,7 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
       setShowReactionPicker(false);
       if (moreButtonRef.current) {
         const btnRect = moreButtonRef.current.getBoundingClientRect();
-        const initialMenuHeight = isSelf ? 230 : 190;
+        const initialMenuHeight = isSelf ? 380 : 300;
         const pos = calculateMenuPosition(btnRect, 176, initialMenuHeight, isSelf);
         setMenuPos(pos);
         setShowMenu(true);
@@ -300,10 +383,31 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
   return (
     <div
       id={`message-${message.id}`}
-      className={`flex ${isSelf ? 'justify-end' : 'justify-start'} ${marginClass} group relative`}
+      className={`flex items-center gap-2 ${isSelf ? 'justify-end' : 'justify-start'} ${marginClass} group relative`}
     >
+      {selectionMode && message.id > 0 && (
+        <button
+          type="button"
+          onClick={() => onToggleSelect?.(message)}
+          className="flex-shrink-0 p-0.5 rounded-full transition-transform active:scale-90"
+          aria-label={isSelected ? 'Deselect message' : 'Select message'}
+        >
+          {isSelected ? (
+            <CheckCircle2 className="w-5 h-5 text-indigo-500" />
+          ) : (
+            <Circle className="w-5 h-5 text-slate-400" />
+          )}
+        </button>
+      )}
       <div
-        className={`relative max-w-[85%] md:max-w-[70%] lg:max-w-[65%] transition-all ${
+        onPointerDown={handleBubblePointerDown}
+        onPointerUp={handleBubblePointerUpOrLeave}
+        onPointerLeave={handleBubblePointerUpOrLeave}
+        onPointerCancel={handleBubblePointerUpOrLeave}
+        onClick={handleBubbleClick}
+        className={`relative max-w-[85%] md:max-w-[70%] lg:max-w-[65%] transition-all ${selectionMode ? 'cursor-pointer' : ''} ${
+          isSelected ? 'ring-2 ring-indigo-500 rounded-2xl' : isPinned ? 'ring-1 ring-amber-400/50 rounded-2xl' : ''
+        } ${
           isImageMessage || isDocMessage
             ? 'border-0 bg-transparent p-0 shadow-none'
             : `${radiusClass} shadow-sm ${
@@ -317,11 +421,17 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
               }`
         }`}
       >
+        {message.forwarded && !isImageMessage && !isDocMessage && (
+          <div className={`flex items-center gap-1 text-[11px] italic mb-1 select-none ${isSelf ? 'text-indigo-100/70' : 'text-slate-400'}`}>
+            <Forward className="w-3 h-3" />
+            <span>Forwarded</span>
+          </div>
+        )}
         {/* Reply Quote Card if this message is replying to another message */}
         {message.replyToMessageId && (
           <div
             onClick={() => onScrollToMessage?.(message.replyToMessageId!)}
-            className="mb-1.5 p-2 rounded-lg bg-black/25 hover:bg-black/35 border-l-4 border-indigo-400 cursor-pointer text-xs transition-colors select-none"
+            className="mb-1.5 p-2 rounded-lg bg-black/25 hover:bg-black/35 active:scale-[0.98] border-l-4 border-indigo-400 cursor-pointer text-xs transition-all select-none"
             role="button"
             tabIndex={0}
             title="Click to view quoted message"
@@ -352,7 +462,7 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
             This message was deleted
           </p>
         ) : showRawCiphertext ? (
-          <div className="text-[10px] font-mono break-all text-pink-200/90 space-y-1 select-text">
+          <div className="text-[10px] font-mono break-all text-pink-200/90 space-y-1 select-none">
             <div className="flex items-center gap-1 text-pink-300/80 select-none">
               <Lock className="w-3 h-3" />
               <span>Ciphertext</span>
@@ -392,7 +502,7 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
             <span>Unable to decrypt message</span>
           </div>
         ) : (
-          <p className="text-[13px] md:text-[15px] md:leading-snug leading-snug whitespace-pre-wrap break-words pr-1 select-text">
+          <p className="text-[13px] md:text-[15px] md:leading-snug leading-snug whitespace-pre-wrap break-words pr-1 select-none">
             {message.decryptedContent || '🔒 Encrypted message'}
           </p>
         )}
@@ -403,6 +513,9 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
               isSelf ? 'text-indigo-100/80' : 'text-slate-400'
             }`}
           >
+            {isPinned && <Pin className="w-3 h-3" aria-label="Pinned" />}
+            {message.starred && <Star className="w-3 h-3 fill-current" aria-label="Starred" />}
+            {message.editedAt && <span className="text-[10px] md:text-[11px] italic opacity-80">edited</span>}
             <span className="text-[10px] md:text-[11px] leading-none">{formattedTime}</span>
             {renderStatus()}
           </div>
@@ -411,7 +524,7 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
         {/* Reaction Badges */}
         {reactionEntries.length > 0 && (
           <div
-            className={`flex flex-wrap gap-1 mt-1 select-none ${
+            className={`flex flex-wrap gap-1 mt-1.5 select-none ${
               isSelf ? 'justify-end' : 'justify-start'
             }`}
           >
@@ -420,16 +533,16 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
                 key={emoji}
                 type="button"
                 onClick={() => handleReactionClick(emoji)}
-                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-xs transition-all shadow-sm ${
+                className={`animate-pop-in inline-flex items-center gap-1 min-h-[22px] px-1.5 py-0.5 rounded-full text-xs leading-none shadow-sm transition-all hover:scale-110 active:scale-95 ${
                   data.hasUserReacted
                     ? 'bg-indigo-500/30 border border-indigo-400/60 text-white font-semibold'
                     : 'bg-slate-900/80 border border-slate-700/60 text-slate-200 hover:bg-slate-800'
                 }`}
                 title={`Reacted by: ${data.users.join(', ')}`}
               >
-                <span>{emoji}</span>
+                <span className="text-sm leading-none">{emoji}</span>
                 {data.count > 1 && (
-                  <span className="text-[10px] opacity-90">{data.count}</span>
+                  <span className="text-[10px] font-medium opacity-90 leading-none">{data.count}</span>
                 )}
               </button>
             ))}
@@ -441,14 +554,14 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
           <div
             className={`absolute top-0 -translate-y-1/2 ${
               isSelf ? 'left-0 -translate-x-full pr-1.5' : 'right-0 translate-x-full pl-1.5'
-            } hidden group-hover:flex items-center gap-0.5 bg-slate-900/90 backdrop-blur-sm border border-slate-700/70 rounded-full py-0.5 px-1 shadow-lg z-20 transition-all select-none`}
+            } hidden [@media(hover:hover)]:group-hover:flex items-center gap-0.5 bg-slate-900/90 backdrop-blur-sm border border-slate-700/70 rounded-full py-1 px-1 shadow-lg z-20 transition-all select-none animate-pop-in`}
           >
             {/* Quick React Trigger */}
             <button
               ref={reactButtonRef}
               type="button"
               onClick={handleToggleReactionPicker}
-              className="p-1 text-slate-400 hover:text-amber-400 hover:bg-slate-800 rounded-full transition-colors"
+              className="p-1.5 text-slate-400 hover:text-amber-400 hover:bg-slate-800 active:scale-90 rounded-full transition-all"
               aria-label="Add reaction"
               title="Add reaction"
             >
@@ -460,7 +573,7 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
               <button
                 type="button"
                 onClick={() => onReplyMessage(message)}
-                className="p-1 text-slate-400 hover:text-indigo-400 hover:bg-slate-800 rounded-full transition-colors"
+                className="p-1.5 text-slate-400 hover:text-indigo-400 hover:bg-slate-800 active:scale-90 rounded-full transition-all"
                 aria-label="Reply to message"
                 title="Reply"
               >
@@ -473,7 +586,7 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
               ref={moreButtonRef}
               type="button"
               onClick={handleToggleMenu}
-              className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded-full transition-colors"
+              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 active:scale-90 rounded-full transition-all"
               aria-label="More options"
               title="More"
             >
@@ -499,14 +612,14 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
                   top: `${reactionPickerPos.top}px`,
                   left: `${reactionPickerPos.left}px`,
                 }}
-                className="z-50 flex items-center gap-1 bg-slate-900 border border-slate-700 rounded-full py-1 px-2 shadow-2xl animate-pop-in select-none"
+                className="z-50 flex items-center gap-0.5 bg-slate-900 border border-slate-700 rounded-full py-1.5 px-2 shadow-2xl animate-pop-in select-none"
               >
                 {QUICK_REACTIONS.map((emoji) => (
                   <button
                     key={emoji}
                     type="button"
                     onClick={() => handleReactionClick(emoji)}
-                    className="hover:scale-125 active:scale-95 transition-transform text-lg px-1.5 py-0.5 rounded-full hover:bg-slate-800"
+                    className="hover:scale-125 active:scale-90 transition-transform duration-150 text-xl leading-none w-9 h-9 flex items-center justify-center rounded-full hover:bg-slate-800"
                   >
                     {emoji}
                   </button>
@@ -547,19 +660,109 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
                     <CornerUpLeft className="w-3.5 h-3.5" /> Reply
                   </button>
                 )}
+                {isEditable && onEditMessage && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onEditMessage(message);
+                      setShowMenu(false);
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-slate-800 rounded-lg flex items-center gap-2 text-slate-200"
+                  >
+                    <Pencil className="w-3.5 h-3.5" /> Edit
+                  </button>
+                )}
+                {onForwardMessage && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onForwardMessage(message);
+                      setShowMenu(false);
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-slate-800 rounded-lg flex items-center gap-2 text-slate-200"
+                  >
+                    <Forward className="w-3.5 h-3.5" /> Forward
+                  </button>
+                )}
+                {onEnterSelectionMode && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onEnterSelectionMode(message);
+                      setShowMenu(false);
+                    }}
+                    className="w-full text-left px-3 py-2 hover:bg-slate-800 rounded-lg flex items-center gap-2 text-slate-200"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Select
+                  </button>
+                )}
+                {isPinned
+                  ? onUnpinMessage && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onUnpinMessage(message.id);
+                          setShowMenu(false);
+                        }}
+                        className="w-full text-left px-3 py-2 hover:bg-slate-800 rounded-lg flex items-center gap-2 text-slate-200"
+                      >
+                        <PinOff className="w-3.5 h-3.5" /> Unpin
+                      </button>
+                    )
+                  : onPinMessage && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onPinMessage(message.id);
+                          setShowMenu(false);
+                        }}
+                        className="w-full text-left px-3 py-2 hover:bg-slate-800 rounded-lg flex items-center gap-2 text-slate-200"
+                      >
+                        <Pin className="w-3.5 h-3.5" /> Pin
+                      </button>
+                    )}
+                {message.starred
+                  ? onUnstarMessage && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onUnstarMessage(message.id);
+                          setShowMenu(false);
+                        }}
+                        className="w-full text-left px-3 py-2 hover:bg-slate-800 rounded-lg flex items-center gap-2 text-slate-200"
+                      >
+                        <Star className="w-3.5 h-3.5 fill-current text-amber-400" /> Unstar
+                      </button>
+                    )
+                  : onStarMessage && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onStarMessage(message.id);
+                          setShowMenu(false);
+                        }}
+                        className="w-full text-left px-3 py-2 hover:bg-slate-800 rounded-lg flex items-center gap-2 text-slate-200"
+                      >
+                        <Star className="w-3.5 h-3.5" /> Star
+                      </button>
+                    )}
                 {message.messageType === 'IMAGE' && (
                   <button
                     type="button"
                     onClick={handleSaveToGallery}
-                    disabled={savingImage}
-                    className="w-full text-left px-3 py-2 hover:bg-slate-800 rounded-lg flex items-center gap-2 text-slate-200 disabled:opacity-60"
+                    disabled={savingImage || justSavedImage}
+                    className="w-full text-left px-3 py-2 hover:bg-slate-800 rounded-lg flex items-center gap-2 text-slate-200 disabled:opacity-90 transition-colors"
                   >
                     {savingImage ? (
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : justSavedImage ? (
+                      <Check className="w-3.5 h-3.5 text-emerald-400" />
                     ) : (
                       <Download className="w-3.5 h-3.5" />
                     )}
-                    Save to gallery
+                    <span className={justSavedImage ? 'text-emerald-400 font-medium' : undefined}>
+                      {justSavedImage ? 'Saved' : 'Save to gallery'}
+                    </span>
                   </button>
                 )}
                 {message.messageType !== 'IMAGE' && message.messageType !== 'LOCATION' && (

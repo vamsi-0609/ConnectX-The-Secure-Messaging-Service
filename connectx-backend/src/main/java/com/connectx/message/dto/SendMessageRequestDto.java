@@ -34,6 +34,8 @@ public class SendMessageRequestDto {
 
     private Long replyToMessageId;
 
+    private boolean forwarded;
+
     public SendMessageRequestDto() {}
 
     public Long getReplyToMessageId() {
@@ -146,5 +148,13 @@ public class SendMessageRequestDto {
 
     public void setRequestId(String requestId) {
         this.requestId = requestId;
+    }
+
+    public boolean isForwarded() {
+        return forwarded;
+    }
+
+    public void setForwarded(boolean forwarded) {
+        this.forwarded = forwarded;
     }
 }

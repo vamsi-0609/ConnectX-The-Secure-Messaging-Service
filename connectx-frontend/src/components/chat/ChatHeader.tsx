@@ -93,9 +93,15 @@ export const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
             </button>
           )}
 
-          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+          <button
+            type="button"
+            onClick={onToggleInfoDrawer}
+            disabled={!recipient}
+            className="flex items-center gap-2.5 min-w-0 flex-1 text-left"
+            aria-label="View contact info"
+          >
             {recipient && (
-              <UserAvatar user={recipient} size="sm" className="md:w-11 md:h-11 flex-shrink-0" />
+              <UserAvatar user={recipient} size="sm" className="md:w-11 md:h-11 flex-shrink-0" passive />
             )}
             {!recipient && (
               <div className="w-10 h-10 md:w-11 md:h-11 rounded-full bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center font-semibold text-white text-sm md:text-base flex-shrink-0">
@@ -103,12 +109,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
               </div>
             )}
 
-            <button
-              type="button"
-              onClick={onToggleInfoDrawer}
-              className="min-w-0 text-left flex-1"
-              disabled={!recipient}
-            >
+            <div className="min-w-0 flex-1">
               <div className="min-w-0">
                 <div className="flex items-center gap-1">
                   <h2 className="font-semibold text-slate-900 dark:text-white text-[15px] md:text-[16px] truncate leading-tight">
@@ -124,8 +125,8 @@ export const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
                   )}
                 </p>
               </div>
-            </button>
-          </div>
+            </div>
+          </button>
         </div>
 
         <div className="flex items-center gap-0.5 md:gap-1 flex-shrink-0">

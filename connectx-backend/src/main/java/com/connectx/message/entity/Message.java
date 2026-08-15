@@ -82,6 +82,19 @@ public class Message {
     @JoinColumn(name = "reply_to_message_id")
     private Message replyToMessage;
 
+    @Column(name = "edited_at")
+    private Instant editedAt;
+
+    @Column(name = "forwarded", nullable = false)
+    private boolean forwarded = false;
+
+    @Column(name = "pinned_at")
+    private Instant pinnedAt;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "pinned_by_user_id")
+    private User pinnedBy;
+
     @OneToMany(mappedBy = "message", cascade = CascadeType.ALL, orphanRemoval = true)
     private java.util.List<MessageReaction> reactions = new java.util.ArrayList<>();
 
@@ -272,5 +285,37 @@ public class Message {
 
     public void setReactions(java.util.List<MessageReaction> reactions) {
         this.reactions = reactions;
+    }
+
+    public Instant getEditedAt() {
+        return editedAt;
+    }
+
+    public void setEditedAt(Instant editedAt) {
+        this.editedAt = editedAt;
+    }
+
+    public boolean isForwarded() {
+        return forwarded;
+    }
+
+    public void setForwarded(boolean forwarded) {
+        this.forwarded = forwarded;
+    }
+
+    public Instant getPinnedAt() {
+        return pinnedAt;
+    }
+
+    public void setPinnedAt(Instant pinnedAt) {
+        this.pinnedAt = pinnedAt;
+    }
+
+    public User getPinnedBy() {
+        return pinnedBy;
+    }
+
+    public void setPinnedBy(User pinnedBy) {
+        this.pinnedBy = pinnedBy;
     }
 }

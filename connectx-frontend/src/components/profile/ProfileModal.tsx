@@ -21,6 +21,8 @@ import { userApi } from '../../api/userApi';
 import { PROFILE_PHOTO_ACCEPT, validateProfilePhotoFile, resolveProfileImageUrl } from '../../utils/profileImage';
 import { ConnectXLogo } from '../common/ConnectXLogo';
 import { usePWAInstall } from '../../utils/usePWAInstall';
+import { ImageViewerModal } from '../common/ImageViewerModal';
+import { saveImageUrlToGallery } from '../../utils/saveMedia';
 
 
 interface ProfileModalProps {
@@ -115,6 +117,8 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [avatarViewerOpen, setAvatarViewerOpen] = useState(false);
+  const [savingAvatarPhoto, setSavingAvatarPhoto] = useState(false);
 
   // Profile Edit State
   const [isEditing, setIsEditing] = useState(false);
@@ -144,6 +148,19 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
 
   const avatarImageUrl = localPreviewUrl || resolveProfileImageUrl(previewUser.profileImageUrl);
   const avatarInitial = (previewUser.displayName || previewUser.username || '?').charAt(0).toUpperCase();
+
+  const handleSaveAvatarPhoto = async () => {
+    if (!avatarImageUrl || savingAvatarPhoto) return;
+    setSavingAvatarPhoto(true);
+    try {
+      await saveImageUrlToGallery(avatarImageUrl, `connectx-${previewUser.username || 'profile'}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to save photo';
+      alert(message);
+    } finally {
+      setSavingAvatarPhoto(false);
+    }
+  };
 
   const handleSelectPhoto = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -283,12 +300,31 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
         <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800">
           <div className="flex items-start gap-3">
             <div className="relative">
-              <div className="w-16 h-16 rounded-full overflow-hidden bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white text-xl font-semibold flex-shrink-0 shadow-md">
+              <div
+                onClick={avatarImageUrl ? () => setAvatarViewerOpen(true) : undefined}
+                role={avatarImageUrl ? 'button' : undefined}
+                tabIndex={avatarImageUrl ? 0 : undefined}
+                onKeyDown={
+                  avatarImageUrl
+                    ? (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setAvatarViewerOpen(true);
+                        }
+                      }
+                    : undefined
+                }
+                aria-label={avatarImageUrl ? 'View profile photo' : undefined}
+                title={avatarImageUrl ? 'View profile photo' : undefined}
+                className={`w-16 h-16 rounded-full overflow-hidden bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white text-xl font-semibold flex-shrink-0 shadow-md ${
+                  avatarImageUrl ? 'cursor-pointer hover:opacity-90 transition-opacity' : ''
+                }`}
+              >
                 {avatarImageUrl ? (
                   <img
                     src={avatarImageUrl}
                     alt={previewUser.displayName || previewUser.username}
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-cover pointer-events-none"
                   />
                 ) : (
                   <span>{avatarInitial}</span>
@@ -488,6 +524,18 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
           </button>
         </div>
       </div>
+
+      {avatarImageUrl && (
+        <ImageViewerModal
+          open={avatarViewerOpen}
+          imageUrl={avatarImageUrl}
+          alt={previewUser.displayName || previewUser.username}
+          title={previewUser.displayName || previewUser.username}
+          onClose={() => setAvatarViewerOpen(false)}
+          onSave={handleSaveAvatarPhoto}
+          saving={savingAvatarPhoto}
+        />
+      )}
 
       {/* Email Change Modal */}
       {showEmailModal && (
