@@ -29,6 +29,11 @@ import { decryptMessage } from './crypto/decryption';
 import { encryptMessage } from './crypto/encryption';
 import { ensureLocalCryptoDevice } from './crypto/deviceSession';
 import { conversationCache } from './cache/conversationCache';
+import {
+  loadCachedConversations,
+  saveCachedConversations,
+  clearCachedConversationLists,
+} from './cache/conversationListCache';
 import { applyTheme, isDarkTheme } from './utils/theme';
 import { soundManager } from './utils/notificationSound';
 import { browserNotifications } from './utils/browserNotifications';
@@ -167,7 +172,9 @@ export const App: React.FC = () => {
       return null;
     }
   });
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>(() =>
+    currentUser ? loadCachedConversations(currentUser.id) : []
+  );
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [hasMoreMessages, setHasMoreMessages] = useState<boolean>(false);
@@ -273,6 +280,7 @@ export const App: React.FC = () => {
       console.warn('[ConnectX] Authentication session expired. Resetting session state.');
       wsClient.disconnect();
       conversationCache.clearAll();
+      clearCachedConversationLists();
       setCurrentUser(null);
       setConversations([]);
       pinnedConversationsRef.current.clear();
@@ -327,6 +335,7 @@ export const App: React.FC = () => {
     localStorage.removeItem('connectx_refresh_token');
     localStorage.removeItem('connectx_user');
     conversationCache.clearAll();
+    clearCachedConversationLists();
     setCurrentUser(null);
     setConversations([]);
     pinnedConversationsRef.current.clear();
@@ -418,6 +427,27 @@ export const App: React.FC = () => {
       loadConversations();
     }
   }, [currentUser, loadConversations]);
+
+  // Mirror the conversation list to localStorage (debounced) so a reload can
+  // paint instantly from cache next time instead of showing a blank sidebar
+  // while the network request is in flight. Only non-sensitive metadata is
+  // written — see cache/conversationListCache.ts.
+  const conversationCacheWriteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const userId = currentUser?.id;
+    if (!userId) return;
+    if (conversationCacheWriteTimerRef.current) {
+      clearTimeout(conversationCacheWriteTimerRef.current);
+    }
+    conversationCacheWriteTimerRef.current = setTimeout(() => {
+      saveCachedConversations(userId, conversations);
+    }, 400);
+    return () => {
+      if (conversationCacheWriteTimerRef.current) {
+        clearTimeout(conversationCacheWriteTimerRef.current);
+      }
+    };
+  }, [conversations, currentUser?.id]);
 
   // ── P0-1: Reload conversations when WebSocket reconnects ──────────────────
   // If the WS was dropped and reconnected, fetch fresh conversations to catch
