@@ -1,4 +1,5 @@
 import { cryptoStorage, LocalDeviceMetadata } from './storage';
+import { conversationCache } from '../cache/conversationCache';
 
 export interface GeneratedKeyPair {
   publicKeyBase64: string;
@@ -180,18 +181,30 @@ export const keyManager = {
   },
 
   async saveDecryptedMessage(messageId: number, decryptedContent: string): Promise<void> {
+    conversationCache.setDecryptedText(messageId, decryptedContent);
     return cryptoStorage.saveDecryptedMessage(messageId, decryptedContent);
   },
 
   async getDecryptedMessage(messageId: number): Promise<string | null> {
-    return cryptoStorage.getDecryptedMessage(messageId);
+    const memoryCached = conversationCache.getDecryptedText(messageId);
+    if (memoryCached) {
+      return memoryCached;
+    }
+    const idbCached = await cryptoStorage.getDecryptedMessage(messageId);
+    if (idbCached) {
+      conversationCache.setDecryptedText(messageId, idbCached);
+      return idbCached;
+    }
+    return null;
   },
 
   async clearAllDecryptedMessages(): Promise<void> {
+    conversationCache.clearAll();
     return cryptoStorage.clearAllDecryptedMessages();
   },
 
   async clearKeys(): Promise<void> {
+    conversationCache.clearAll();
     return cryptoStorage.clearKeys();
   },
 };

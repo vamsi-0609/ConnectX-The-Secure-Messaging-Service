@@ -120,6 +120,15 @@ export interface Message {
   replyToCaption?: string;
   replyToDeleted?: boolean;
   reactions?: MessageReaction[];
+  clientTempId?: string;
+  status?: 'SENDING' | 'SENT' | 'FAILED';
+}
+
+export interface PagedMessagesResponse {
+  messages: Message[];
+  hasMore: boolean;
+  nextCursor?: number | null;
+  limit: number;
 }
 
 export interface ApiResponse<T> {

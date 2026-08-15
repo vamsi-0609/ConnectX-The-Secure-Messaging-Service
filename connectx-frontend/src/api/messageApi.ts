@@ -1,9 +1,20 @@
 import { apiRequest } from './apiClient';
-import { Message, MessageType } from '../types';
+import { Message, MessageType, PagedMessagesResponse } from '../types';
 
 export const messageApi = {
-  getMessages: (conversationId: number) =>
-    apiRequest<Message[]>(`/conversations/${conversationId}/messages`),
+  getMessages: (
+    conversationId: number,
+    params?: { before?: number; limit?: number },
+    signal?: AbortSignal
+  ) => {
+    const query = new URLSearchParams();
+    if (params?.before != null) query.set('before', String(params.before));
+    if (params?.limit != null) query.set('limit', String(params.limit));
+    const qs = query.toString() ? `?${query.toString()}` : '';
+    return apiRequest<PagedMessagesResponse>(`/conversations/${conversationId}/messages${qs}`, {
+      signal,
+    });
+  },
 
   sendMessage: (data: {
     conversationId: number;

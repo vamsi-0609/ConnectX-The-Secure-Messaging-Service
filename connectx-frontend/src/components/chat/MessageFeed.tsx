@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { ChevronDown, Lock } from 'lucide-react';
 import { MessageBubble } from './MessageBubble';
 import { Message } from '../../types';
@@ -8,6 +8,9 @@ interface MessageFeedProps {
   messages: Message[];
   currentUserId: number;
   showRawCiphertext: boolean;
+  hasMore?: boolean;
+  isLoadingOlder?: boolean;
+  onLoadOlderMessages?: () => void;
   onDeleteMessage: (messageId: number, deleteForEveryone: boolean) => void;
   onReplyMessage?: (message: Message) => void;
   onReactMessage?: (messageId: number, reaction: string) => void;
@@ -17,6 +20,9 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
   messages,
   currentUserId,
   showRawCiphertext,
+  hasMore = false,
+  isLoadingOlder = false,
+  onLoadOlderMessages,
   onDeleteMessage,
   onReplyMessage,
   onReactMessage,
@@ -25,6 +31,10 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
   const [showScrollBottomBtn, setShowScrollBottomBtn] = useState(false);
   const prevMessageCountRef = useRef(0);
   const isNearBottomRef = useRef(true);
+
+  const prevScrollHeightRef = useRef<number>(0);
+  const prevScrollTopRef = useRef<number>(0);
+  const isPrependingRef = useRef<boolean>(false);
 
   const contentWrapperRef = useRef<HTMLDivElement>(null);
 
@@ -71,6 +81,14 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
     isNearBottomRef.current = distanceFromBottom < 100;
     setShowScrollBottomBtn(distanceFromBottom > 150);
+
+    // Upward scroll detection for keyset pagination
+    if (scrollTop < 80 && hasMore && !isLoadingOlder && onLoadOlderMessages) {
+      prevScrollHeightRef.current = scrollHeight;
+      prevScrollTopRef.current = scrollTop;
+      isPrependingRef.current = true;
+      onLoadOlderMessages();
+    }
   };
 
   useEffect(() => {
@@ -78,7 +96,7 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
     if (!container) return;
 
     const observer = new ResizeObserver(() => {
-      if (isNearBottomRef.current) {
+      if (isNearBottomRef.current && !isPrependingRef.current) {
         scrollToBottom('auto');
       }
     });
@@ -87,12 +105,23 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
     return () => observer.disconnect();
   }, [scrollToBottom]);
 
-  useEffect(() => {
-    const isNewMessageAdded = messages.length > prevMessageCountRef.current;
-    const isInitialLoad = prevMessageCountRef.current === 0 && messages.length > 0;
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
 
-    if (isInitialLoad || (isNewMessageAdded && isNearBottomRef.current)) {
-      scrollToBottom(isInitialLoad ? 'auto' : 'smooth');
+    if (isPrependingRef.current) {
+      const heightDiff = container.scrollHeight - prevScrollHeightRef.current;
+      if (heightDiff > 0) {
+        container.scrollTop = prevScrollTopRef.current + heightDiff;
+      }
+      isPrependingRef.current = false;
+    } else {
+      const isNewMessageAdded = messages.length > prevMessageCountRef.current;
+      const isInitialLoad = prevMessageCountRef.current === 0 && messages.length > 0;
+
+      if (isInitialLoad || (isNewMessageAdded && isNearBottomRef.current)) {
+        scrollToBottom(isInitialLoad ? 'auto' : 'smooth');
+      }
     }
 
     prevMessageCountRef.current = messages.length;
@@ -110,6 +139,14 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
           ref={contentWrapperRef}
           className="max-w-3xl mx-auto w-full pb-1 md:max-w-none md:mx-0 flex flex-col justify-start"
         >
+          {isLoadingOlder && (
+            <div className="flex justify-center my-2 select-none">
+              <span className="text-[11px] text-slate-400 bg-slate-800/60 px-3 py-1 rounded-full">
+                Loading older messages...
+              </span>
+            </div>
+          )}
+
           {messages.length > 0 && (
             <div className="flex justify-center mb-3 md:mb-4 select-none">
               <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 md:px-3 md:py-1 rounded-full bg-slate-900/60 border border-indigo-500/15 text-[10px] md:text-[11px] text-indigo-200/70">

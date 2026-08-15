@@ -16,6 +16,7 @@ import { authApi } from './api/authApi';
 import { keyManager } from './crypto/keyManager';
 import { decryptMessage } from './crypto/decryption';
 import { ensureLocalCryptoDevice } from './crypto/deviceSession';
+import { conversationCache } from './cache/conversationCache';
 import { applyTheme, isDarkTheme } from './utils/theme';
 import { soundManager } from './utils/notificationSound';
 import { browserNotifications } from './utils/browserNotifications';
@@ -156,6 +157,8 @@ export const App: React.FC = () => {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [hasMoreMessages, setHasMoreMessages] = useState<boolean>(false);
+  const [isLoadingOlder, setIsLoadingOlder] = useState<boolean>(false);
   const [unreadConversationIds, setUnreadConversationIds] = useState<Set<number>>(new Set());
   const [conversationPreviews, setConversationPreviews] = useState<Record<number, ConversationPreview>>({});
 
@@ -171,6 +174,8 @@ export const App: React.FC = () => {
 
   const activeConversationRef = useRef<Conversation | null>(null);
   const activeConversationIdRef = useRef<number | null>(null);
+  const activeRequestSeqRef = useRef<number>(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const conversationsLoadSeqRef = useRef(0);
   const pinnedConversationsRef = useRef<Map<number, Conversation>>(new Map());
 
@@ -179,13 +184,15 @@ export const App: React.FC = () => {
     activeConversationIdRef.current = activeConversation?.id ?? null;
 
     if (activeConversation) {
-      wsClient.subscribeToConversation(activeConversation.id);
+      wsClient.setActiveConversation(activeConversation.id);
       setUnreadConversationIds((prev) => {
         const next = new Set(prev);
         next.delete(activeConversation.id);
         return next;
       });
       wsClient.sendRead(activeConversation.id);
+    } else {
+      wsClient.setActiveConversation(null);
     }
   }, [activeConversation]);
 
@@ -248,6 +255,7 @@ export const App: React.FC = () => {
     const handleAuthExpired = () => {
       console.warn('[ConnectX] Authentication session expired. Resetting session state.');
       wsClient.disconnect();
+      conversationCache.clearAll();
       setCurrentUser(null);
       setConversations([]);
       pinnedConversationsRef.current.clear();
@@ -301,6 +309,7 @@ export const App: React.FC = () => {
     localStorage.removeItem('connectx_token');
     localStorage.removeItem('connectx_refresh_token');
     localStorage.removeItem('connectx_user');
+    conversationCache.clearAll();
     setCurrentUser(null);
     setConversations([]);
     pinnedConversationsRef.current.clear();
@@ -459,6 +468,10 @@ export const App: React.FC = () => {
         return { ...msg, decryptionError: false };
       }
 
+      if (msg.decryptedContent) {
+        return msg;
+      }
+
       const cached = await keyManager.getDecryptedMessage(msg.id);
       if (cached) {
         return { ...msg, decryptedContent: cached, decryptionError: false };
@@ -484,7 +497,14 @@ export const App: React.FC = () => {
           return { ...msg, decryptionError: true };
         }
 
-        const userKeys = await deviceApi.getUserPublicKeys(resolvedPeerUserId);
+        let userKeys = conversationCache.getPublicKeys(resolvedPeerUserId);
+        if (!userKeys || userKeys.length === 0) {
+          userKeys = await deviceApi.getUserPublicKeys(resolvedPeerUserId);
+          if (userKeys && userKeys.length > 0) {
+            conversationCache.setPublicKeys(resolvedPeerUserId, userKeys);
+          }
+        }
+
         if (!userKeys || userKeys.length === 0) {
           return { ...msg, decryptionError: true };
         }
@@ -515,50 +535,101 @@ export const App: React.FC = () => {
     });
   }, []);
 
-  const loadMessages = useCallback(
-    async (conversationId?: number, mode: 'replace' | 'merge' = 'merge') => {
-      const convId = conversationId ?? activeConversationIdRef.current;
-      if (!convId || !currentUser) return;
-
+  const fetchAndSetMessagesForConversation = useCallback(
+    async (convId: number, targetSeq: number, signal?: AbortSignal) => {
+      if (!currentUser) return;
       try {
-        const rawMsgs = await messageApi.getMessages(convId);
-        const activeConv = conversationsRef.current.find((c) => c.id === convId) ?? activeConversationRef.current;
+        const response = await messageApi.getMessages(convId, { limit: 30 }, signal);
+        if (targetSeq !== activeRequestSeqRef.current || activeConversationIdRef.current !== convId) {
+          return;
+        }
+
+        const activeConv =
+          conversationsRef.current.find((c) => c.id === convId) ?? activeConversationRef.current;
         const peerUserId = activeConv ? getOtherParticipant(activeConv, currentUser.id)?.id : undefined;
 
         const decryptedList = await Promise.all(
-          rawMsgs.map((m) => decryptSingleMessage(m, currentUser.id, peerUserId))
+          response.messages.map((m) => decryptSingleMessage(m, currentUser.id, peerUserId))
         );
 
-        if (mode === 'replace') {
-          setMessages(sortMessages(decryptedList));
-        } else {
-          setMessages((prev) => mergeMessagesForConversation(convId, decryptedList, prev));
+        if (targetSeq !== activeRequestSeqRef.current || activeConversationIdRef.current !== convId) {
+          return;
         }
 
-        if (decryptedList.length > 0) {
-          const last = decryptedList[decryptedList.length - 1];
+        const sorted = sortMessages(decryptedList);
+        conversationCache.setConversation(convId, {
+          messages: sorted,
+          hasMore: response.hasMore,
+          oldestCursor: response.nextCursor,
+        });
+
+        setMessages(sorted);
+        setHasMoreMessages(response.hasMore);
+
+        if (sorted.length > 0) {
+          const last = sorted[sorted.length - 1];
           updatePreviewIfNewer(convId, previewFromMessage(last));
-        } else {
-          setConversationPreviews((prev) => {
-            const next = { ...prev };
-            delete next[convId];
-            return next;
-          });
         }
-      } catch (err) {
+      } catch (err: unknown) {
+        if ((err as Error)?.name === 'AbortError') {
+          return;
+        }
         console.error('[ConnectX] Failed to load messages for conversation:', err);
       }
     },
     [currentUser, decryptSingleMessage, updatePreviewIfNewer]
   );
 
-  useEffect(() => {
-    if (activeConversation) {
-      loadMessages(activeConversation.id, 'replace');
-    } else {
-      setMessages([]);
+  const loadOlderMessages = useCallback(async () => {
+    const convId = activeConversationIdRef.current;
+    if (!convId || !currentUser || isLoadingOlder || !hasMoreMessages) return;
+
+    const cached = conversationCache.getConversation(convId);
+    const oldestCursor = cached?.oldestCursor ?? (messages.length > 0 ? messages[0].id : null);
+    if (!oldestCursor) return;
+
+    setIsLoadingOlder(true);
+    try {
+      const response = await messageApi.getMessages(convId, { before: oldestCursor, limit: 30 });
+      if (activeConversationIdRef.current !== convId) return;
+
+      const activeConv =
+        conversationsRef.current.find((c) => c.id === convId) ?? activeConversationRef.current;
+      const peerUserId = activeConv ? getOtherParticipant(activeConv, currentUser.id)?.id : undefined;
+
+      const decryptedOlder = await Promise.all(
+        response.messages.map((m) => decryptSingleMessage(m, currentUser.id, peerUserId))
+      );
+      if (activeConversationIdRef.current !== convId) return;
+
+      setMessages((prev) => {
+        const existingIds = new Set(prev.map((m) => m.id));
+        const filteredNew = decryptedOlder.filter((m) => !existingIds.has(m.id));
+        const merged = sortMessages([...filteredNew, ...prev]);
+
+        conversationCache.setConversation(convId, {
+          messages: merged,
+          hasMore: response.hasMore,
+          oldestCursor: response.nextCursor,
+        });
+
+        return merged;
+      });
+
+      setHasMoreMessages(response.hasMore);
+    } catch (err) {
+      console.error('[ConnectX] Failed to load older messages:', err);
+    } finally {
+      setIsLoadingOlder(false);
     }
-  }, [activeConversation?.id, loadMessages]);
+  }, [currentUser, isLoadingOlder, hasMoreMessages, messages, decryptSingleMessage]);
+
+  useEffect(() => {
+    if (!activeConversation) {
+      setMessages([]);
+      setHasMoreMessages(false);
+    }
+  }, [activeConversation]);
 
   const processedMessageIdsRef = useRef<Set<number>>(new Set());
 
@@ -580,6 +651,10 @@ export const App: React.FC = () => {
 
         if (currentActive && conversationId === currentActive.id) {
           if (payload.senderUserId !== currentUser.id) {
+            // 1. Mark DELIVERED promptly upon network arrival
+            wsClient.sendDelivered(msgId);
+
+            // 2. Decrypt & process message
             const newMsg = messageFromWsPayload(payload as Record<string, unknown>);
             const peerUserId = getOtherParticipant(currentActive, currentUser.id)?.id;
             const processedMsg =
@@ -587,30 +662,63 @@ export const App: React.FC = () => {
                 ? newMsg
                 : await decryptSingleMessage(newMsg, currentUser.id, peerUserId);
 
+            // 3. Mount message into active chat state
             setMessages((prev) => {
               if (prev.some((m) => m.id === processedMsg.id)) return prev;
-              return sortMessages([...prev.filter((m) => m.conversationId === conversationId), processedMsg]);
+              const next = sortMessages([
+                ...prev.filter((m) => m.conversationId === conversationId),
+                processedMsg,
+              ]);
+              conversationCache.setConversation(conversationId, {
+                messages: next,
+                hasMore: conversationCache.getConversation(conversationId)?.hasMore ?? false,
+                oldestCursor: conversationCache.getConversation(conversationId)?.oldestCursor ?? null,
+              });
+              return next;
             });
 
             const preview = previewFromMessage(processedMsg);
             updatePreviewIfNewer(conversationId, preview);
 
-            wsClient.sendDelivered(payload.messageId as number);
-            // Mark the whole conversation as read since we're actively viewing it
-            wsClient.sendRead(conversationId);
+            // 4. Mark READ now that message has actually become visible in active conversation
+            wsClient.sendRead(conversationId, msgId);
 
             const isMuted =
               currentActive.isMuted ||
               (currentActive.mutedUntil && new Date(currentActive.mutedUntil).getTime() > Date.now());
 
-            // Play incoming audio chime only if not muted
             if (!isMuted) {
               soundManager.playIncomingMessageSound();
             }
           } else {
-            loadMessages(conversationId, 'merge');
+            // Reconcile our own message that was sent optimistically
+            setMessages((prev) => {
+              const updated = prev.map((m) => {
+                if (
+                  m.id < 0 &&
+                  ((payload.clientTempId && m.clientTempId === payload.clientTempId) ||
+                    (payload.mediaId && m.mediaId === payload.mediaId) ||
+                    (m.ciphertext && m.ciphertext === payload.ciphertext))
+                ) {
+                  return {
+                    ...m,
+                    id: msgId,
+                    sentAt: (payload.sentAt as string) || m.sentAt,
+                    status: 'SENT' as const,
+                  };
+                }
+                return m;
+              });
+              conversationCache.setConversation(conversationId, {
+                messages: updated,
+                hasMore: conversationCache.getConversation(conversationId)?.hasMore ?? false,
+                oldestCursor: conversationCache.getConversation(conversationId)?.oldestCursor ?? null,
+              });
+              return updated;
+            });
           }
         } else {
+          // Background conversation event
           const conv = conversationsRef.current.find((c) => c.id === conversationId);
           const peerUserId =
             conv && currentUser
@@ -628,22 +736,34 @@ export const App: React.FC = () => {
           const preview = previewFromMessage(processedMsg);
           updatePreviewIfNewer(conversationId, preview);
 
+          // Update LRU cache for this background conversation if it exists in cache
+          const cachedConv = conversationCache.getConversation(conversationId);
+          if (cachedConv) {
+            if (!cachedConv.messages.some((m) => m.id === processedMsg.id)) {
+              const updatedMessages = sortMessages([...cachedConv.messages, processedMsg]);
+              conversationCache.setConversation(conversationId, {
+                messages: updatedMessages,
+                hasMore: cachedConv.hasMore,
+                oldestCursor: cachedConv.oldestCursor,
+              });
+            }
+          }
+
           if (payload.senderUserId !== currentUser.id) {
             setUnreadConversationIds((prev) => new Set(prev).add(conversationId));
-            wsClient.sendDelivered(payload.messageId as number);
+            // Mark DELIVERED promptly for background conversation
+            wsClient.sendDelivered(msgId);
 
             const isMuted =
               conv?.isMuted ||
               (conv?.mutedUntil && new Date(conv.mutedUntil).getTime() > Date.now());
 
             if (!isMuted) {
-              // Play incoming audio chime
               soundManager.playIncomingMessageSound();
 
               const senderName = (payload.senderUsername as string) || 'ConnectX User';
               const senderAvatar = conv ? getOtherParticipant(conv, currentUser.id)?.profileImageUrl : undefined;
 
-              // Show In-App Toast Banner
               setCurrentToast({
                 id: `toast-${msgId}-${Date.now()}`,
                 senderName,
@@ -653,7 +773,6 @@ export const App: React.FC = () => {
                 timestamp: (payload.sentAt as string) || new Date().toISOString(),
               });
 
-              // Show Browser Desktop System Push Notification
               browserNotifications.showNotification(`New message from ${senderName}`, {
                 body: preview.text,
                 conversationId,
@@ -677,55 +796,124 @@ export const App: React.FC = () => {
             });
           }
         }
-
-        loadConversations();
       } else if (event.type === 'MESSAGE_REACTION_UPDATE') {
         const payload = event.payload as Record<string, unknown>;
         const msgId = payload.messageId as number;
         const reactions = payload.reactions as Message['reactions'];
 
-        setMessages((prev) =>
-          prev.map((msg) => {
+        setMessages((prev) => {
+          const updated = prev.map((msg) => {
             if (msg.id === msgId) {
               return { ...msg, reactions };
             }
             return msg;
-          })
-        );
+          });
+          const activeConv = activeConversationRef.current;
+          if (activeConv) {
+            conversationCache.setConversation(activeConv.id, {
+              messages: updated,
+              hasMore: conversationCache.getConversation(activeConv.id)?.hasMore ?? false,
+              oldestCursor: conversationCache.getConversation(activeConv.id)?.oldestCursor ?? null,
+            });
+          }
+          return updated;
+        });
       } else if (event.type === 'READ_RECEIPT_UPDATE') {
         const payload = event.payload as Record<string, unknown>;
         const msgId = payload.messageId as number | undefined;
+        const msgIds = payload.messageIds as number[] | undefined;
         const convId = payload.conversationId as number | undefined;
         const deliveredAt = payload.deliveredAt as string | undefined;
         const readAt = payload.readAt as string | undefined;
 
-        setMessages((prev) =>
-          prev.map((msg) => {
-            if (msg.id === msgId || (convId && msg.conversationId === convId && msg.senderUserId === currentUser.id)) {
-              return {
-                ...msg,
-                deliveredAt: deliveredAt || msg.deliveredAt,
-                readAt: readAt || msg.readAt,
-              };
+        const targetIdSet = new Set<number>();
+        if (Array.isArray(msgIds)) {
+          msgIds.forEach((id) => targetIdSet.add(id));
+        }
+        if (typeof msgId === 'number') {
+          targetIdSet.add(msgId);
+        }
+
+        setMessages((prev) => {
+          let hasChanges = false;
+          const updated = prev.map((msg) => {
+            const isTarget =
+              targetIdSet.has(msg.id) ||
+              (targetIdSet.size === 0 && convId && msg.conversationId === convId && msg.senderUserId === currentUser.id);
+
+            if (isTarget) {
+              const newDeliveredAt = deliveredAt || msg.deliveredAt;
+              const newReadAt = readAt || msg.readAt;
+
+              // Deduplication: Only create new object if timestamps actually changed
+              if (newDeliveredAt !== msg.deliveredAt || newReadAt !== msg.readAt) {
+                hasChanges = true;
+                return {
+                  ...msg,
+                  deliveredAt: newDeliveredAt,
+                  readAt: newReadAt,
+                };
+              }
             }
             return msg;
-          })
-        );
+          });
+
+          if (!hasChanges) {
+            return prev; // Prevents redundant React re-renders on duplicate receipts
+          }
+
+          const activeConv = activeConversationRef.current;
+          if (activeConv) {
+            conversationCache.setConversation(activeConv.id, {
+              messages: updated,
+              hasMore: conversationCache.getConversation(activeConv.id)?.hasMore ?? false,
+              oldestCursor: conversationCache.getConversation(activeConv.id)?.oldestCursor ?? null,
+            });
+          }
+          return updated;
+        });
       } else if (event.type === 'MESSAGE_ACK') {
-        const conversationId = event.payload.conversationId as number;
-        if (activeConversationRef.current?.id === conversationId) {
-          loadMessages(conversationId, 'merge');
+        const payload = event.payload as Record<string, unknown>;
+        const convId = payload.conversationId as number;
+        const msgId = payload.messageId as number | undefined;
+        const clientTempId = payload.clientTempId as string | undefined;
+
+        if (activeConversationRef.current?.id === convId) {
+          setMessages((prev) => {
+            const updated = prev.map((m) => {
+              if (
+                (clientTempId && m.clientTempId === clientTempId) ||
+                (msgId && m.id === msgId) ||
+                (m.id < 0 && m.status === 'SENDING')
+              ) {
+                return {
+                  ...m,
+                  id: msgId ?? m.id,
+                  status: 'SENT' as const,
+                };
+              }
+              return m;
+            });
+            conversationCache.setConversation(convId, {
+              messages: updated,
+              hasMore: conversationCache.getConversation(convId)?.hasMore ?? false,
+              oldestCursor: conversationCache.getConversation(convId)?.oldestCursor ?? null,
+            });
+            return updated;
+          });
         }
-        loadConversations();
       } else if (event.type === 'CONVERSATION_RESTORED') {
         const restoredConvId = event.payload.conversationId as number;
-        await loadConversations();
+        loadConversations();
         if (activeConversationRef.current?.id === restoredConvId) {
-          loadMessages(restoredConvId, 'replace');
+          const controller = new AbortController();
+          abortControllerRef.current = controller;
+          fetchAndSetMessagesForConversation(restoredConvId, ++activeRequestSeqRef.current, controller.signal);
         }
       } else if (event.type === 'CONVERSATION_DELETED') {
         const targetConvId = event.payload.conversationId as number;
         pinnedConversationsRef.current.delete(targetConvId);
+        conversationCache.removeConversation(targetConvId);
         setConversations((prev) => prev.filter((c) => c.id !== targetConvId));
         setConversationPreviews((prev) => {
           const next = { ...prev };
@@ -738,6 +926,7 @@ export const App: React.FC = () => {
         }
       } else if (event.type === 'CONVERSATION_CLEARED') {
         const targetConvId = event.payload.conversationId as number;
+        conversationCache.removeConversation(targetConvId);
         setConversationPreviews((prev) => {
           const next = { ...prev };
           delete next[targetConvId];
@@ -754,19 +943,30 @@ export const App: React.FC = () => {
     });
 
     return () => unsubscribe();
-  }, [currentUser, subscribe, loadMessages, loadConversations, decryptSingleMessage, updatePreviewIfNewer, upsertConversation]);
+  }, [
+    currentUser,
+    subscribe,
+    fetchAndSetMessagesForConversation,
+    loadConversations,
+    decryptSingleMessage,
+    updatePreviewIfNewer,
+    upsertConversation,
+  ]);
 
   const handleOptimisticMessage = (
     plaintext: string,
     ciphertext: string,
     nonce: string,
     recipientDeviceId: number,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    clientTempId?: string
   ) => {
     if (!activeConversation || !currentUser) return;
+    const tempIdStr = clientTempId || `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     const tempMessage: Message = {
       id: -Date.now(),
+      clientTempId: tempIdStr,
       conversationId: activeConversation.id,
       senderUserId: currentUser.id,
       senderUsername: currentUser.username,
@@ -780,9 +980,18 @@ export const App: React.FC = () => {
       decryptedContent: plaintext,
       decryptionError: false,
       replyToMessageId,
+      status: 'SENDING',
     };
 
-    setMessages((prev) => sortMessages([...prev, tempMessage]));
+    setMessages((prev) => {
+      const next = sortMessages([...prev, tempMessage]);
+      conversationCache.setConversation(activeConversation.id, {
+        messages: next,
+        hasMore: conversationCache.getConversation(activeConversation.id)?.hasMore ?? false,
+        oldestCursor: conversationCache.getConversation(activeConversation.id)?.oldestCursor ?? null,
+      });
+      return next;
+    });
     updatePreviewIfNewer(activeConversation.id, previewFromMessage(tempMessage, plaintext));
 
     upsertConversation({
@@ -799,12 +1008,15 @@ export const App: React.FC = () => {
     caption: string | undefined,
     localPreviewUrl: string,
     mimeType: string,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    clientTempId?: string
   ) => {
     if (!activeConversation || !currentUser) return;
+    const tempIdStr = clientTempId || `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     const tempMessage: Message = {
       id: -Date.now(),
+      clientTempId: tempIdStr,
       conversationId: activeConversation.id,
       senderUserId: currentUser.id,
       senderUsername: currentUser.username,
@@ -819,9 +1031,18 @@ export const App: React.FC = () => {
       deletedForEveryone: false,
       localMediaUrl: localPreviewUrl,
       replyToMessageId,
+      status: 'SENDING',
     };
 
-    setMessages((prev) => sortMessages([...prev, tempMessage]));
+    setMessages((prev) => {
+      const next = sortMessages([...prev, tempMessage]);
+      conversationCache.setConversation(activeConversation.id, {
+        messages: next,
+        hasMore: conversationCache.getConversation(activeConversation.id)?.hasMore ?? false,
+        oldestCursor: conversationCache.getConversation(activeConversation.id)?.oldestCursor ?? null,
+      });
+      return next;
+    });
     updatePreviewIfNewer(activeConversation.id, previewFromMessage(tempMessage, getImagePreviewText(caption)));
 
     upsertConversation({
@@ -839,12 +1060,15 @@ export const App: React.FC = () => {
     filename: string,
     mimeType: string,
     fileSizeBytes: number,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    clientTempId?: string
   ) => {
     if (!activeConversation || !currentUser) return;
+    const tempIdStr = clientTempId || `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     const tempMessage: Message = {
       id: -Date.now(),
+      clientTempId: tempIdStr,
       conversationId: activeConversation.id,
       senderUserId: currentUser.id,
       senderUsername: currentUser.username,
@@ -859,9 +1083,18 @@ export const App: React.FC = () => {
       sentAt: new Date().toISOString(),
       deletedForEveryone: false,
       replyToMessageId,
+      status: 'SENDING',
     };
 
-    setMessages((prev) => sortMessages([...prev, tempMessage]));
+    setMessages((prev) => {
+      const next = sortMessages([...prev, tempMessage]);
+      conversationCache.setConversation(activeConversation.id, {
+        messages: next,
+        hasMore: conversationCache.getConversation(activeConversation.id)?.hasMore ?? false,
+        oldestCursor: conversationCache.getConversation(activeConversation.id)?.oldestCursor ?? null,
+      });
+      return next;
+    });
     updatePreviewIfNewer(activeConversation.id, previewFromMessage(tempMessage, `📄 ${filename}`));
 
     upsertConversation({
@@ -878,12 +1111,15 @@ export const App: React.FC = () => {
     latitude: number,
     longitude: number,
     locationLabel: string | undefined,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    clientTempId?: string
   ) => {
     if (!activeConversation || !currentUser) return;
+    const tempIdStr = clientTempId || `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     const tempMessage: Message = {
       id: -Date.now(),
+      clientTempId: tempIdStr,
       conversationId: activeConversation.id,
       senderUserId: currentUser.id,
       senderUsername: currentUser.username,
@@ -897,13 +1133,19 @@ export const App: React.FC = () => {
       sentAt: new Date().toISOString(),
       deletedForEveryone: false,
       replyToMessageId,
+      status: 'SENDING',
     };
 
-    setMessages((prev) => sortMessages([...prev, tempMessage]));
-    updatePreviewIfNewer(
-      activeConversation.id,
-      previewFromMessage(tempMessage)
-    );
+    setMessages((prev) => {
+      const next = sortMessages([...prev, tempMessage]);
+      conversationCache.setConversation(activeConversation.id, {
+        messages: next,
+        hasMore: conversationCache.getConversation(activeConversation.id)?.hasMore ?? false,
+        oldestCursor: conversationCache.getConversation(activeConversation.id)?.oldestCursor ?? null,
+      });
+      return next;
+    });
+    updatePreviewIfNewer(activeConversation.id, previewFromMessage(tempMessage));
 
     upsertConversation({
       ...activeConversation,
@@ -916,8 +1158,8 @@ export const App: React.FC = () => {
   };
 
   const handleMessageSent = useCallback(() => {
-    loadConversations();
-  }, [loadConversations]);
+    // Zero full reload on send!
+  }, []);
 
   const handleReactMessage = async (messageId: number, reaction: string) => {
     try {
@@ -974,9 +1216,20 @@ export const App: React.FC = () => {
   const handleDeleteMessage = async (messageId: number, deleteForEveryone: boolean) => {
     try {
       await messageApi.deleteMessage(messageId, deleteForEveryone);
-      if (activeConversation) {
-        loadMessages(activeConversation.id, 'replace');
-      }
+      setMessages((prev) => {
+        const next = deleteForEveryone
+          ? prev.map((m) => (m.id === messageId ? { ...m, deletedForEveryone: true } : m))
+          : prev.filter((m) => m.id !== messageId);
+        const activeConv = activeConversationRef.current;
+        if (activeConv) {
+          conversationCache.setConversation(activeConv.id, {
+            messages: next,
+            hasMore: conversationCache.getConversation(activeConv.id)?.hasMore ?? false,
+            oldestCursor: conversationCache.getConversation(activeConv.id)?.oldestCursor ?? null,
+          });
+        }
+        return next;
+      });
     } catch (err: any) {
       alert('Failed to delete message: ' + err.message);
     }
@@ -987,6 +1240,7 @@ export const App: React.FC = () => {
     try {
       await conversationApi.deleteConversation(conversationId);
       pinnedConversationsRef.current.delete(conversationId);
+      conversationCache.removeConversation(conversationId);
       setConversations((prev) => prev.filter((c) => c.id !== conversationId));
       setConversationPreviews((prev) => {
         const next = { ...prev };
@@ -1007,6 +1261,7 @@ export const App: React.FC = () => {
 
     const conversationId = activeConversation.id;
     await conversationApi.clearConversation(conversationId);
+    conversationCache.removeConversation(conversationId);
 
     setMessages([]);
     setConversationPreviews((prev) => {
@@ -1020,17 +1275,45 @@ export const App: React.FC = () => {
     setActiveConversation((prev) => (prev ? withoutLastMessagePreview(prev) : null));
   };
 
-  const handleSelectConversation = async (conv: Conversation) => {
-    try {
-      const fresh = await conversationApi.getConversationById(conv.id);
-      upsertConversation(fresh);
-      setActiveConversation(fresh);
-    } catch (err: unknown) {
-      console.error('[ConnectX] Failed to open conversation:', err);
-      const message = err instanceof Error ? err.message : 'Failed to open conversation';
-      alert(message);
-    }
-  };
+  const handleSelectConversation = useCallback(
+    (conv: Conversation) => {
+      // 1. Immediately switch active conversation synchronously (0 blocking network calls)
+      setActiveConversation(conv);
+      activeConversationIdRef.current = conv.id;
+
+      // 2. Abort any previous pending message request to prevent race conditions
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+      const requestSeq = ++activeRequestSeqRef.current;
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
+      // 3. Immediately isolate conversation state: check LRU cache or blank out messages
+      const cached = conversationCache.getConversation(conv.id);
+      if (cached && cached.messages.length > 0) {
+        // Cache HIT: render immediately in 0ms from memory (0 network requests, 0 full re-decryptions)
+        setMessages(cached.messages);
+        setHasMoreMessages(cached.hasMore);
+
+        // Check if there are newer messages on the server that might have arrived during disconnection
+        const latestCachedId = cached.messages.reduce((max, m) => (m.id > max ? m.id : max), 0);
+        if (conv.lastMessageId && conv.lastMessageId > latestCachedId) {
+          // Stale cache: perform lightweight background synchronization without blocking the UI
+          fetchAndSetMessagesForConversation(conv.id, requestSeq, controller.signal);
+        }
+      } else {
+        // Cache MISS: Instantly clear messages so Person A's messages NEVER bleed into Person B's chat window
+        setMessages([]);
+        setHasMoreMessages(false);
+
+        // Fetch the initial paged window from backend
+        fetchAndSetMessagesForConversation(conv.id, requestSeq, controller.signal);
+      }
+    },
+    [fetchAndSetMessagesForConversation]
+  );
 
   const handleUserUpdated = useCallback((updatedUser: User) => {
     setCurrentUser(updatedUser);
@@ -1138,6 +1421,9 @@ export const App: React.FC = () => {
                 (activeConversation.mutedUntil &&
                   new Date(activeConversation.mutedUntil).getTime() > Date.now())
               )}
+              hasMore={hasMoreMessages}
+              isLoadingOlder={isLoadingOlder}
+              onLoadOlderMessages={loadOlderMessages}
               onToggleCiphertext={() => setShowRawCiphertext(!showRawCiphertext)}
               onToggleInfoDrawer={() => setShowInfoDrawer(!showInfoDrawer)}
               onBack={() => {

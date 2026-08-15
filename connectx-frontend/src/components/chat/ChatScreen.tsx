@@ -20,6 +20,9 @@ interface ChatScreenProps {
   showInfoDrawer: boolean;
   isDarkMode: boolean;
   isMuted?: boolean;
+  hasMore?: boolean;
+  isLoadingOlder?: boolean;
+  onLoadOlderMessages?: () => void;
   onToggleCiphertext: () => void;
   onToggleInfoDrawer: () => void;
   onBack: () => void;
@@ -29,7 +32,8 @@ interface ChatScreenProps {
     ciphertext: string,
     nonce: string,
     recipientDeviceId: number,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    clientTempId?: string
   ) => void;
   onOptimisticImageMessage: (
     mediaId: number,
@@ -67,6 +71,9 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   showInfoDrawer,
   isDarkMode,
   isMuted,
+  hasMore,
+  isLoadingOlder,
+  onLoadOlderMessages,
   onToggleCiphertext,
   onToggleInfoDrawer,
   onBack,
@@ -146,6 +153,9 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
             messages={messages}
             currentUserId={currentUserId}
             showRawCiphertext={showRawCiphertext}
+            hasMore={hasMore}
+            isLoadingOlder={isLoadingOlder}
+            onLoadOlderMessages={onLoadOlderMessages}
             onDeleteMessage={onDeleteMessage}
             onReplyMessage={handleReplyMessage}
             onReactMessage={onReactMessage}

@@ -8,7 +8,8 @@ import java.time.Instant;
 
 @Entity
 @Table(name = "messages", indexes = {
-    @Index(name = "idx_msg_conversation", columnList = "conversation_id, sent_at")
+    @Index(name = "idx_msg_conversation", columnList = "conversation_id, sent_at"),
+    @Index(name = "idx_msg_conv_id_desc", columnList = "conversation_id, id")
 })
 public class Message {
 

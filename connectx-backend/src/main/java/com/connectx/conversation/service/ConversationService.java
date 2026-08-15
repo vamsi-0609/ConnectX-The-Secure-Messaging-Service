@@ -22,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -107,8 +108,24 @@ public class ConversationService {
 
     @Transactional(readOnly = true)
     public List<ConversationDto> getUserConversations(Long currentUserId) {
-        return conversationRepository.findActiveConversationsForUser(currentUserId).stream()
-                .map(conversation -> enrichConversationDto(conversation, currentUserId))
+        List<Conversation> activeConversations = conversationRepository.findActiveConversationsForUser(currentUserId);
+        if (activeConversations.isEmpty()) {
+            return List.of();
+        }
+
+        List<Long> conversationIds = activeConversations.stream()
+                .map(Conversation::getId)
+                .collect(Collectors.toList());
+
+        List<ConversationMember> allMembers = conversationMemberRepository.findByConversationIdInWithUsers(conversationIds);
+        Map<Long, List<ConversationMember>> membersByConvId = allMembers.stream()
+                .collect(Collectors.groupingBy(cm -> cm.getConversation().getId()));
+
+        return activeConversations.stream()
+                .map(conversation -> {
+                    List<ConversationMember> members = membersByConvId.getOrDefault(conversation.getId(), List.of());
+                    return enrichConversationDtoWithMembers(conversation, currentUserId, members);
+                })
                 .collect(Collectors.toList());
     }
 
@@ -126,20 +143,26 @@ public class ConversationService {
     }
 
     private ConversationDto enrichConversationDto(Conversation conversation, Long currentUserId) {
+        List<ConversationMember> members = conversationMemberRepository.findByConversationIdWithUsers(conversation.getId());
+        return enrichConversationDtoWithMembers(conversation, currentUserId, members);
+    }
+
+    private ConversationDto enrichConversationDtoWithMembers(Conversation conversation, Long currentUserId, List<ConversationMember> members) {
         ConversationDto dto = new ConversationDto();
         dto.setId(conversation.getId());
         dto.setType(conversation.getType().name());
         dto.setCreatedAt(conversation.getCreatedAt());
         dto.setUpdatedAt(conversation.getUpdatedAt());
 
-        List<ConversationMember> members = conversationMemberRepository.findByConversationIdWithUsers(conversation.getId());
         dto.setMembers(members.stream()
                 .map(ConversationMemberDto::fromEntity)
                 .collect(Collectors.toList()));
 
-        ConversationMember currentMember = conversationMemberRepository
-                .findByConversationIdAndUserId(conversation.getId(), currentUserId)
+        ConversationMember currentMember = members.stream()
+                .filter(m -> m.getUser() != null && m.getUser().getId().equals(currentUserId))
+                .findFirst()
                 .orElse(null);
+
         if (currentMember != null) {
             dto.setPinned(currentMember.isPinned());
             dto.setPinnedAt(currentMember.getPinnedAt());

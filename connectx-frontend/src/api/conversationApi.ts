@@ -1,9 +1,19 @@
 import { apiRequest } from './apiClient';
 import { Conversation } from '../types';
 
+let inFlightConversations: Promise<Conversation[]> | null = null;
+
 export const conversationApi = {
-  getConversations: () =>
-    apiRequest<Conversation[]>('/conversations'),
+  getConversations: (): Promise<Conversation[]> => {
+    if (inFlightConversations) return inFlightConversations;
+
+    inFlightConversations = apiRequest<Conversation[]>('/conversations')
+      .finally(() => {
+        inFlightConversations = null;
+      });
+
+    return inFlightConversations;
+  },
 
   createDirectConversation: (userId: number) =>
     apiRequest<Conversation>('/conversations/direct', {

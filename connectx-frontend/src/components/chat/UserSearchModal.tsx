@@ -16,20 +16,26 @@ export const UserSearchModal: React.FC<UserSearchModalProps> = ({ onClose, onSel
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<User[]>([]);
   const [searched, setSearched] = useState(false);
+  const searchSeqRef = React.useRef(0);
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim()) return;
 
+    const currentSeq = ++searchSeqRef.current;
     setLoading(true);
     setSearched(true);
     try {
       const list = await userApi.searchUsers(query.trim());
-      setResults(list);
+      if (currentSeq === searchSeqRef.current) {
+        setResults(list);
+      }
     } catch (err) {
       console.error('Failed to search users:', err);
     } finally {
-      setLoading(false);
+      if (currentSeq === searchSeqRef.current) {
+        setLoading(false);
+      }
     }
   };
 

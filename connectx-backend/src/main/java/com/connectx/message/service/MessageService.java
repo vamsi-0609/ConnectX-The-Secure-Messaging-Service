@@ -275,21 +275,44 @@ public class MessageService {
 
     @Transactional(readOnly = true)
     public List<MessageDto> getConversationMessages(Long currentUserId, Long conversationId) {
+        return getConversationMessagesPaged(currentUserId, conversationId, null, 100).getMessages();
+    }
+
+    @Transactional(readOnly = true)
+    public com.connectx.message.dto.PagedMessageResponseDto getConversationMessagesPaged(
+            Long currentUserId,
+            Long conversationId,
+            Long beforeId,
+            int limit) {
         boolean isMember = conversationMemberRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull(conversationId, currentUserId);
         if (!isMember) {
             throw new ApiException(HttpStatus.FORBIDDEN, "NOT_CONVERSATION_MEMBER", "User is not a member of this conversation");
         }
 
+        int pageSize = Math.max(1, Math.min(limit, 100));
+
         Instant clearedAfter = conversationMemberRepository.findByConversationIdAndUserId(conversationId, currentUserId)
                 .map(ConversationMember::getClearedAt)
                 .orElse(null);
 
-        List<Message> visibleMessages = messageRepository.findVisibleMessagesForUserInConversation(
+        List<Message> visibleMessages = messageRepository.findVisibleMessagesPaged(
                 conversationId,
                 currentUserId,
-                clearedAfter
+                beforeId,
+                clearedAfter,
+                org.springframework.data.domain.PageRequest.of(0, pageSize + 1)
         );
 
+        boolean hasMore = visibleMessages.size() > pageSize;
+        if (hasMore) {
+            visibleMessages = new ArrayList<>(visibleMessages.subList(0, pageSize));
+        } else {
+            visibleMessages = new ArrayList<>(visibleMessages);
+        }
+
+        Long nextCursor = visibleMessages.isEmpty() ? null : visibleMessages.get(visibleMessages.size() - 1).getId();
+
+        // Batch fetch reactions
         List<Long> messageIds = visibleMessages.stream().map(Message::getId).collect(Collectors.toList());
         Map<Long, List<com.connectx.message.dto.MessageReactionDto>> reactionsMap = new HashMap<>();
         if (!messageIds.isEmpty()) {
@@ -299,14 +322,30 @@ public class MessageService {
                     .collect(Collectors.groupingBy(com.connectx.message.dto.MessageReactionDto::getMessageId));
         }
 
+        // Batch fetch media metadata to eliminate N+1 queries
+        List<Long> mediaIds = visibleMessages.stream()
+                .filter(m -> (m.getMessageType() == MessageType.IMAGE || m.getMessageType() == MessageType.DOCUMENT) && m.getMediaId() != null)
+                .map(Message::getMediaId)
+                .distinct()
+                .collect(Collectors.toList());
+
+        Map<Long, MessageMedia> mediaMap = new HashMap<>();
+        if (!mediaIds.isEmpty()) {
+            List<MessageMedia> mediaList = messageMediaRepository.findAllById(mediaIds);
+            mediaList.forEach(mm -> mediaMap.put(mm.getId(), mm));
+        }
+
         final Map<Long, List<com.connectx.message.dto.MessageReactionDto>> finalReactionsMap = reactionsMap;
 
-        return visibleMessages.stream()
+        // Reverse to chronological order (ASC)
+        java.util.Collections.reverse(visibleMessages);
+
+        List<MessageDto> dtos = visibleMessages.stream()
                 .map(message -> {
                     String mimeType = null;
                     Long fileSizeBytes = null;
                     if ((message.getMessageType() == MessageType.IMAGE || message.getMessageType() == MessageType.DOCUMENT) && message.getMediaId() != null) {
-                        MessageMedia mm = messageMediaRepository.findById(message.getMediaId()).orElse(null);
+                        MessageMedia mm = mediaMap.get(message.getMediaId());
                         if (mm != null) {
                             mimeType = mm.getMimeType();
                             fileSizeBytes = mm.getFileSizeBytes();
@@ -318,6 +357,8 @@ public class MessageService {
                     return resultDto;
                 })
                 .collect(Collectors.toList());
+
+        return new com.connectx.message.dto.PagedMessageResponseDto(dtos, hasMore, nextCursor, pageSize);
     }
 
     @Transactional
@@ -411,45 +452,41 @@ public class MessageService {
 
     @Transactional
     public void markConversationAsRead(Long conversationId, Long currentUserId) {
-        // Fetch only the unread messages from other users — avoids loading the entire conversation history
-        List<Message> unreadMessages = messageRepository.findUnreadMessagesFromOthersInConversation(conversationId, currentUserId);
+        markConversationAsRead(conversationId, currentUserId, null);
+    }
+
+    @Transactional
+    public void markConversationAsRead(Long conversationId, Long currentUserId, Long maxMessageId) {
+        List<Message> unreadMessages = messageRepository.findUnreadMessagesFromOthersInConversationUpTo(
+                conversationId, currentUserId, maxMessageId);
         if (unreadMessages.isEmpty()) {
             return;
         }
 
         Instant now = Instant.now();
-        Map<String, List<Map<String, Object>>> senderUpdates = new HashMap<>();
+        messageRepository.bulkMarkReadInConversation(conversationId, currentUserId, maxMessageId, now);
 
+        Map<String, List<Long>> senderMessageIds = new HashMap<>();
         for (Message m : unreadMessages) {
-            boolean updated = false;
-            if (m.getDeliveredAt() == null) {
-                m.setDeliveredAt(now);
-                updated = true;
-            }
-            if (m.getReadAt() == null) {
-                m.setReadAt(now);
-                updated = true;
-            }
-            if (updated) {
-                messageRepository.save(m);
-
-                String senderUsername = m.getSenderUser().getUsername();
-                senderUpdates.computeIfAbsent(senderUsername, k -> new ArrayList<>()).add(Map.of(
-                        "messageId", m.getId(),
-                        "conversationId", conversationId,
-                        "deliveredAt", m.getDeliveredAt().toString(),
-                        "readAt", m.getReadAt().toString()
-                ));
+            if (m.getSenderUser() != null) {
+                senderMessageIds.computeIfAbsent(m.getSenderUser().getUsername(), k -> new ArrayList<>()).add(m.getId());
             }
         }
 
-        if (!senderUpdates.isEmpty()) {
+        if (!senderMessageIds.isEmpty()) {
             afterCommitExecutor.runAfterCommit(() -> {
-                senderUpdates.forEach((senderUsername, updates) -> {
-                    for (Map<String, Object> updatePayload : updates) {
-                        WsEvent event = WsEvent.of("READ_RECEIPT_UPDATE", updatePayload);
-                        messagingTemplate.convertAndSendToUser(senderUsername, "/queue/messages", event);
+                senderMessageIds.forEach((senderUsername, msgIds) -> {
+                    Map<String, Object> payload = new HashMap<>();
+                    payload.put("conversationId", conversationId);
+                    payload.put("messageIds", msgIds);
+                    if (msgIds.size() == 1) {
+                        payload.put("messageId", msgIds.get(0));
                     }
+                    payload.put("deliveredAt", now.toString());
+                    payload.put("readAt", now.toString());
+
+                    WsEvent event = WsEvent.of("READ_RECEIPT_UPDATE", payload);
+                    messagingTemplate.convertAndSendToUser(senderUsername, "/queue/messages", event);
                 });
             });
         }

@@ -1,6 +1,8 @@
 import { apiRequest } from './apiClient';
 import { Device, UserPublicKey } from '../types';
 
+const inFlightPublicKeys = new Map<number, Promise<UserPublicKey[]>>();
+
 export const deviceApi = {
   registerDevice: (data: { deviceName: string; publicKey: string; keyAlgorithm: string }) =>
     apiRequest<Device>('/devices', {
@@ -21,6 +23,16 @@ export const deviceApi = {
       method: 'POST',
     }),
 
-  getUserPublicKeys: (userId: number) =>
-    apiRequest<UserPublicKey[]>(`/users/${userId}/devices/public-keys`),
+  getUserPublicKeys: (userId: number): Promise<UserPublicKey[]> => {
+    const existing = inFlightPublicKeys.get(userId);
+    if (existing) return existing;
+
+    const promise = apiRequest<UserPublicKey[]>(`/users/${userId}/devices/public-keys`)
+      .finally(() => {
+        inFlightPublicKeys.delete(userId);
+      });
+
+    inFlightPublicKeys.set(userId, promise);
+    return promise;
+  },
 };

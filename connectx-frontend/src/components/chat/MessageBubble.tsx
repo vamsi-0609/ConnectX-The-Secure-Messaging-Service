@@ -95,7 +95,7 @@ interface MessageBubbleProps {
   onScrollToMessage?: (messageId: number) => void;
 }
 
-export const MessageBubble: React.FC<MessageBubbleProps> = ({
+const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
   message,
   isSelf,
   currentUserId,
@@ -632,3 +632,5 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     </div>
   );
 };
+
+export const MessageBubble = React.memo(MessageBubbleComponent);

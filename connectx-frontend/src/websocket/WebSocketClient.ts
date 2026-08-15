@@ -16,9 +16,9 @@ export class WebSocketClient {
   private messageListeners: Set<MessageHandler> = new Set();
   private statusListeners: Set<StatusHandler> = new Set();
 
-  // Track active conversation IDs and active subscriptions
-  private activeConversationIds: Set<number> = new Set();
-  private conversationSubs: Map<number, StompSubscription> = new Map();
+  // Track only the currently active conversation ID and its subscription
+  private currentActiveConversationId: number | null = null;
+  private activeConversationSub: StompSubscription | null = null;
 
   // Reconnect backoff state
   private reconnectAttempt = 0;
@@ -79,8 +79,8 @@ export class WebSocketClient {
       this.reconnectAttempt = 0; // Reset backoff on successful connection
       this.updateStatus('CONNECTED');
 
-      // Clear stale subscription references on new connection
-      this.conversationSubs.clear();
+      // Clear stale subscription reference on new connection
+      this.activeConversationSub = null;
 
       // 1. Subscribe to User Incoming Messages Queue (/user/queue/messages)
       this.stompClient?.subscribe('/user/queue/messages', (message: IMessage) => {
@@ -102,10 +102,10 @@ export class WebSocketClient {
         }
       });
 
-      // 3. Resubscribe to all active conversation topics automatically
-      this.activeConversationIds.forEach((id) => {
-        this.performConversationSub(id);
-      });
+      // 3. Resubscribe to the currently active conversation topic if any
+      if (this.currentActiveConversationId != null) {
+        this.performConversationSub(this.currentActiveConversationId);
+      }
     };
 
     this.stompClient.onStompError = (frame) => {
@@ -142,18 +142,45 @@ export class WebSocketClient {
     }, delayMs);
   }
 
-  public subscribeToConversation(conversationId: number) {
-    this.activeConversationIds.add(conversationId);
-    if (this.stompClient && this.stompClient.connected) {
+  /**
+   * Set the currently active conversation topic subscription.
+   * Automatically unsubscribes from the previous conversation to prevent subscription leaks.
+   */
+  public setActiveConversation(conversationId: number | null) {
+    if (this.currentActiveConversationId === conversationId) {
+      return;
+    }
+
+    // Unsubscribe from previous conversation topic
+    if (this.activeConversationSub) {
+      try {
+        this.activeConversationSub.unsubscribe();
+      } catch (err) {
+        console.warn('[ConnectX STOMP] Error unsubscribing from conversation topic:', err);
+      }
+      this.activeConversationSub = null;
+    }
+
+    this.currentActiveConversationId = conversationId;
+
+    if (conversationId != null && this.stompClient && this.stompClient.connected) {
       this.performConversationSub(conversationId);
     }
   }
 
+  public subscribeToConversation(conversationId: number) {
+    this.setActiveConversation(conversationId);
+  }
+
   private performConversationSub(conversationId: number) {
     if (!this.stompClient || !this.stompClient.connected) return;
-    if (this.conversationSubs.has(conversationId)) return;
 
-    const sub = this.stompClient.subscribe(`/topic/conversation/${conversationId}`, (message: IMessage) => {
+    if (this.activeConversationSub) {
+      this.activeConversationSub.unsubscribe();
+      this.activeConversationSub = null;
+    }
+
+    this.activeConversationSub = this.stompClient.subscribe(`/topic/conversation/${conversationId}`, (message: IMessage) => {
       try {
         const wsEvent: WsEvent = JSON.parse(message.body);
         this.notifyMessageListeners(wsEvent);
@@ -161,16 +188,11 @@ export class WebSocketClient {
         console.error('[ConnectX STOMP] Failed to parse topic message:', err);
       }
     });
-
-    this.conversationSubs.set(conversationId, sub);
   }
 
   public unsubscribeFromConversation(conversationId: number) {
-    this.activeConversationIds.delete(conversationId);
-    const sub = this.conversationSubs.get(conversationId);
-    if (sub) {
-      sub.unsubscribe();
-      this.conversationSubs.delete(conversationId);
+    if (this.currentActiveConversationId === conversationId) {
+      this.setActiveConversation(null);
     }
   }
 
@@ -180,9 +202,11 @@ export class WebSocketClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    this.activeConversationIds.clear();
-    this.conversationSubs.forEach((sub) => sub.unsubscribe());
-    this.conversationSubs.clear();
+    if (this.activeConversationSub) {
+      this.activeConversationSub.unsubscribe();
+      this.activeConversationSub = null;
+    }
+    this.currentActiveConversationId = null;
     if (this.stompClient) {
       this.stompClient.deactivate();
       this.stompClient = null;
@@ -207,13 +231,16 @@ export class WebSocketClient {
 
   /**
    * Send a MESSAGE_READ event to the correct /app/message.read destination.
-   * Must NOT go through /app/message.send (which requires ciphertext).
+   * Can include maxMessageId / upToMessageId for bounded bulk read.
    */
-  public sendRead(conversationId: number): boolean {
+  public sendRead(conversationId: number, maxMessageId?: number): boolean {
     if (this.stompClient && this.stompClient.connected) {
       const event: WsEvent = {
         type: 'MESSAGE_READ',
-        payload: { conversationId },
+        payload: {
+          conversationId,
+          ...(maxMessageId ? { maxMessageId, upToMessageId: maxMessageId } : {}),
+        },
       };
       this.stompClient.publish({
         destination: '/app/message.read',

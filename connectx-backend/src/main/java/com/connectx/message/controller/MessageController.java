@@ -21,11 +21,18 @@ public class MessageController {
     }
 
     @GetMapping("/conversations/{conversationId}/messages")
-    public ResponseEntity<ApiResponse<List<MessageDto>>> getConversationMessages(
+    public ResponseEntity<ApiResponse<com.connectx.message.dto.PagedMessageResponseDto>> getConversationMessages(
             @AuthenticationPrincipal UserPrincipal currentUser,
-            @PathVariable Long conversationId) {
-        List<MessageDto> messages = messageService.getConversationMessages(currentUser.getId(), conversationId);
-        return ResponseEntity.ok(ApiResponse.success("Conversation message history", messages));
+            @PathVariable Long conversationId,
+            @RequestParam(name = "before", required = false) Long before,
+            @RequestParam(name = "limit", defaultValue = "30") int limit) {
+        com.connectx.message.dto.PagedMessageResponseDto response = messageService.getConversationMessagesPaged(
+                currentUser.getId(),
+                conversationId,
+                before,
+                limit
+        );
+        return ResponseEntity.ok(ApiResponse.success("Conversation message history", response));
     }
 
     @PostMapping("/messages")

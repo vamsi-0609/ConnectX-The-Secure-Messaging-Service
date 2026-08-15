@@ -19,6 +19,9 @@ public interface ConversationMemberRepository extends JpaRepository<Conversation
     @Query("SELECT cm FROM ConversationMember cm JOIN FETCH cm.user WHERE cm.conversation.id = :conversationId")
     List<ConversationMember> findByConversationIdWithUsers(@Param("conversationId") Long conversationId);
 
+    @Query("SELECT cm FROM ConversationMember cm JOIN FETCH cm.user WHERE cm.conversation.id IN :conversationIds")
+    List<ConversationMember> findByConversationIdInWithUsers(@Param("conversationIds") List<Long> conversationIds);
+
     boolean existsByConversationIdAndUserIdAndDeletedAtIsNull(Long conversationId, Long userId);
 
     long countByConversationIdAndDeletedAtIsNull(Long conversationId);

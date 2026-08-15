@@ -35,7 +35,7 @@ interface ChatHeaderProps {
   onUnmuteChat?: () => Promise<void>;
 }
 
-export const ChatHeader: React.FC<ChatHeaderProps> = ({
+export const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
   recipient,
   showRawCiphertext,
   showInfoDrawer,
@@ -300,4 +300,6 @@ export const ChatHeader: React.FC<ChatHeaderProps> = ({
       )}
     </>
   );
-};
+});
+
+ChatHeader.displayName = 'ChatHeader';

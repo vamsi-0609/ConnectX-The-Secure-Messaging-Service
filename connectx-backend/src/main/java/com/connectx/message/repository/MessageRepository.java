@@ -25,6 +25,18 @@ public interface MessageRepository extends JpaRepository<Message, Long> {
 
     @Query("SELECT m FROM Message m WHERE m.conversation.id = :conversationId " +
            "AND m.deletedForEveryone = false " +
+           "AND (:beforeId IS NULL OR m.id < :beforeId) " +
+           "AND NOT EXISTS (SELECT 1 FROM MessageUserState mus WHERE mus.message.id = m.id AND mus.user.id = :userId) " +
+           "AND (:clearedAfter IS NULL OR m.sentAt > :clearedAfter) " +
+           "ORDER BY m.id DESC")
+    List<Message> findVisibleMessagesPaged(@Param("conversationId") Long conversationId,
+                                           @Param("userId") Long userId,
+                                           @Param("beforeId") Long beforeId,
+                                           @Param("clearedAfter") Instant clearedAfter,
+                                           Pageable pageable);
+
+    @Query("SELECT m FROM Message m WHERE m.conversation.id = :conversationId " +
+           "AND m.deletedForEveryone = false " +
            "AND NOT EXISTS (SELECT 1 FROM MessageUserState mus WHERE mus.message.id = m.id AND mus.user.id = :userId) " +
            "AND (:clearedAfter IS NULL OR m.sentAt > :clearedAfter) " +
            "ORDER BY m.sentAt DESC")
@@ -60,6 +72,38 @@ public interface MessageRepository extends JpaRepository<Message, Long> {
     int bulkMarkDeliveredInConversation(
             @Param("conversationId") Long conversationId,
             @Param("currentUserId") Long currentUserId,
+            @Param("now") Instant now);
+
+    /**
+     * Fetch unread messages sent by others in a conversation up to maxMessageId.
+     */
+    @Query("SELECT m FROM Message m " +
+           "JOIN FETCH m.senderUser su " +
+           "WHERE m.conversation.id = :conversationId " +
+           "AND su.id <> :currentUserId " +
+           "AND (:maxMessageId IS NULL OR m.id <= :maxMessageId) " +
+           "AND m.readAt IS NULL " +
+           "AND m.deletedForEveryone = false")
+    List<Message> findUnreadMessagesFromOthersInConversationUpTo(
+            @Param("conversationId") Long conversationId,
+            @Param("currentUserId") Long currentUserId,
+            @Param("maxMessageId") Long maxMessageId);
+
+    /**
+     * Bulk-set read_at (and delivered_at if not set) for messages in a conversation
+     * sent by others up to maxMessageId that have not yet been marked read.
+     */
+    @Modifying
+    @Query("UPDATE Message m SET m.readAt = :now, m.deliveredAt = COALESCE(m.deliveredAt, :now) " +
+           "WHERE m.conversation.id = :conversationId " +
+           "AND m.senderUser.id <> :currentUserId " +
+           "AND (:maxMessageId IS NULL OR m.id <= :maxMessageId) " +
+           "AND m.readAt IS NULL " +
+           "AND m.deletedForEveryone = false")
+    int bulkMarkReadInConversation(
+            @Param("conversationId") Long conversationId,
+            @Param("currentUserId") Long currentUserId,
+            @Param("maxMessageId") Long maxMessageId,
             @Param("now") Instant now);
 
     void deleteByConversationId(Long conversationId);

@@ -46,7 +46,7 @@ public class DeviceService {
     public List<UserPublicKeyDto> getUserPublicKeys(Long userId) {
         List<Device> activeDevices = deviceRepository.findByUserIdAndActiveTrueOrderByCreatedAtDesc(userId);
         if (activeDevices.isEmpty()) {
-            throw new ApiException(HttpStatus.NOT_FOUND, "DEVICE_NOT_FOUND", "No active cryptographic devices found for this user");
+            throw new ApiException(HttpStatus.NOT_FOUND, "NO_ACTIVE_CRYPTO_DEVICE", "This user hasn't activated secure messaging yet.");
         }
         return activeDevices.stream()
                 .map(d -> new UserPublicKeyDto(d.getId(), d.getUser().getId(), d.getDeviceName(), d.getPublicKey(), d.getKeyAlgorithm()))

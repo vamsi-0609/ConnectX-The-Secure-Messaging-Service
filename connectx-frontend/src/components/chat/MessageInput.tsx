@@ -23,6 +23,7 @@ import { geolocationErrorMessage, resolveCurrentLocation } from '../../utils/loc
 import { CameraCaptureModal } from './CameraCaptureModal';
 import { MediaBatchPreviewModal } from './MediaBatchPreviewModal';
 import { ReplyTarget } from '../../types';
+import { conversationCache } from '../../cache/conversationCache';
 
 interface MessageInputProps {
   conversationId: number;
@@ -35,7 +36,8 @@ interface MessageInputProps {
     ciphertext: string,
     nonce: string,
     recipientDeviceId: number,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    clientTempId?: string
   ) => void;
   onOptimisticImageMessage: (
     mediaId: number,
@@ -218,6 +220,10 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     if (!content || isSendingRef.current || uploading) return;
 
     const replyToId = replyTarget?.messageId;
+    const clientTempId =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     isSendingRef.current = true;
     setSending(true);
@@ -230,8 +236,17 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     }
     onCancelReply?.();
 
+    // 1. Immediately append to UI optimistically
+    onOptimisticMessage(content, '', '', 0, replyToId, clientTempId);
+
     try {
-      const recipientPublicKeys = await deviceApi.getUserPublicKeys(recipientUserId);
+      let recipientPublicKeys = conversationCache.getPublicKeys(recipientUserId);
+      if (!recipientPublicKeys || recipientPublicKeys.length === 0) {
+        recipientPublicKeys = await deviceApi.getUserPublicKeys(recipientUserId);
+        if (recipientPublicKeys && recipientPublicKeys.length > 0) {
+          conversationCache.setPublicKeys(recipientUserId, recipientPublicKeys);
+        }
+      }
       if (!recipientPublicKeys || recipientPublicKeys.length === 0) {
         throw new Error('Recipient has no registered public keys on the server.');
       }
@@ -261,19 +276,18 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       };
 
       await messageApi.sendMessage(sendPayload);
-
-      onOptimisticMessage(
-        content,
-        encrypted.ciphertext,
-        encrypted.nonce,
-        recipientDevice.deviceId,
-        replyToId
-      );
       onMessageSent?.();
     } catch (err: unknown) {
       console.error('[ConnectX E2EE] Message transmission failure:', err);
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      alert('Failed to send message: ' + message);
+      let message = err instanceof Error ? err.message : 'Unknown error';
+      if (
+        message.includes('NO_ACTIVE_CRYPTO_DEVICE') ||
+        message.includes('active cryptographic devices') ||
+        message.includes("hasn't activated secure messaging")
+      ) {
+        message = "This user hasn't activated secure messaging yet.";
+      }
+      alert(message);
       // Restore unsent text on failure
       setText(content);
     } finally {

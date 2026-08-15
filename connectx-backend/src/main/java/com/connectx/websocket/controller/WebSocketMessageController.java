@@ -100,23 +100,51 @@ public class WebSocketMessageController {
         return null;
     }
 
+    private Long extractLong(Map<String, Object> payload, String key) {
+        if (payload == null) {
+            return null;
+        }
+        Object val = payload.get(key);
+        if (val instanceof Number number) {
+            return number.longValue();
+        }
+        if (val instanceof String str) {
+            try {
+                return Long.parseLong(str.trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return null;
+    }
+
     @MessageMapping("/message.delivered")
     public void handleMessageDelivered(@Payload WsEvent event, Principal principal) {
-        if (event.getPayload() != null && event.getPayload().containsKey("messageId")) {
-            Long messageId = ((Number) event.getPayload().get("messageId")).longValue();
-            messageService.markDelivered(messageId);
+        if (event != null && event.getPayload() != null) {
+            Long messageId = extractLong(event.getPayload(), "messageId");
+            if (messageId != null) {
+                messageService.markDelivered(messageId);
+            }
         }
     }
 
     @MessageMapping("/message.read")
     public void handleMessageRead(@Payload WsEvent event, Principal principal) {
+        if (event == null || event.getPayload() == null) {
+            return;
+        }
+
         Long currentUserId = resolveCurrentUserId(principal);
-        if (event.getPayload() != null) {
-            if (event.getPayload().containsKey("conversationId") && currentUserId != null) {
-                Long conversationId = ((Number) event.getPayload().get("conversationId")).longValue();
-                messageService.markConversationAsRead(conversationId, currentUserId);
-            } else if (event.getPayload().containsKey("messageId")) {
-                Long messageId = ((Number) event.getPayload().get("messageId")).longValue();
+        Long conversationId = extractLong(event.getPayload(), "conversationId");
+        Long maxMessageId = extractLong(event.getPayload(), "maxMessageId");
+        if (maxMessageId == null) {
+            maxMessageId = extractLong(event.getPayload(), "upToMessageId");
+        }
+
+        if (conversationId != null && currentUserId != null) {
+            messageService.markConversationAsRead(conversationId, currentUserId, maxMessageId);
+        } else {
+            Long messageId = extractLong(event.getPayload(), "messageId");
+            if (messageId != null) {
                 messageService.markRead(messageId);
             }
         }

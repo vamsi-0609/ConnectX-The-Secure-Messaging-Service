@@ -1,11 +1,15 @@
 package com.connectx.push.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.validation.constraints.NotBlank;
 
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class PushSubscriptionRequestDto {
 
     @NotBlank(message = "Endpoint is required")
     private String endpoint;
+
+    private Long expirationTime;
 
     private KeysDto keys;
 
@@ -17,6 +21,14 @@ public class PushSubscriptionRequestDto {
 
     public void setEndpoint(String endpoint) {
         this.endpoint = endpoint;
+    }
+
+    public Long getExpirationTime() {
+        return expirationTime;
+    }
+
+    public void setExpirationTime(Long expirationTime) {
+        this.expirationTime = expirationTime;
     }
 
     public KeysDto getKeys() {
