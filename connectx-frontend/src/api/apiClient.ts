@@ -32,6 +32,12 @@ async function attemptTokenRefresh(): Promise<string | null> {
       body: JSON.stringify({ refreshToken }),
     });
 
+    if (response.status === 401 || response.status === 403) {
+      // Refresh token is genuinely invalid / expired -> trigger logout
+      handleAuthFailure();
+      return null;
+    }
+
     if (!response.ok) {
       return null;
     }
@@ -56,6 +62,7 @@ async function attemptTokenRefresh(): Promise<string | null> {
     }
     return null;
   } catch {
+    // Network failure / backend restarting: do NOT clear local user session
     return null;
   }
 }

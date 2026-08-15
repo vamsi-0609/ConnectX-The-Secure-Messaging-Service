@@ -218,6 +218,7 @@ public class MessageService {
         recvPayload.put("ciphertext", messageType == MessageType.TEXT ? dto.getCiphertext() : "");
         recvPayload.put("nonce", messageType == MessageType.TEXT ? dto.getNonce() : "");
         recvPayload.put("sentAt", savedMessage.getSentAt().toString());
+        recvPayload.put("clientTempId", dto.getRequestId());
 
         if (savedMessage.getReplyToMessage() != null) {
             Message reply = savedMessage.getReplyToMessage();

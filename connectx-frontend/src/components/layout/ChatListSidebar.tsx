@@ -37,7 +37,9 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
 
   const getRecipient = (conv: Conversation): User | null => {
     if (!conv.members?.length) return null;
-    const member = conv.members.find((m) => m.user?.id && m.user.id !== currentUser.id);
+    const member = conv.members.find(
+      (m) => m.user?.id != null && Number(m.user.id) !== Number(currentUser.id)
+    );
     return member?.user ?? null;
   };
 

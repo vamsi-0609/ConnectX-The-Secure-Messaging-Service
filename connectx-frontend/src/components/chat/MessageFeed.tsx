@@ -118,14 +118,18 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
     } else {
       const isNewMessageAdded = messages.length > prevMessageCountRef.current;
       const isInitialLoad = prevMessageCountRef.current === 0 && messages.length > 0;
+      const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+      const isMyOutgoingMessage =
+        lastMessage != null &&
+        (lastMessage.senderUserId === currentUserId || lastMessage.status === 'SENDING' || lastMessage.id < 0);
 
-      if (isInitialLoad || (isNewMessageAdded && isNearBottomRef.current)) {
+      if (isInitialLoad || (isNewMessageAdded && (isNearBottomRef.current || isMyOutgoingMessage))) {
         scrollToBottom(isInitialLoad ? 'auto' : 'smooth');
       }
     }
 
     prevMessageCountRef.current = messages.length;
-  }, [messages, scrollToBottom]);
+  }, [messages, currentUserId, scrollToBottom]);
 
   return (
     <div className="h-full w-full relative min-h-0">

@@ -30,6 +30,7 @@ export const messageApi = {
     ciphertext?: string;
     nonce?: string;
     replyToMessageId?: number;
+    requestId?: string;
   }) =>
     apiRequest<Message>('/messages', {
       method: 'POST',

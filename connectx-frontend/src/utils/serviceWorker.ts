@@ -2,7 +2,20 @@ let swRegistration: ServiceWorkerRegistration | null = null;
 
 export async function registerServiceWorker(): Promise<ServiceWorkerRegistration | null> {
   if (!('serviceWorker' in navigator)) {
-    console.log('[ConnectX SW] Service Worker is not supported in this browser environment.');
+    return null;
+  }
+
+  // In development mode, unregister any existing service worker to prevent proxy interference
+  if (import.meta.env.DEV) {
+    try {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      for (const registration of registrations) {
+        await registration.unregister();
+        console.log('[ConnectX SW] Unregistered Service Worker for development mode');
+      }
+    } catch {
+      // Ignore in dev
+    }
     return null;
   }
 

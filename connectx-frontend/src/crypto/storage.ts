@@ -9,7 +9,7 @@
  */
 
 const DB_NAME = 'ConnectX_Crypto_Vault';
-const DB_VERSION = 3;
+const DB_VERSION = 5;
 const STORE_NAME = 'private_keys';
 const DEVICE_STORE_NAME = 'device_metadata';
 const DECRYPTED_MSG_STORE_NAME = 'decrypted_messages';

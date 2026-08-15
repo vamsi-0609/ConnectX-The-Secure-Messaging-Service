@@ -277,7 +277,7 @@ export const App: React.FC = () => {
         })
         .then(() => reconnect())
         .catch((err) => {
-          console.warn('[ConnectX Auth] Session validation encountered error:', err);
+          console.warn('[ConnectX Auth] Session validation encountered temporary error:', err);
         });
     }
 
@@ -375,7 +375,7 @@ export const App: React.FC = () => {
         });
       });
     } catch (err) {
-      console.error('[ConnectX] Failed to load user conversations:', err);
+      console.warn('[ConnectX] Failed to load conversations from network (preserving cached state):', err);
     }
   }, [currentUser]);
 
@@ -574,7 +574,15 @@ export const App: React.FC = () => {
         if ((err as Error)?.name === 'AbortError') {
           return;
         }
-        console.error('[ConnectX] Failed to load messages for conversation:', err);
+        console.warn(`[ConnectX] Failed to load messages for conversation ${convId} from network:`, err);
+        // Fallback: If network failed, check if we have cached messages in LRU cache so we don't display empty chat
+        const cached = conversationCache.getConversation(convId);
+        if (cached && cached.messages.length > 0) {
+          if (targetSeq === activeRequestSeqRef.current && activeConversationIdRef.current === convId) {
+            setMessages(cached.messages);
+            setHasMoreMessages(cached.hasMore);
+          }
+        }
       }
     },
     [currentUser, decryptSingleMessage, updatePreviewIfNewer]
@@ -1370,13 +1378,20 @@ export const App: React.FC = () => {
   }
 
   return (
-    <div className="app-shell bg-slate-100 dark:bg-[#090d16] transition-colors duration-300">
-      {/* Conversation list — full screen on mobile when no chat selected */}
-      <div
-        className={`h-full flex-shrink-0 ${
-          activeConversation ? 'hidden md:flex' : 'flex w-full md:w-auto'
-        }`}
-      >
+    <div className="app-shell flex flex-col bg-slate-100 dark:bg-[#090d16] transition-colors duration-300">
+      {status !== 'CONNECTED' && (
+        <div className="flex-shrink-0 w-full bg-amber-500/15 dark:bg-amber-950/40 border-b border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs py-1 px-3 text-center font-medium flex items-center justify-center gap-2 select-none z-50">
+          <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+          <span>Connecting to server...</span>
+        </div>
+      )}
+      <div className="flex-1 min-h-0 w-full flex overflow-hidden">
+        {/* Conversation list — full screen on mobile when no chat selected */}
+        <div
+          className={`h-full flex-shrink-0 ${
+            activeConversation ? 'hidden md:flex' : 'flex w-full md:w-auto'
+          }`}
+        >
         <ChatListSidebar
           currentUser={currentUser}
           conversations={conversations}
@@ -1409,6 +1424,7 @@ export const App: React.FC = () => {
         {activeConversation ? (
           <div className="flex h-full w-full min-h-0 min-w-0">
             <ChatScreen
+              key={activeConversation.id}
               recipient={getRecipientUser(activeConversation)}
               conversationId={activeConversation.id}
               messages={messages}
@@ -1477,6 +1493,7 @@ export const App: React.FC = () => {
             </div>
           </div>
         )}
+      </div>
       </div>
 
       {showProfileModal && (

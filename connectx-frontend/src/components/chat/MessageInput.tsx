@@ -50,7 +50,8 @@ interface MessageInputProps {
     latitude: number,
     longitude: number,
     locationLabel: string | undefined,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    clientTempId?: string
   ) => void;
   onOptimisticDocumentMessage: (
     mediaId: number,
@@ -273,6 +274,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         ciphertext: encrypted.ciphertext,
         nonce: encrypted.nonce,
         replyToMessageId: replyToId,
+        requestId: clientTempId,
       };
 
       await messageApi.sendMessage(sendPayload);
@@ -368,6 +370,10 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     setSharingLocation(true);
     setUploadStatus('Getting location...');
     const replyToId = replyTarget?.messageId;
+    const clientTempId =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     try {
       const location = await resolveCurrentLocation();
@@ -380,13 +386,15 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         longitude: location.longitude,
         locationLabel: location.locationLabel,
         replyToMessageId: replyToId,
+        requestId: clientTempId,
       });
 
       onOptimisticLocationMessage(
         location.latitude,
         location.longitude,
         location.locationLabel,
-        replyToId
+        replyToId,
+        clientTempId
       );
       onMessageSent?.();
       onCancelReply?.();
