@@ -22,6 +22,9 @@ public class ConversationDto {
     private Instant pinnedAt;
     private boolean muted;
     private Instant mutedUntil;
+    private boolean archived;
+    private Instant archivedAt;
+    private boolean manuallyMarkedUnread;
 
     public ConversationDto() {}
 
@@ -157,5 +160,29 @@ public class ConversationDto {
 
     public void setMutedUntil(Instant mutedUntil) {
         this.mutedUntil = mutedUntil;
+    }
+
+    public boolean isArchived() {
+        return archived;
+    }
+
+    public void setArchived(boolean archived) {
+        this.archived = archived;
+    }
+
+    public Instant getArchivedAt() {
+        return archivedAt;
+    }
+
+    public void setArchivedAt(Instant archivedAt) {
+        this.archivedAt = archivedAt;
+    }
+
+    public boolean isManuallyMarkedUnread() {
+        return manuallyMarkedUnread;
+    }
+
+    public void setManuallyMarkedUnread(boolean manuallyMarkedUnread) {
+        this.manuallyMarkedUnread = manuallyMarkedUnread;
     }
 }

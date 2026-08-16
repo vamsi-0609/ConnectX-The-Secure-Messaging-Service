@@ -99,4 +99,36 @@ public class ConversationController {
         ConversationDto conversation = conversationService.unmuteConversation(currentUser.getId(), conversationId);
         return ResponseEntity.ok(ApiResponse.success("Conversation unmuted", conversation));
     }
+
+    @PostMapping("/{conversationId}/archive")
+    public ResponseEntity<ApiResponse<ConversationDto>> archiveConversation(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long conversationId) {
+        ConversationDto conversation = conversationService.archiveConversation(currentUser.getId(), conversationId);
+        return ResponseEntity.ok(ApiResponse.success("Conversation archived", conversation));
+    }
+
+    @PostMapping("/{conversationId}/unarchive")
+    public ResponseEntity<ApiResponse<ConversationDto>> unarchiveConversation(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long conversationId) {
+        ConversationDto conversation = conversationService.unarchiveConversation(currentUser.getId(), conversationId);
+        return ResponseEntity.ok(ApiResponse.success("Conversation unarchived", conversation));
+    }
+
+    @PostMapping("/{conversationId}/mark-unread")
+    public ResponseEntity<ApiResponse<ConversationDto>> markConversationUnread(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long conversationId) {
+        ConversationDto conversation = conversationService.markConversationUnread(currentUser.getId(), conversationId);
+        return ResponseEntity.ok(ApiResponse.success("Conversation marked unread", conversation));
+    }
+
+    @PostMapping("/{conversationId}/mark-read")
+    public ResponseEntity<ApiResponse<ConversationDto>> markConversationRead(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long conversationId) {
+        ConversationDto conversation = conversationService.markConversationRead(currentUser.getId(), conversationId);
+        return ResponseEntity.ok(ApiResponse.success("Conversation marked read", conversation));
+    }
 }

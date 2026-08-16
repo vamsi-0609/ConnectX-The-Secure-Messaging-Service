@@ -54,4 +54,24 @@ export const conversationApi = {
     apiRequest<Conversation>(`/conversations/${conversationId}/unmute`, {
       method: 'POST',
     }),
+
+  archiveConversation: (conversationId: number) =>
+    apiRequest<Conversation>(`/conversations/${conversationId}/archive`, {
+      method: 'POST',
+    }),
+
+  unarchiveConversation: (conversationId: number) =>
+    apiRequest<Conversation>(`/conversations/${conversationId}/unarchive`, {
+      method: 'POST',
+    }),
+
+  markUnread: (conversationId: number) =>
+    apiRequest<Conversation>(`/conversations/${conversationId}/mark-unread`, {
+      method: 'POST',
+    }),
+
+  markRead: (conversationId: number) =>
+    apiRequest<Conversation>(`/conversations/${conversationId}/mark-read`, {
+      method: 'POST',
+    }),
 };

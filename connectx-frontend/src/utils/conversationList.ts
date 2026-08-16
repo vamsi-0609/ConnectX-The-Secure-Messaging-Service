@@ -163,3 +163,17 @@ export function isConversationPinned(conv: Conversation, currentUserId?: number)
   return Boolean(userMember?.pinned);
 }
 
+export function isConversationArchived(conv: Conversation, currentUserId?: number): boolean {
+  if (conv.archived) return true;
+  if (!currentUserId || !conv.members?.length) return false;
+  const userMember = conv.members.find((m) => m.user?.id === currentUserId);
+  return Boolean(userMember?.archived);
+}
+
+export function isConversationManuallyUnread(conv: Conversation, currentUserId?: number): boolean {
+  if (conv.manuallyMarkedUnread) return true;
+  if (!currentUserId || !conv.members?.length) return false;
+  const userMember = conv.members.find((m) => m.user?.id === currentUserId);
+  return Boolean(userMember?.manuallyMarkedUnread);
+}
+

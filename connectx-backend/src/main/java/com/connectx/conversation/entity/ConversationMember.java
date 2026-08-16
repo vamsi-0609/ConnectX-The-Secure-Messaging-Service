@@ -43,6 +43,15 @@ public class ConversationMember {
     @Column(name = "muted_until")
     private Instant mutedUntil;
 
+    @Column(name = "is_archived", nullable = false)
+    private boolean archived = false;
+
+    @Column(name = "archived_at")
+    private Instant archivedAt;
+
+    @Column(name = "manually_marked_unread", nullable = false)
+    private boolean manuallyMarkedUnread = false;
+
     @PrePersist
     protected void onCreate() {
         this.joinedAt = Instant.now();
@@ -133,5 +142,29 @@ public class ConversationMember {
 
     public void setMutedUntil(Instant mutedUntil) {
         this.mutedUntil = mutedUntil;
+    }
+
+    public boolean isArchived() {
+        return archived;
+    }
+
+    public void setArchived(boolean archived) {
+        this.archived = archived;
+    }
+
+    public Instant getArchivedAt() {
+        return archivedAt;
+    }
+
+    public void setArchivedAt(Instant archivedAt) {
+        this.archivedAt = archivedAt;
+    }
+
+    public boolean isManuallyMarkedUnread() {
+        return manuallyMarkedUnread;
+    }
+
+    public void setManuallyMarkedUnread(boolean manuallyMarkedUnread) {
+        this.manuallyMarkedUnread = manuallyMarkedUnread;
     }
 }

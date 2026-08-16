@@ -635,6 +635,10 @@ public class MessageService {
 
     @Transactional
     public void markConversationAsRead(Long conversationId, Long currentUserId, Long maxMessageId) {
+        // Opening/reading the conversation clears any manual "mark as unread" override,
+        // regardless of whether there happen to be new messages from others to mark read.
+        conversationService.clearManuallyMarkedUnreadIfSet(conversationId, currentUserId);
+
         List<Message> unreadMessages = messageRepository.findUnreadMessagesFromOthersInConversationUpTo(
                 conversationId, currentUserId, maxMessageId);
         if (unreadMessages.isEmpty()) {

@@ -14,6 +14,9 @@ public class ConversationMemberDto {
     private Instant pinnedAt;
     private Instant mutedUntil;
     private boolean muted;
+    private boolean archived;
+    private Instant archivedAt;
+    private boolean manuallyMarkedUnread;
 
     public ConversationMemberDto() {}
 
@@ -27,6 +30,9 @@ public class ConversationMemberDto {
         dto.setPinnedAt(member.getPinnedAt());
         dto.setMutedUntil(member.getMutedUntil());
         dto.setMuted(member.getMutedUntil() != null && member.getMutedUntil().isAfter(Instant.now()));
+        dto.setArchived(member.isArchived());
+        dto.setArchivedAt(member.getArchivedAt());
+        dto.setManuallyMarkedUnread(member.isManuallyMarkedUnread());
         return dto;
     }
 
@@ -92,5 +98,29 @@ public class ConversationMemberDto {
 
     public void setMuted(boolean muted) {
         this.muted = muted;
+    }
+
+    public boolean isArchived() {
+        return archived;
+    }
+
+    public void setArchived(boolean archived) {
+        this.archived = archived;
+    }
+
+    public Instant getArchivedAt() {
+        return archivedAt;
+    }
+
+    public void setArchivedAt(Instant archivedAt) {
+        this.archivedAt = archivedAt;
+    }
+
+    public boolean isManuallyMarkedUnread() {
+        return manuallyMarkedUnread;
+    }
+
+    public void setManuallyMarkedUnread(boolean manuallyMarkedUnread) {
+        this.manuallyMarkedUnread = manuallyMarkedUnread;
     }
 }

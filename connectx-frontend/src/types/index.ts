@@ -60,6 +60,9 @@ export interface ConversationMember {
   pinnedAt?: string;
   mutedUntil?: string;
   muted?: boolean;
+  archived?: boolean;
+  archivedAt?: string;
+  manuallyMarkedUnread?: boolean;
 }
 
 export type MessageType = 'TEXT' | 'IMAGE' | 'LOCATION' | 'DOCUMENT';
@@ -80,6 +83,9 @@ export interface Conversation {
   pinnedAt?: string;
   isMuted?: boolean;
   mutedUntil?: string;
+  archived?: boolean;
+  archivedAt?: string;
+  manuallyMarkedUnread?: boolean;
 }
 
 export interface ConversationPreview {

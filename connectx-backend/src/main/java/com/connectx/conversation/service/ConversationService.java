@@ -168,6 +168,9 @@ public class ConversationService {
             dto.setPinnedAt(currentMember.getPinnedAt());
             dto.setMutedUntil(currentMember.getMutedUntil());
             dto.setMuted(currentMember.getMutedUntil() != null && currentMember.getMutedUntil().isAfter(Instant.now()));
+            dto.setArchived(currentMember.isArchived());
+            dto.setArchivedAt(currentMember.getArchivedAt());
+            dto.setManuallyMarkedUnread(currentMember.isManuallyMarkedUnread());
         }
 
         Instant clearedAfter = currentMember != null ? currentMember.getClearedAt() : null;
@@ -393,5 +396,91 @@ public class ConversationService {
         Conversation conversation = conversationRepository.findById(conversationId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
         return enrichConversationDto(conversation, currentUserId);
+    }
+
+    @Transactional
+    public ConversationDto archiveConversation(Long currentUserId, Long conversationId) {
+        ConversationMember member = conversationMemberRepository.findByConversationIdAndUserId(conversationId, currentUserId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
+
+        if (member.getDeletedAt() != null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found");
+        }
+
+        if (!member.isArchived()) {
+            member.setArchived(true);
+            member.setArchivedAt(Instant.now());
+            conversationMemberRepository.save(member);
+        }
+
+        Conversation conversation = conversationRepository.findById(conversationId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
+        return enrichConversationDto(conversation, currentUserId);
+    }
+
+    @Transactional
+    public ConversationDto unarchiveConversation(Long currentUserId, Long conversationId) {
+        ConversationMember member = conversationMemberRepository.findByConversationIdAndUserId(conversationId, currentUserId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
+
+        if (member.isArchived()) {
+            member.setArchived(false);
+            member.setArchivedAt(null);
+            conversationMemberRepository.save(member);
+        }
+
+        Conversation conversation = conversationRepository.findById(conversationId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
+        return enrichConversationDto(conversation, currentUserId);
+    }
+
+    @Transactional
+    public ConversationDto markConversationUnread(Long currentUserId, Long conversationId) {
+        ConversationMember member = conversationMemberRepository.findByConversationIdAndUserId(conversationId, currentUserId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
+
+        if (member.getDeletedAt() != null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found");
+        }
+
+        if (!member.isManuallyMarkedUnread()) {
+            member.setManuallyMarkedUnread(true);
+            conversationMemberRepository.save(member);
+        }
+
+        Conversation conversation = conversationRepository.findById(conversationId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
+        return enrichConversationDto(conversation, currentUserId);
+    }
+
+    @Transactional
+    public ConversationDto markConversationRead(Long currentUserId, Long conversationId) {
+        ConversationMember member = conversationMemberRepository.findByConversationIdAndUserId(conversationId, currentUserId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
+
+        if (member.isManuallyMarkedUnread()) {
+            member.setManuallyMarkedUnread(false);
+            conversationMemberRepository.save(member);
+        }
+
+        Conversation conversation = conversationRepository.findById(conversationId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONVERSATION_NOT_FOUND", "Conversation not found"));
+        return enrichConversationDto(conversation, currentUserId);
+    }
+
+    /**
+     * Clears the manual "mark unread" override when the user genuinely reads the
+     * conversation, so the flag can't outlive an actual read. Silent no-op if the
+     * member row doesn't exist or the flag isn't set — called opportunistically
+     * from the message-read pipeline (see MessageService#markConversationAsRead).
+     */
+    @Transactional
+    public void clearManuallyMarkedUnreadIfSet(Long conversationId, Long userId) {
+        conversationMemberRepository.findByConversationIdAndUserId(conversationId, userId)
+                .filter(ConversationMember::isManuallyMarkedUnread)
+                .ifPresent(member -> {
+                    member.setManuallyMarkedUnread(false);
+                    conversationMemberRepository.save(member);
+                });
     }
 }

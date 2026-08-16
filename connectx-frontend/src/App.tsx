@@ -212,6 +212,20 @@ export const App: React.FC = () => {
         next.delete(activeConversation.id);
         return next;
       });
+      // Opening a conversation always clears a manual "mark unread" override — the
+      // WS read receipt below clears it server-side too, this just avoids waiting
+      // on a round trip for the sidebar to stop showing the unread dot.
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === activeConversation.id && (c.manuallyMarkedUnread || c.members?.some((m) => m.manuallyMarkedUnread))
+            ? {
+                ...c,
+                manuallyMarkedUnread: false,
+                members: c.members?.map((m) => (m.manuallyMarkedUnread ? { ...m, manuallyMarkedUnread: false } : m)),
+              }
+            : c
+        )
+      );
       wsClient.sendRead(activeConversation.id);
       setPinnedMessage(null);
     } else {
@@ -1806,6 +1820,56 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleArchiveConversation = async (conversationId: number) => {
+    try {
+      const updated = await conversationApi.archiveConversation(conversationId);
+      upsertConversation(updated);
+      if (activeConversationRef.current?.id === conversationId) {
+        setActiveConversation(updated);
+      }
+      loadConversations();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to archive conversation';
+      alert(message);
+    }
+  };
+
+  const handleUnarchiveConversation = async (conversationId: number) => {
+    try {
+      const updated = await conversationApi.unarchiveConversation(conversationId);
+      upsertConversation(updated);
+      if (activeConversationRef.current?.id === conversationId) {
+        setActiveConversation(updated);
+      }
+      loadConversations();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to unarchive conversation';
+      alert(message);
+    }
+  };
+
+  // Deliberately does NOT sync `activeConversation` even if this is the open chat —
+  // ChatScreen never reads `manuallyMarkedUnread`, and syncing it would immediately
+  // re-trigger the "opening a conversation clears unread" effect, undoing this call.
+  const handleMarkUnread = async (conversationId: number) => {
+    try {
+      const updated = await conversationApi.markUnread(conversationId);
+      upsertConversation(updated);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Failed to mark conversation unread';
+      alert(message);
+    }
+  };
+
+  const handleMarkRead = async (conversationId: number) => {
+    try {
+      const updated = await conversationApi.markRead(conversationId);
+      upsertConversation(updated);
+    } catch (err: unknown) {
+      console.warn('[ConnectX] Failed to mark conversation read:', err);
+    }
+  };
+
   const getRecipientUser = (conv: Conversation | null): User | null => {
     if (!conv || !currentUser) return null;
     return getOtherParticipant(conv, currentUser.id);
@@ -1850,6 +1914,10 @@ export const App: React.FC = () => {
           onDeleteConversation={handleDeleteConversation}
           onPinConversation={handlePinConversation}
           onUnpinConversation={handleUnpinConversation}
+          onArchiveConversation={handleArchiveConversation}
+          onUnarchiveConversation={handleUnarchiveConversation}
+          onMarkUnread={handleMarkUnread}
+          onMarkRead={handleMarkRead}
         />
       </div>
 

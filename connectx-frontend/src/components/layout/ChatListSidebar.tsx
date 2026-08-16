@@ -1,8 +1,13 @@
 import React, { useState } from 'react';
-import { Search, Plus, Lock, Trash2, Pin, PinOff, BellOff } from 'lucide-react';
+import { Search, Plus, Lock, Trash2, Pin, PinOff, BellOff, Archive, ArchiveRestore, MailOpen, Mail } from 'lucide-react';
 import { User, Conversation, ConversationPreview } from '../../types';
 import { formatConversationTime } from '../../utils/messageGroups';
-import { getConversationListMeta, isConversationPinned } from '../../utils/conversationList';
+import {
+  getConversationListMeta,
+  isConversationPinned,
+  isConversationArchived,
+  isConversationManuallyUnread,
+} from '../../utils/conversationList';
 import { UserAvatar } from '../common/UserAvatar';
 import { ConnectXLogo } from '../common/ConnectXLogo';
 
@@ -18,6 +23,10 @@ interface ChatListSidebarProps {
   onDeleteConversation?: (conversationId: number) => void;
   onPinConversation?: (conversationId: number) => void;
   onUnpinConversation?: (conversationId: number) => void;
+  onArchiveConversation?: (conversationId: number) => void;
+  onUnarchiveConversation?: (conversationId: number) => void;
+  onMarkUnread?: (conversationId: number) => void;
+  onMarkRead?: (conversationId: number) => void;
 }
 
 export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
@@ -32,8 +41,13 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
   onDeleteConversation,
   onPinConversation,
   onUnpinConversation,
+  onArchiveConversation,
+  onUnarchiveConversation,
+  onMarkUnread,
+  onMarkRead,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
 
   const getRecipient = (conv: Conversation): User | null => {
     if (!conv.members?.length) return null;
@@ -44,11 +58,15 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
   };
 
   const pinnedCount = conversations.filter((c) => isConversationPinned(c, currentUser.id)).length;
+  const archivedCount = conversations.filter((c) => isConversationArchived(c, currentUser.id)).length;
 
   const filteredConversations = conversations
     .filter((conv) => {
       const recipient = getRecipient(conv);
       if (!recipient) return false;
+
+      const isArchived = isConversationArchived(conv, currentUser.id);
+      if (showArchived !== isArchived) return false;
 
       const matchesSearch =
         recipient.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -124,8 +142,28 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
           />
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] text-slate-400">{filteredConversations.length} chats</span>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] text-slate-400">
+            {filteredConversations.length} {showArchived ? 'archived' : 'chats'}
+          </span>
+          {(archivedCount > 0 || showArchived) && (
+            <button
+              onClick={() => setShowArchived((prev) => !prev)}
+              className="flex items-center gap-1 text-[11px] font-medium text-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+            >
+              {showArchived ? (
+                <>
+                  <ArchiveRestore className="w-3 h-3" />
+                  <span>Back to chats</span>
+                </>
+              ) : (
+                <>
+                  <Archive className="w-3 h-3" />
+                  <span>Archived ({archivedCount})</span>
+                </>
+              )}
+            </button>
+          )}
         </div>
       </div>
 
@@ -134,20 +172,26 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
         {filteredConversations.length === 0 ? (
           <div className="text-center py-16 px-6 space-y-3">
             <div className="w-12 h-12 rounded-full bg-indigo-600/10 flex items-center justify-center text-indigo-400 mx-auto">
-              <Lock className="w-5 h-5" />
+              {showArchived ? <Archive className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
             </div>
-            <p className="text-sm text-slate-500 dark:text-slate-400">No conversations found</p>
-            <button onClick={onOpenSearch} className="text-sm text-indigo-500 hover:underline font-medium">
-              Start an encrypted chat
-            </button>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              {showArchived ? 'No archived chats' : 'No conversations found'}
+            </p>
+            {!showArchived && (
+              <button onClick={onOpenSearch} className="text-sm text-indigo-500 hover:underline font-medium">
+                Start an encrypted chat
+              </button>
+            )}
           </div>
         ) : (
           filteredConversations.map((conv) => {
             const recipient = getRecipient(conv);
             if (!recipient) return null;
             const isActive = conv.id === activeConversationId;
-            const hasUnread = unreadConversationIds?.has(conv.id);
+            const hasUnread =
+              unreadConversationIds?.has(conv.id) || isConversationManuallyUnread(conv, currentUser.id);
             const isPinned = isConversationPinned(conv, currentUser.id);
+            const isArchivedConv = isConversationArchived(conv, currentUser.id);
             const isMuted = conv.isMuted || (conv.mutedUntil && new Date(conv.mutedUntil).getTime() > Date.now());
             const listMeta = getConversationListMeta(conv, conversationPreviews[conv.id], currentUser.id);
             const previewTime = formatConversationTime(listMeta.previewSentAt);
@@ -250,6 +294,46 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
                       aria-label="Pin chat"
                     >
                       <Pin className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+
+                  {hasUnread ? (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onMarkRead?.(conv.id); }}
+                      className="p-1 text-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-300 rounded hover:bg-indigo-500/10 transition-all"
+                      title="Mark as read"
+                      aria-label="Mark as read"
+                    >
+                      <MailOpen className="w-3.5 h-3.5" />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onMarkUnread?.(conv.id); }}
+                      className="p-1 text-slate-400 hover:text-indigo-500 rounded hover:bg-indigo-500/10 transition-all"
+                      title="Mark as unread"
+                      aria-label="Mark as unread"
+                    >
+                      <Mail className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+
+                  {isArchivedConv ? (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onUnarchiveConversation?.(conv.id); }}
+                      className="p-1 text-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-300 rounded hover:bg-indigo-500/10 transition-all"
+                      title="Unarchive chat"
+                      aria-label="Unarchive chat"
+                    >
+                      <ArchiveRestore className="w-3.5 h-3.5" />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onArchiveConversation?.(conv.id); }}
+                      className="p-1 text-slate-400 hover:text-indigo-500 rounded hover:bg-indigo-500/10 transition-all"
+                      title="Archive chat"
+                      aria-label="Archive chat"
+                    >
+                      <Archive className="w-3.5 h-3.5" />
                     </button>
                   )}
 
