@@ -1661,26 +1661,43 @@ export const App: React.FC = () => {
       const encrypted = await encryptMessage(senderPrivateKey, recipientPublicKeys[0].publicKey, newPlaintext);
       const updated = await messageApi.editMessage(messageId, encrypted.ciphertext, encrypted.nonce);
 
-      setMessages((prev) => {
-        const next = prev.map((m) =>
-          m.id === messageId
-            ? {
-                ...m,
-                ciphertext: encrypted.ciphertext,
-                nonce: encrypted.nonce,
-                editedAt: updated.editedAt,
-                decryptedContent: newPlaintext,
-                decryptionError: false,
-              }
-            : m
-        );
-        conversationCache.setConversation(activeConv.id, {
-          messages: next,
-          hasMore: conversationCache.getConversation(activeConv.id)?.hasMore ?? false,
-          oldestCursor: conversationCache.getConversation(activeConv.id)?.oldestCursor ?? null,
+      const applyEdit = (m: Message) =>
+        m.id === messageId
+          ? {
+              ...m,
+              ciphertext: encrypted.ciphertext,
+              nonce: encrypted.nonce,
+              editedAt: updated.editedAt,
+              decryptedContent: newPlaintext,
+              decryptionError: false,
+            }
+          : m;
+
+      // The user may have switched to a different conversation while the edit
+      // request was in flight — re-check against the LIVE ref (not the `activeConv`
+      // snapshot from before the awaits) so a fast switch-away can never write the
+      // now-foreground conversation's `messages` state into activeConv's (now
+      // stale) cache slot. Same hazard/pattern as the decrypt paths above.
+      if (activeConversationRef.current?.id === activeConv.id) {
+        setMessages((prev) => {
+          const next = prev.map(applyEdit);
+          conversationCache.setConversation(activeConv.id, {
+            messages: next,
+            hasMore: conversationCache.getConversation(activeConv.id)?.hasMore ?? false,
+            oldestCursor: conversationCache.getConversation(activeConv.id)?.oldestCursor ?? null,
+          });
+          return next;
         });
-        return next;
-      });
+      } else {
+        const cached = conversationCache.getConversation(activeConv.id);
+        if (cached) {
+          conversationCache.setConversation(activeConv.id, {
+            messages: cached.messages.map(applyEdit),
+            hasMore: cached.hasMore,
+            oldestCursor: cached.oldestCursor,
+          });
+        }
+      }
       await keyManager.saveDecryptedMessage(messageId, newPlaintext);
     },
     [currentUser]
