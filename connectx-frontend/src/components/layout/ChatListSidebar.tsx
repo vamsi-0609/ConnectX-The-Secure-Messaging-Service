@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, Plus, Lock, Trash2, Pin, PinOff, BellOff, Archive, ArchiveRestore, MailOpen, Mail } from 'lucide-react';
+import { Search, Plus, Lock, Trash2, Pin, PinOff, BellOff, Archive, ArchiveRestore, MailOpen, Mail, MoreVertical } from 'lucide-react';
 import { User, Conversation, ConversationPreview } from '../../types';
 import { formatConversationTime } from '../../utils/messageGroups';
 import {
@@ -48,6 +48,7 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [showArchived, setShowArchived] = useState(false);
+  const [openMenuId, setOpenMenuId] = useState<number | null>(null);
 
   const getRecipient = (conv: Conversation): User | null => {
     if (!conv.members?.length) return null;
@@ -268,84 +269,98 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
                 </div>
 
                 {/*
-                  Hover actions — absolutely positioned floating overlay in the bottom right.
-                  It NEVER participates in normal flex flow, so the timestamp on the top row
-                  remains at the EXACT same pixel position before, during, and after hover.
+                  Always-visible "more" menu — not hover-gated, so it works on
+                  touch devices (mobile) as well as pointer devices (desktop).
                 */}
-                <div className="absolute right-2.5 bottom-2 hidden [@media(hover:hover)]:group-hover:flex items-center gap-0.5 bg-white/95 dark:bg-slate-900/95 border border-slate-200/80 dark:border-slate-700/80 rounded-lg p-0.5 shadow-md backdrop-blur-sm z-10">
-                  {isPinned ? (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onUnpinConversation?.(conv.id); }}
-                      className="p-1 text-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-300 rounded hover:bg-indigo-500/10 transition-all"
-                      title="Unpin chat"
-                      aria-label="Unpin chat"
-                    >
-                      <PinOff className="w-3.5 h-3.5" />
-                    </button>
-                  ) : (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (pinnedCount >= 2) { alert('You can pin up to 2 chats.'); return; }
-                        onPinConversation?.(conv.id);
-                      }}
-                      className="p-1 text-slate-400 hover:text-indigo-500 rounded hover:bg-indigo-500/10 transition-all"
-                      title="Pin chat (max 2)"
-                      aria-label="Pin chat"
-                    >
-                      <Pin className="w-3.5 h-3.5" />
-                    </button>
-                  )}
+                <div className="relative flex-shrink-0 self-center">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setOpenMenuId((prev) => (prev === conv.id ? null : conv.id));
+                    }}
+                    className={`p-1.5 rounded-lg transition-colors ${
+                      openMenuId === conv.id
+                        ? 'text-slate-700 dark:text-white bg-slate-100 dark:bg-slate-800/60'
+                        : 'text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800/60'
+                    }`}
+                    title="Chat options"
+                    aria-label="Chat options"
+                  >
+                    <MoreVertical className="w-4 h-4" />
+                  </button>
 
-                  {hasUnread ? (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onMarkRead?.(conv.id); }}
-                      className="p-1 text-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-300 rounded hover:bg-indigo-500/10 transition-all"
-                      title="Mark as read"
-                      aria-label="Mark as read"
-                    >
-                      <MailOpen className="w-3.5 h-3.5" />
-                    </button>
-                  ) : (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onMarkUnread?.(conv.id); }}
-                      className="p-1 text-slate-400 hover:text-indigo-500 rounded hover:bg-indigo-500/10 transition-all"
-                      title="Mark as unread"
-                      aria-label="Mark as unread"
-                    >
-                      <Mail className="w-3.5 h-3.5" />
-                    </button>
-                  )}
+                  {openMenuId === conv.id && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-20"
+                        onClick={(e) => { e.stopPropagation(); setOpenMenuId(null); }}
+                      />
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        className="absolute right-0 top-full mt-1 w-48 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-30 py-1 text-sm"
+                      >
+                        {isPinned ? (
+                          <button
+                            onClick={() => { setOpenMenuId(null); onUnpinConversation?.(conv.id); }}
+                            className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800 text-indigo-500"
+                          >
+                            <PinOff className="w-4 h-4" /> Unpin chat
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => {
+                              setOpenMenuId(null);
+                              if (pinnedCount >= 2) { alert('You can pin up to 2 chats.'); return; }
+                              onPinConversation?.(conv.id);
+                            }}
+                            className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                          >
+                            <Pin className="w-4 h-4" /> Pin chat
+                          </button>
+                        )}
 
-                  {isArchivedConv ? (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onUnarchiveConversation?.(conv.id); }}
-                      className="p-1 text-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-300 rounded hover:bg-indigo-500/10 transition-all"
-                      title="Unarchive chat"
-                      aria-label="Unarchive chat"
-                    >
-                      <ArchiveRestore className="w-3.5 h-3.5" />
-                    </button>
-                  ) : (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onArchiveConversation?.(conv.id); }}
-                      className="p-1 text-slate-400 hover:text-indigo-500 rounded hover:bg-indigo-500/10 transition-all"
-                      title="Archive chat"
-                      aria-label="Archive chat"
-                    >
-                      <Archive className="w-3.5 h-3.5" />
-                    </button>
-                  )}
+                        {hasUnread ? (
+                          <button
+                            onClick={() => { setOpenMenuId(null); onMarkRead?.(conv.id); }}
+                            className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800 text-indigo-500"
+                          >
+                            <MailOpen className="w-4 h-4" /> Mark as read
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => { setOpenMenuId(null); onMarkUnread?.(conv.id); }}
+                            className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                          >
+                            <Mail className="w-4 h-4" /> Mark as unread
+                          </button>
+                        )}
 
-                  {onDeleteConversation && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onDeleteConversation(conv.id); }}
-                      className="p-1 text-slate-400 hover:text-rose-400 rounded hover:bg-rose-500/10 transition-all"
-                      title="Delete conversation"
-                      aria-label="Delete conversation"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                        {isArchivedConv ? (
+                          <button
+                            onClick={() => { setOpenMenuId(null); onUnarchiveConversation?.(conv.id); }}
+                            className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800 text-indigo-500"
+                          >
+                            <ArchiveRestore className="w-4 h-4" /> Unarchive chat
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => { setOpenMenuId(null); onArchiveConversation?.(conv.id); }}
+                            className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                          >
+                            <Archive className="w-4 h-4" /> Archive chat
+                          </button>
+                        )}
+
+                        {onDeleteConversation && (
+                          <button
+                            onClick={() => { setOpenMenuId(null); onDeleteConversation(conv.id); }}
+                            className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-red-50 dark:hover:bg-red-950/30 text-red-600 dark:text-red-400"
+                          >
+                            <Trash2 className="w-4 h-4" /> Delete conversation
+                          </button>
+                        )}
+                      </div>
+                    </>
                   )}
                 </div>
               </div>

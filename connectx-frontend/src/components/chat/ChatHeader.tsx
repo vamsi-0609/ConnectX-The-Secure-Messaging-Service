@@ -19,6 +19,7 @@ import { MuteChatModal } from './MuteChatModal';
 import { UserAvatar } from '../common/UserAvatar';
 import { ChatWallpaperMenu } from './ChatWallpaperMenu';
 import { ChatWallpaperSetting } from '../../utils/chatWallpaper';
+import { formatLastSeen } from '../../utils/presence';
 
 interface ChatHeaderProps {
   recipient: User | null;
@@ -26,6 +27,7 @@ interface ChatHeaderProps {
   showInfoDrawer: boolean;
   wallpaper: ChatWallpaperSetting;
   isMuted?: boolean;
+  isTyping?: boolean;
   onToggleCiphertext: () => void;
   onToggleInfoDrawer: () => void;
   onWallpaperChange: (wallpaper: ChatWallpaperSetting) => void;
@@ -41,6 +43,7 @@ export const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
   showInfoDrawer,
   wallpaper,
   isMuted,
+  isTyping,
   onToggleCiphertext,
   onToggleInfoDrawer,
   onWallpaperChange,
@@ -57,6 +60,12 @@ export const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
 
   const displayName = recipient?.displayName || recipient?.username || 'Contact';
   const username = recipient?.username || '';
+  const lastSeenText = recipient ? formatLastSeen(recipient.lastSeenAt) : null;
+  const subtitle = isTyping
+    ? 'typing...'
+    : recipient?.status === 'ONLINE'
+    ? 'Online'
+    : lastSeenText || (username ? `@${username}` : 'End-to-end encrypted');
 
   const closeMenu = () => {
     setShowMenu(false);
@@ -117,12 +126,14 @@ export const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
                   </h2>
                   {recipient && <ShieldCheck className="w-3.5 h-3.5 text-pink-400 flex-shrink-0" aria-hidden />}
                 </div>
-                <p className="text-[11px] md:text-xs text-slate-500 dark:text-slate-400 truncate leading-tight mt-0.5">
-                  {recipient ? (
-                    username ? `@${username}` : 'End-to-end encrypted'
-                  ) : (
-                    'Loading contact...'
-                  )}
+                <p
+                  className={`text-[11px] md:text-xs truncate leading-tight mt-0.5 ${
+                    isTyping
+                      ? 'text-indigo-500 dark:text-indigo-400 font-medium'
+                      : 'text-slate-500 dark:text-slate-400'
+                  }`}
+                >
+                  {recipient ? subtitle : 'Loading contact...'}
                 </p>
               </div>
             </div>

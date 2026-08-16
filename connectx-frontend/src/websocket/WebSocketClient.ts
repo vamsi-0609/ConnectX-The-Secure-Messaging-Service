@@ -270,6 +270,25 @@ export class WebSocketClient {
     return false;
   }
 
+  /**
+   * Send a TYPING_INDICATOR event to the correct /app/typing destination.
+   * Ephemeral, no ack expected — silently no-ops if the socket isn't connected.
+   */
+  public sendTyping(conversationId: number, isTyping: boolean): boolean {
+    if (this.stompClient && this.stompClient.connected) {
+      const event: WsEvent = {
+        type: 'TYPING_INDICATOR',
+        payload: { conversationId, isTyping },
+      };
+      this.stompClient.publish({
+        destination: '/app/typing',
+        body: JSON.stringify(event),
+      });
+      return true;
+    }
+    return false;
+  }
+
   public onMessage(handler: MessageHandler): () => void {
     this.messageListeners.add(handler);
     return () => this.messageListeners.delete(handler);

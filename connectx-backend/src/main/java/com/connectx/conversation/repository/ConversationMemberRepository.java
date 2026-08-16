@@ -28,6 +28,10 @@ public interface ConversationMemberRepository extends JpaRepository<Conversation
 
     long countByUserIdAndPinnedTrueAndDeletedAtIsNull(Long userId);
 
+    @Query("SELECT DISTINCT m2.user.username FROM ConversationMember m1 JOIN m1.conversation.members m2 " +
+           "WHERE m1.user.id = :userId AND m1.deletedAt IS NULL AND m2.deletedAt IS NULL AND m2.user.id <> :userId")
+    List<String> findDistinctOtherUsernamesSharingConversationWith(@Param("userId") Long userId);
+
     @org.springframework.data.jpa.repository.Modifying
     @org.springframework.data.jpa.repository.Query("DELETE FROM ConversationMember cm WHERE cm.conversation.id = :conversationId")
     void deleteByConversationId(@org.springframework.data.repository.query.Param("conversationId") Long conversationId);

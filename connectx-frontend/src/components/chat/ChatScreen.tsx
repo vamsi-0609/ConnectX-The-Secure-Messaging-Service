@@ -26,6 +26,7 @@ interface ChatScreenProps {
   showInfoDrawer: boolean;
   isDarkMode: boolean;
   isMuted?: boolean;
+  isTyping?: boolean;
   hasMore?: boolean;
   isLoadingOlder?: boolean;
   onLoadOlderMessages?: () => void;
@@ -86,6 +87,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   showInfoDrawer,
   isDarkMode,
   isMuted,
+  isTyping,
   hasMore,
   isLoadingOlder,
   onLoadOlderMessages,
@@ -424,6 +426,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
             showInfoDrawer={showInfoDrawer}
             wallpaper={wallpaper}
             isMuted={isMuted}
+            isTyping={isTyping}
             onToggleCiphertext={onToggleCiphertext}
             onToggleInfoDrawer={onToggleInfoDrawer}
             onWallpaperChange={handleWallpaperChange}

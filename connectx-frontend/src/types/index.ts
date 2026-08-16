@@ -174,7 +174,9 @@ export interface WsEvent<T = any> {
     | 'READ_RECEIPT_UPDATE'
     | 'CONVERSATION_DELETED'
     | 'CONVERSATION_RESTORED'
-    | 'CONVERSATION_CLEARED';
+    | 'CONVERSATION_CLEARED'
+    | 'TYPING_INDICATOR'
+    | 'PRESENCE_UPDATE';
   requestId?: string;
   payload: T;
 }

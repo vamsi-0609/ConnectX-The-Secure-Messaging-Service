@@ -1,6 +1,8 @@
 package com.connectx.websocket.controller;
 
 import com.connectx.common.security.UserPrincipal;
+import com.connectx.conversation.entity.ConversationMember;
+import com.connectx.conversation.repository.ConversationMemberRepository;
 import com.connectx.message.dto.MessageDto;
 import com.connectx.message.dto.SendMessageRequestDto;
 import com.connectx.message.service.MessageService;
@@ -15,6 +17,7 @@ import org.springframework.stereotype.Controller;
 
 import java.security.Principal;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 @Controller
@@ -24,11 +27,14 @@ public class WebSocketMessageController {
 
     private final MessageService messageService;
     private final SimpMessagingTemplate messagingTemplate;
+    private final ConversationMemberRepository conversationMemberRepository;
 
     public WebSocketMessageController(MessageService messageService,
-                                       SimpMessagingTemplate messagingTemplate) {
+                                       SimpMessagingTemplate messagingTemplate,
+                                       ConversationMemberRepository conversationMemberRepository) {
         this.messageService = messageService;
         this.messagingTemplate = messagingTemplate;
+        this.conversationMemberRepository = conversationMemberRepository;
     }
 
     @MessageMapping("/message.send")
@@ -148,5 +154,48 @@ public class WebSocketMessageController {
                 messageService.markRead(messageId);
             }
         }
+    }
+
+    // Ephemeral — no persistence, no DB transaction. Fans out directly to the
+    // other participant(s) of the conversation, mirroring how message.read
+    // ultimately notifies the sender, but synchronously and without the
+    // afterCommit wrapping that flow uses (there is nothing to commit here).
+    @MessageMapping("/typing")
+    public void handleTyping(@Payload WsEvent event, Principal principal) {
+        if (event == null || event.getPayload() == null) {
+            return;
+        }
+
+        UserPrincipal sender = resolveCurrentUser(principal);
+        if (sender == null) {
+            return;
+        }
+
+        Long conversationId = extractLong(event.getPayload(), "conversationId");
+        if (conversationId == null) {
+            return;
+        }
+
+        Object isTypingRaw = event.getPayload().get("isTyping");
+        boolean isTyping = isTypingRaw == null || Boolean.TRUE.equals(isTypingRaw);
+
+        List<ConversationMember> members = conversationMemberRepository.findByConversationIdWithUsers(conversationId);
+        if (members.isEmpty()) {
+            return;
+        }
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("conversationId", conversationId);
+        payload.put("senderUserId", sender.getId());
+        payload.put("senderUsername", sender.getUsername());
+        payload.put("isTyping", isTyping);
+        WsEvent typingEvent = WsEvent.of("TYPING_INDICATOR", payload);
+
+        List<String> targets = members.stream()
+                .filter(m -> m.getUser() != null && !m.getUser().getId().equals(sender.getId()))
+                .map(m -> m.getUser().getUsername())
+                .distinct()
+                .toList();
+        targets.forEach(username -> messagingTemplate.convertAndSendToUser(username, "/queue/messages", typingEvent));
     }
 }

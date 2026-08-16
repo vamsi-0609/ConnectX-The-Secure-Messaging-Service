@@ -181,6 +181,10 @@ export const App: React.FC = () => {
   const [isLoadingOlder, setIsLoadingOlder] = useState<boolean>(false);
   const [unreadConversationIds, setUnreadConversationIds] = useState<Set<number>>(new Set());
   const [conversationPreviews, setConversationPreviews] = useState<Record<number, ConversationPreview>>({});
+  // conversationId -> the other participant's username, while they're actively typing.
+  // A local safety-net timer clears an entry if a stop event is ever dropped.
+  const [typingByConversation, setTypingByConversation] = useState<Record<number, string>>({});
+  const typingTimersRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
   const [pinnedMessage, setPinnedMessage] = useState<Message | null>(null);
   const pinnedMessageRequestSeqRef = useRef<number>(0);
 
@@ -1193,6 +1197,50 @@ export const App: React.FC = () => {
           setActiveConversation((prev) => (prev ? withoutLastMessagePreview(prev) : null));
           setMessages([]);
         }
+      } else if (event.type === 'TYPING_INDICATOR') {
+        const payload = event.payload as Record<string, unknown>;
+        const convId = payload.conversationId as number;
+        const senderUsername = payload.senderUsername as string;
+        const isTyping = payload.isTyping as boolean;
+
+        if (typingTimersRef.current[convId]) {
+          clearTimeout(typingTimersRef.current[convId]);
+          delete typingTimersRef.current[convId];
+        }
+
+        if (isTyping) {
+          setTypingByConversation((prev) => ({ ...prev, [convId]: senderUsername }));
+          // Safety net in case the corresponding "stopped typing" event is ever lost.
+          typingTimersRef.current[convId] = setTimeout(() => {
+            setTypingByConversation((prev) => {
+              const next = { ...prev };
+              delete next[convId];
+              return next;
+            });
+          }, 5000);
+        } else {
+          setTypingByConversation((prev) => {
+            if (!(convId in prev)) return prev;
+            const next = { ...prev };
+            delete next[convId];
+            return next;
+          });
+        }
+      } else if (event.type === 'PRESENCE_UPDATE') {
+        const payload = event.payload as Record<string, unknown>;
+        const userId = payload.userId as number;
+        const status = payload.status as User['status'];
+        const lastSeenAt = payload.lastSeenAt as string | undefined;
+
+        const patchUser = (user: User): User =>
+          user.id === userId ? { ...user, status, lastSeenAt: lastSeenAt ?? user.lastSeenAt } : user;
+        const patchConversation = (conv: Conversation): Conversation => ({
+          ...conv,
+          members: conv.members?.map((m) => (m.user ? { ...m, user: patchUser(m.user) } : m)),
+        });
+
+        setConversations((prev) => prev.map(patchConversation));
+        setActiveConversation((prev) => (prev ? patchConversation(prev) : prev));
       }
     });
 
@@ -1943,6 +1991,7 @@ export const App: React.FC = () => {
                 (activeConversation.mutedUntil &&
                   new Date(activeConversation.mutedUntil).getTime() > Date.now())
               )}
+              isTyping={Boolean(typingByConversation[activeConversation.id])}
               hasMore={hasMoreMessages}
               isLoadingOlder={isLoadingOlder}
               onLoadOlderMessages={loadOlderMessages}

@@ -26,6 +26,9 @@ import { CameraCaptureModal } from './CameraCaptureModal';
 import { MediaBatchPreviewModal } from './MediaBatchPreviewModal';
 import { ReplyTarget, Message } from '../../types';
 import { conversationCache } from '../../cache/conversationCache';
+import { wsClient } from '../../websocket/WebSocketClient';
+
+const TYPING_IDLE_MS = 3000;
 
 interface MessageInputProps {
   conversationId: number;
@@ -101,8 +104,39 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const docInputRef = useRef<HTMLInputElement>(null);
   const isSendingRef = useRef(false);
+  const typingActiveRef = useRef(false);
+  const typingIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const closeMediaMenu = () => setShowMediaMenu(false);
+
+  const stopTyping = () => {
+    if (typingIdleTimerRef.current) {
+      clearTimeout(typingIdleTimerRef.current);
+      typingIdleTimerRef.current = null;
+    }
+    if (typingActiveRef.current) {
+      typingActiveRef.current = false;
+      wsClient.sendTyping(conversationId, false);
+    }
+  };
+
+  const notifyTyping = () => {
+    if (!typingActiveRef.current) {
+      typingActiveRef.current = true;
+      wsClient.sendTyping(conversationId, true);
+    }
+    if (typingIdleTimerRef.current) {
+      clearTimeout(typingIdleTimerRef.current);
+    }
+    typingIdleTimerRef.current = setTimeout(stopTyping, TYPING_IDLE_MS);
+  };
+
+  // MessageInput remounts on conversation switch (ChatScreen is keyed by
+  // conversationId), so an unmount-only cleanup is sufficient here.
+  useEffect(() => {
+    return () => stopTyping();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Focus composer when reply is activated
   useEffect(() => {
@@ -276,6 +310,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
     isSendingRef.current = true;
     setSending(true);
+    stopTyping();
 
     // Clear composer text immediately and maintain focus for continuous fast typing
     setText('');
@@ -362,6 +397,12 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     textarea.style.height = 'auto';
     const nextHeight = Math.min(textarea.scrollHeight, 140);
     textarea.style.height = `${nextHeight}px`;
+
+    if (e.target.value.trim()) {
+      notifyTyping();
+    } else {
+      stopTyping();
+    }
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
