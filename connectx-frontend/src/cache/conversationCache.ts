@@ -11,6 +11,7 @@ export interface CachedConversationState {
 
 const MAX_CACHED_CONVERSATIONS = 15;
 const MAX_DECRYPTED_MESSAGES = 1000;
+const MAX_PUBLIC_KEY_ENTRIES = 200;
 const KEY_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 class ConversationMemoryCache {
@@ -110,10 +111,29 @@ class ConversationMemoryCache {
       keys,
       fetchedAt: Date.now(),
     });
+    this.enforcePublicKeyLimit();
   }
 
   public invalidatePublicKeys(userId: number): void {
     this.publicKeyMap.delete(userId);
+  }
+
+  private enforcePublicKeyLimit(): void {
+    if (this.publicKeyMap.size <= MAX_PUBLIC_KEY_ENTRIES) return;
+
+    let oldestId: number | null = null;
+    let oldestTime = Infinity;
+
+    for (const [id, entry] of this.publicKeyMap.entries()) {
+      if (entry.fetchedAt < oldestTime) {
+        oldestTime = entry.fetchedAt;
+        oldestId = id;
+      }
+    }
+
+    if (oldestId != null) {
+      this.publicKeyMap.delete(oldestId);
+    }
   }
 
   // ── Session Decryption Cache ──────────────────────────────────────────────

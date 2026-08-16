@@ -32,6 +32,11 @@ public class JwtTokenProvider {
         return generateTokenFromUserId(userPrincipal.getId(), userPrincipal.getUsername(), jwtExpirationInMs);
     }
 
+    /** Access token using the configured expiration — see connectx.jwt.expiration-ms. */
+    public String generateTokenFromUserId(Long userId, String username) {
+        return generateTokenFromUserId(userId, username, jwtExpirationInMs);
+    }
+
     public String generateRefreshToken(Long userId, String username) {
         return generateTokenFromUserId(userId, username, refreshExpirationInMs);
     }

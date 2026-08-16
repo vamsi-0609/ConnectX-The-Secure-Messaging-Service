@@ -31,7 +31,7 @@ public class EmailService {
                 otpCode
         );
 
-        log.info("[OTP GENERATED] Email={} Code={} Purpose={}", recipientEmail, otpCode, purpose);
+        log.info("[OTP GENERATED] Email={} Purpose={}", recipientEmail, purpose);
 
         try {
             SimpleMailMessage message = new SimpleMailMessage();

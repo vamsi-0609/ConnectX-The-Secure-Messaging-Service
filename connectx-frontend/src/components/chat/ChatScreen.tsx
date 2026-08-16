@@ -76,6 +76,8 @@ interface ChatScreenProps {
   onForwardMessages?: (messages: Message[], targetConversationIds: number[]) => Promise<ForwardResult[]>;
   conversations: Conversation[];
   onScrollToPinned?: (messageId: number) => void;
+  initialSharedMedia?: { images: File[]; docs: File[] } | null;
+  onSharedMediaConsumed?: () => void;
 }
 
 export const ChatScreen: React.FC<ChatScreenProps> = ({
@@ -112,6 +114,8 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   onUnstarMessage,
   onForwardMessages,
   conversations,
+  initialSharedMedia,
+  onSharedMediaConsumed,
 }) => {
   const [wallpaper, setWallpaper] = useState<ChatWallpaperSetting>(() =>
     getConversationWallpaper(conversationId)
@@ -502,6 +506,8 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
           onOptimisticLocationMessage={onOptimisticLocationMessage}
           onOptimisticDocumentMessage={onOptimisticDocumentMessage}
           onMessageSent={onMessageSent}
+          initialSharedMedia={initialSharedMedia}
+          onSharedMediaConsumed={onSharedMediaConsumed}
         />
       </footer>
 

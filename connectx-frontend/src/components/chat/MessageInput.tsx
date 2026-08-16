@@ -27,6 +27,7 @@ import { MediaBatchPreviewModal } from './MediaBatchPreviewModal';
 import { ReplyTarget, Message } from '../../types';
 import { conversationCache } from '../../cache/conversationCache';
 import { wsClient } from '../../websocket/WebSocketClient';
+import { activityGuard } from '../../utils/activityGuard';
 
 const TYPING_IDLE_MS = 3000;
 
@@ -69,6 +70,8 @@ interface MessageInputProps {
     replyToMessageId?: number
   ) => void;
   onMessageSent?: () => void;
+  initialSharedMedia?: { images: File[]; docs: File[] } | null;
+  onSharedMediaConsumed?: () => void;
 }
 
 export const MessageInput: React.FC<MessageInputProps> = ({
@@ -85,6 +88,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   onOptimisticLocationMessage,
   onOptimisticDocumentMessage,
   onMessageSent,
+  initialSharedMedia,
+  onSharedMediaConsumed,
 }) => {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -135,6 +140,39 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   // conversationId), so an unmount-only cleanup is sufficient here.
   useEffect(() => {
     return () => stopTyping();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Reports "mid-composition / mid-send" to the PWA update flow (see
+  // utils/serviceWorker.ts) so an auto-update reload can never wipe an unsent
+  // draft, discard a picked-but-unsent media batch, or cut off an in-flight
+  // upload/send. Reset to idle on unmount so switching conversations (or
+  // navigating back to the list) doesn't permanently block updates behind a
+  // composer that no longer exists.
+  useEffect(() => {
+    activityGuard.setBusy(
+      Boolean(text.trim()) || sending || uploading || submittingEdit || sharingLocation || showBatchModal || showCamera
+    );
+  }, [text, sending, uploading, submittingEdit, sharingLocation, showBatchModal, showCamera]);
+
+  useEffect(() => {
+    return () => activityGuard.setBusy(false);
+  }, []);
+
+  // Runs once per conversation selection: if the user picked this conversation
+  // to fulfil a pending OS share, open the same batch preview used for a manual
+  // file pick, pre-loaded with the shared files. Mount-only by design — it must
+  // not re-fire on prop changes, only when MessageInput itself remounts (i.e. a
+  // new conversation was chosen).
+  useEffect(() => {
+    if (!initialSharedMedia) return;
+    const { images, docs } = initialSharedMedia;
+    if (images.length > 0 || docs.length > 0) {
+      setPendingImages(images);
+      setPendingDocs(docs);
+      setShowBatchModal(true);
+    }
+    onSharedMediaConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

@@ -95,7 +95,11 @@ public class MessageDto {
                 dto.setReplyToSenderUsername(reply.getSenderDevice().getUser().getUsername());
             }
             dto.setReplyToMessageType(reply.getMessageType());
-            dto.setReplyToCaption(reply.getCaption());
+            // A deleted message's ciphertext is already blanked above (when this DTO IS
+            // the deleted message) -- its caption must be blanked the same way when it's
+            // only being referenced as someone else's reply target, or "delete for
+            // everyone" is defeated for anything that had a caption.
+            dto.setReplyToCaption(reply.isDeletedForEveryone() ? null : reply.getCaption());
             dto.setReplyToDeleted(reply.isDeletedForEveryone());
         }
 

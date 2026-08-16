@@ -1,10 +1,12 @@
 package com.connectx.push.service;
 
+import com.connectx.common.exception.ApiException;
 import com.connectx.push.dto.PushSubscriptionRequestDto;
 import com.connectx.push.entity.UserPushSubscription;
 import com.connectx.push.repository.UserPushSubscriptionRepository;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
+import org.springframework.http.HttpStatus;
 import org.bouncycastle.jce.ECNamedCurveTable;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.jce.spec.ECNamedCurveParameterSpec;
@@ -130,6 +132,13 @@ public class WebPushService {
                 .orElseThrow(() -> new IllegalArgumentException("User not found"));
 
         Optional<UserPushSubscription> existing = pushSubscriptionRepository.findByEndpoint(dto.getEndpoint());
+        if (existing.isPresent() && !existing.get().getUser().getId().equals(userId)) {
+            // This endpoint is already registered to a different account -- refuse to
+            // silently reassign it, which would misdirect that user's push notifications
+            // to whoever supplies their endpoint.
+            throw new ApiException(HttpStatus.FORBIDDEN, "SUBSCRIPTION_OWNED_BY_ANOTHER_USER",
+                    "This push subscription is already registered to a different account");
+        }
         UserPushSubscription sub = existing.orElseGet(UserPushSubscription::new);
         sub.setUser(user);
         sub.setEndpoint(dto.getEndpoint());
@@ -146,7 +155,14 @@ public class WebPushService {
     @Transactional
     public void unsubscribeUser(Long userId, String endpoint) {
         if (endpoint != null && !endpoint.isBlank()) {
-            pushSubscriptionRepository.deleteByEndpoint(endpoint);
+            // Only delete if this endpoint actually belongs to the caller -- otherwise any
+            // authenticated user could disable an arbitrary other user's push notifications
+            // just by supplying their endpoint string. A mismatch is treated as a silent
+            // no-op (matching unsubscribe's usual best-effort/idempotent semantics) rather
+            // than an error, since it's most often called defensively on logout.
+            pushSubscriptionRepository.findByEndpoint(endpoint)
+                    .filter(sub -> sub.getUser().getId().equals(userId))
+                    .ifPresent(pushSubscriptionRepository::delete);
         } else {
             pushSubscriptionRepository.deleteByUserId(userId);
         }

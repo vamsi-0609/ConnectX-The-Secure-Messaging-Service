@@ -19,6 +19,15 @@ public interface ConversationMemberRepository extends JpaRepository<Conversation
     @Query("SELECT cm FROM ConversationMember cm JOIN FETCH cm.user WHERE cm.conversation.id = :conversationId")
     List<ConversationMember> findByConversationIdWithUsers(@Param("conversationId") Long conversationId);
 
+    // For real-time broadcast fan-out only (edit/delete/pin/reaction) — unlike
+    // findByConversationIdWithUsers above, this excludes members who've soft-deleted the
+    // conversation for themselves, so they don't keep receiving live events for a chat
+    // their own client believes no longer exists. Message sends intentionally keep using
+    // the unfiltered version, since they need to see deleted members to decide whether to
+    // restore the conversation's visibility for them.
+    @Query("SELECT cm FROM ConversationMember cm JOIN FETCH cm.user WHERE cm.conversation.id = :conversationId AND cm.deletedAt IS NULL")
+    List<ConversationMember> findByConversationIdAndDeletedAtIsNullWithUsers(@Param("conversationId") Long conversationId);
+
     @Query("SELECT cm FROM ConversationMember cm JOIN FETCH cm.user WHERE cm.conversation.id IN :conversationIds")
     List<ConversationMember> findByConversationIdInWithUsers(@Param("conversationIds") List<Long> conversationIds);
 

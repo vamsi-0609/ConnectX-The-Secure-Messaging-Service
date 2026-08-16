@@ -55,6 +55,11 @@ public class MessageService {
     private final SimpMessagingTemplate messagingTemplate;
     private final AfterCommitExecutor afterCommitExecutor;
     private final com.connectx.push.service.WebPushService webPushService;
+    // Self-injected (via @Lazy, the standard Spring pattern for this) so
+    // tryInsertReactionInNewTransaction below can be called as a real proxied bean method —
+    // required for its own @Transactional(REQUIRES_NEW) to actually take effect, since
+    // Spring's AOP proxy is bypassed on a plain `this.` call from inside the same class.
+    private final MessageService self;
 
     public MessageService(MessageRepository messageRepository,
                           MessageUserStateRepository messageUserStateRepository,
@@ -69,7 +74,8 @@ public class MessageService {
                           com.connectx.message.repository.MessageReactionRepository messageReactionRepository,
                           SimpMessagingTemplate messagingTemplate,
                           AfterCommitExecutor afterCommitExecutor,
-                          com.connectx.push.service.WebPushService webPushService) {
+                          com.connectx.push.service.WebPushService webPushService,
+                          @org.springframework.context.annotation.Lazy MessageService self) {
         this.messageRepository = messageRepository;
         this.messageUserStateRepository = messageUserStateRepository;
         this.messageStarRepository = messageStarRepository;
@@ -84,6 +90,7 @@ public class MessageService {
         this.messagingTemplate = messagingTemplate;
         this.afterCommitExecutor = afterCommitExecutor;
         this.webPushService = webPushService;
+        this.self = self;
     }
 
     @Transactional
@@ -151,6 +158,9 @@ public class MessageService {
             replyToMessage = messageRepository.findById(dto.getReplyToMessageId()).orElse(null);
             if (replyToMessage != null && !replyToMessage.getConversation().getId().equals(conversation.getId())) {
                 throw new ApiException(HttpStatus.BAD_REQUEST, "CROSS_CONVERSATION_REPLY_NOT_ALLOWED", "Cannot reply to a message from a different conversation");
+            }
+            if (replyToMessage != null && replyToMessage.isDeletedForEveryone()) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "REPLY_TARGET_DELETED", "Cannot reply to a message that was deleted");
             }
         }
 
@@ -242,7 +252,8 @@ public class MessageService {
                 recvPayload.put("replyToSenderUsername", reply.getSenderDevice().getUser().getUsername());
             }
             recvPayload.put("replyToMessageType", reply.getMessageType() != null ? reply.getMessageType().name() : "TEXT");
-            recvPayload.put("replyToCaption", reply.getCaption());
+            // Same guard as MessageDto.fromEntity — never surface a deleted reply target's caption.
+            recvPayload.put("replyToCaption", reply.isDeletedForEveryone() ? null : reply.getCaption());
             recvPayload.put("replyToDeleted", reply.isDeletedForEveryone());
         }
 
@@ -418,7 +429,7 @@ public class MessageService {
 
             afterCommitExecutor.runAfterCommit(() -> {
                 messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, deletedEvent);
-                List<ConversationMember> members = conversationMemberRepository.findByConversationIdWithUsers(conversationId);
+                List<ConversationMember> members = conversationMemberRepository.findByConversationIdAndDeletedAtIsNullWithUsers(conversationId);
                 for (ConversationMember m : members) {
                     if (m.getUser() != null) {
                         messagingTemplate.convertAndSendToUser(m.getUser().getUsername(), "/queue/messages", deletedEvent);
@@ -480,7 +491,7 @@ public class MessageService {
 
         afterCommitExecutor.runAfterCommit(() -> {
             messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, editedEvent);
-            List<ConversationMember> members = conversationMemberRepository.findByConversationIdWithUsers(conversationId);
+            List<ConversationMember> members = conversationMemberRepository.findByConversationIdAndDeletedAtIsNullWithUsers(conversationId);
             for (ConversationMember m : members) {
                 if (m.getUser() != null) {
                     messagingTemplate.convertAndSendToUser(m.getUser().getUsername(), "/queue/messages", editedEvent);
@@ -532,7 +543,7 @@ public class MessageService {
 
         afterCommitExecutor.runAfterCommit(() -> {
             messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, pinEvent);
-            List<ConversationMember> members = conversationMemberRepository.findByConversationIdWithUsers(conversationId);
+            List<ConversationMember> members = conversationMemberRepository.findByConversationIdAndDeletedAtIsNullWithUsers(conversationId);
             for (ConversationMember m : members) {
                 if (m.getUser() != null) {
                     messagingTemplate.convertAndSendToUser(m.getUser().getUsername(), "/queue/messages", pinEvent);
@@ -721,6 +732,34 @@ public class MessageService {
         }
     }
 
+    /**
+     * Attempts the "first reaction from this user on this message" insert in its own,
+     * independent transaction (REQUIRES_NEW). A concurrent duplicate insert hits the
+     * {@code uk_message_user_reaction} unique constraint — running this in a separate
+     * transaction means that failure is fully isolated to this small transaction, never
+     * the caller's.
+     * <p>
+     * Deliberately does NOT catch {@code DataIntegrityViolationException} itself: once
+     * {@code saveAndFlush} fails, Hibernate marks the underlying session rollback-only
+     * regardless of whether the exception is caught in Java, so returning normally from
+     * this method (even to report "false") would make Spring try to commit an
+     * already-broken transaction and throw {@code UnexpectedRollbackException} instead
+     * (confirmed empirically — see ReactionRaceIntegrationTest). Letting the exception
+     * propagate lets Spring roll back cleanly, and the caller catches it from the
+     * (unaffected, separate) outer transaction instead.
+     * <p>
+     * Must be called through {@code self} (the injected proxy), not {@code this} --
+     * calling it directly from within the class would bypass Spring's transactional proxy
+     * and this REQUIRES_NEW annotation would silently have no effect.
+     */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
+    public void insertReactionInNewTransaction(Long messageId, Long userId, String cleanReaction) {
+        Message messageRef = messageRepository.getReferenceById(messageId);
+        User userRef = userRepository.getReferenceById(userId);
+        messageReactionRepository.saveAndFlush(
+                new com.connectx.message.entity.MessageReaction(messageRef, userRef, cleanReaction));
+    }
+
     @Transactional
     public MessageDto addOrUpdateReaction(Long currentUserId, Long messageId, String reaction) {
         if (reaction == null || reaction.trim().isEmpty()) {
@@ -749,8 +788,21 @@ public class MessageService {
                 messageReactionRepository.save(existingReaction);
             }
         } else {
-            com.connectx.message.entity.MessageReaction newReaction = new com.connectx.message.entity.MessageReaction(message, user, cleanReaction);
-            messageReactionRepository.save(newReaction);
+            try {
+                self.insertReactionInNewTransaction(messageId, currentUserId, cleanReaction);
+            } catch (org.springframework.dao.DataIntegrityViolationException e) {
+                // Lost a race with a concurrent insert for the same (message, user) pair.
+                // It ran in its own isolated transaction (see insertReactionInNewTransaction),
+                // which rolled back on its own -- this (outer) transaction's connection was
+                // never touched by that failure, so it's safe to catch here and continue.
+                // The winner's row is already committed; apply our reaction on top of it
+                // instead of surfacing a 500 to the loser of the race.
+                messageReactionRepository.findByMessageIdAndUserId(messageId, currentUserId)
+                        .ifPresent(existing -> {
+                            existing.setReaction(cleanReaction);
+                            messageReactionRepository.save(existing);
+                        });
+            }
         }
 
         List<com.connectx.message.entity.MessageReaction> allReactions = messageReactionRepository.findByMessageIdWithUsers(messageId);
@@ -770,7 +822,7 @@ public class MessageService {
 
         afterCommitExecutor.runAfterCommit(() -> {
             messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, wsEvent);
-            List<ConversationMember> members = conversationMemberRepository.findByConversationIdWithUsers(conversationId);
+            List<ConversationMember> members = conversationMemberRepository.findByConversationIdAndDeletedAtIsNullWithUsers(conversationId);
             for (ConversationMember m : members) {
                 if (m.getUser() != null) {
                     messagingTemplate.convertAndSendToUser(m.getUser().getUsername(), "/queue/messages", wsEvent);
@@ -817,7 +869,7 @@ public class MessageService {
 
         afterCommitExecutor.runAfterCommit(() -> {
             messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, wsEvent);
-            List<ConversationMember> members = conversationMemberRepository.findByConversationIdWithUsers(conversationId);
+            List<ConversationMember> members = conversationMemberRepository.findByConversationIdAndDeletedAtIsNullWithUsers(conversationId);
             for (ConversationMember m : members) {
                 if (m.getUser() != null) {
                     messagingTemplate.convertAndSendToUser(m.getUser().getUsername(), "/queue/messages", wsEvent);

@@ -1,0 +1,11 @@
+# Test-only overrides, layered on top of the main application.yml (all other config --
+# JWT secret, mail, VAPID -- is inherited unchanged). Points at a dedicated, disposable
+# database so integration tests never touch the real connectx_db.
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/connectx_test_db?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
+    username: ${SPRING_DATASOURCE_USERNAME:root}
+    password: ${SPRING_DATASOURCE_PASSWORD:1234}
+  jpa:
+    hibernate:
+      ddl-auto: create-drop

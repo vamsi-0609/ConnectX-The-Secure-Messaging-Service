@@ -70,15 +70,15 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleGeneralException(Exception ex, HttpServletRequest request) {
+        // Full detail (including ex.getMessage(), which can contain DB constraint/column
+        // names or driver-specific text) stays server-side in the log. Clients only ever
+        // see a generic message — returning the raw exception text would leak internal
+        // schema/stack details to whoever triggered the error.
         log.error("Unhandled exception at {}: {}", request.getRequestURI(), ex.toString(), ex);
-        String message = ex.getMessage();
-        if (message == null || message.isBlank()) {
-            message = ex.getClass().getSimpleName() + ": An unexpected server error occurred";
-        }
         ErrorResponse errorResponse = new ErrorResponse(
                 HttpStatus.INTERNAL_SERVER_ERROR.value(),
                 "INTERNAL_SERVER_ERROR",
-                message,
+                "An unexpected server error occurred. Please try again later.",
                 request.getRequestURI()
         );
         return new ResponseEntity<>(errorResponse, HttpStatus.INTERNAL_SERVER_ERROR);

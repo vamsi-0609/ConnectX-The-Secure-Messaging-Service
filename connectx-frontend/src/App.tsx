@@ -37,11 +37,19 @@ import {
 import { applyTheme, isDarkTheme } from './utils/theme';
 import { soundManager } from './utils/notificationSound';
 import { browserNotifications } from './utils/browserNotifications';
+import { appBadge } from './utils/appBadge';
 import { registerWebPushSubscription } from './utils/pushSubscription';
+import {
+  consumePendingShare,
+  hasPendingShareMarker,
+  splitSharedFiles,
+  stripShareTargetParam,
+  PendingShare,
+} from './utils/shareTarget';
 import { NotificationToast, ToastNotificationData } from './components/common/NotificationToast';
 import { PWAInstallBanner } from './components/common/PWAInstallBanner';
 import { User, Conversation, Message, AuthResponse, ConversationPreview } from './types';
-import { MessageSquare, Plus } from 'lucide-react';
+import { MessageSquare, Plus, Share2, X } from 'lucide-react';
 import {
   getConversationListMeta,
   previewFromServerConversation,
@@ -60,6 +68,15 @@ function sortMessages(messages: Message[]): Message[] {
   return [...messages].sort(
     (a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime()
   );
+}
+
+// Monotonic tiebreaker so several optimistic messages created within the same
+// millisecond (e.g. sending a batch of images) never collide on `-Date.now()`
+// alone, which would otherwise produce duplicate ids/React keys.
+let optimisticIdCounter = 0;
+function nextOptimisticId(): number {
+  optimisticIdCounter = (optimisticIdCounter + 1) % 1000;
+  return -(Date.now() * 1000 + optimisticIdCounter);
 }
 
 function mergeMessagesForConversation(
@@ -196,6 +213,11 @@ export const App: React.FC = () => {
   const [showDeviceModal, setShowDeviceModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
 
+  // Files handed off from the OS "Share" sheet via the PWA share_target (see
+  // public/sw.js), waiting on the user to pick a conversation. Cleared as soon
+  // as ChatScreen/MessageInput consumes it into the normal media-send flow.
+  const [pendingShare, setPendingShare] = useState<PendingShare | null>(null);
+
   const { subscribe, reconnect, status } = useWebSocket();
 
   const activeConversationRef = useRef<Conversation | null>(null);
@@ -203,7 +225,11 @@ export const App: React.FC = () => {
   const activeRequestSeqRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const conversationsLoadSeqRef = useRef(0);
-  const pinnedConversationsRef = useRef<Map<number, Conversation>>(new Map());
+  // pinnedAt lets `loadConversations` below evict an entry that's stopped coming
+  // back from the server for reasons other than an explicit delete/restore event,
+  // instead of unioning it back into the list forever.
+  const pinnedConversationsRef = useRef<Map<number, { conv: Conversation; pinnedAt: number }>>(new Map());
+  const PINNED_CONVERSATION_MAX_AGE_MS = 5 * 60 * 1000;
 
   useEffect(() => {
     activeConversationRef.current = activeConversation;
@@ -277,6 +303,7 @@ export const App: React.FC = () => {
     } else {
       document.title = 'ConnectX - Secure Messaging';
     }
+    appBadge.set(count);
   }, [unreadConversationIds]);
 
   useEffect(() => {
@@ -293,6 +320,19 @@ export const App: React.FC = () => {
     applyTheme(isDarkMode);
   }, [isDarkMode]);
 
+  // One-time: pick up any files the OS "Share" sheet handed off via the PWA
+  // share_target (see public/sw.js + utils/shareTarget.ts). The marker query
+  // param is stripped immediately so a refresh doesn't re-trigger this.
+  useEffect(() => {
+    if (!hasPendingShareMarker()) return;
+    stripShareTargetParam();
+    consumePendingShare()
+      .then((share) => {
+        if (share) setPendingShare(share);
+      })
+      .catch((err) => console.warn('[ConnectX] Failed to load shared files:', err));
+  }, []);
+
   useEffect(() => {
     const handleAuthExpired = () => {
       console.warn('[ConnectX] Authentication session expired. Resetting session state.');
@@ -302,6 +342,17 @@ export const App: React.FC = () => {
       processedMessageIdsRef.current.clear();
       conversationCache.clearAll();
       clearCachedConversationLists();
+      appBadge.clear();
+      // Mirror handleLogout's cleanup: an expired session shouldn't leave stale
+      // credentials in localStorage (a reload would otherwise briefly re-hydrate
+      // the previous account), nor leak its unread/typing state into whichever
+      // account logs in next on this tab.
+      localStorage.removeItem('connectx_token');
+      localStorage.removeItem('connectx_refresh_token');
+      localStorage.removeItem('connectx_user');
+      setUnreadConversationIds(new Set());
+      setTypingByConversation({});
+      setPendingShare(null);
       setCurrentUser(null);
       setConversations([]);
       pinnedConversationsRef.current.clear();
@@ -360,6 +411,13 @@ export const App: React.FC = () => {
     localStorage.removeItem('connectx_user');
     conversationCache.clearAll();
     clearCachedConversationLists();
+    appBadge.clear();
+    // The app never unmounts across a logout→login cycle in the same tab, so
+    // these must be reset explicitly or the next account inherits the previous
+    // one's stale unread badge count and typing indicators.
+    setUnreadConversationIds(new Set());
+    setTypingByConversation({});
+    setPendingShare(null);
     setCurrentUser(null);
     setConversations([]);
     pinnedConversationsRef.current.clear();
@@ -402,7 +460,14 @@ export const App: React.FC = () => {
           pinnedConversationsRef.current.delete(conv.id);
         });
 
-        pinnedConversationsRef.current.forEach((conv, id) => {
+        const pinnedCutoff = Date.now() - PINNED_CONVERSATION_MAX_AGE_MS;
+        pinnedConversationsRef.current.forEach(({ conv, pinnedAt }, id) => {
+          if (pinnedAt < pinnedCutoff) {
+            // Stopped coming back from the server a while ago for some reason other
+            // than an explicit delete/restore event — stop resurrecting it forever.
+            pinnedConversationsRef.current.delete(id);
+            return;
+          }
           if (!byId.has(id)) {
             byId.set(id, conv);
           }
@@ -430,7 +495,7 @@ export const App: React.FC = () => {
   }, [currentUser]);
 
   const upsertConversation = useCallback((conv: Conversation) => {
-    pinnedConversationsRef.current.set(conv.id, conv);
+    pinnedConversationsRef.current.set(conv.id, { conv, pinnedAt: Date.now() });
     setConversations((prev) => {
       const existingIndex = prev.findIndex((c) => c.id === conv.id);
       if (existingIndex >= 0) {
@@ -473,19 +538,7 @@ export const App: React.FC = () => {
     };
   }, [conversations, currentUser?.id]);
 
-  // ── P0-1: Reload conversations when WebSocket reconnects ──────────────────
-  // If the WS was dropped and reconnected, fetch fresh conversations to catch
-  // any messages that arrived while the socket was disconnected.
   const prevWsStatusRef = useRef<string>('');
-  useEffect(() => {
-    const prev = prevWsStatusRef.current;
-    prevWsStatusRef.current = status;
-    // Only reload on a genuine reconnect (DISCONNECTED → CONNECTED)
-    if (prev === 'DISCONNECTED' && status === 'CONNECTED' && currentUser) {
-      console.log('[ConnectX] WebSocket reconnected — reloading conversations to catch missed messages.');
-      loadConversations();
-    }
-  }, [status, currentUser, loadConversations]);
 
   // ── P0-5: Mobile back-button navigation ──────────────────────────────────
   // Push a history entry when the user navigates to a sub-screen so the
@@ -548,13 +601,13 @@ export const App: React.FC = () => {
         return { ...msg, decryptedContent: cached, decryptionError: false };
       }
 
+      let resolvedPeerUserId: number | null = peerUserId ?? null;
       try {
         const myPrivateKey = await keyManager.getPrivateKey(userId);
         if (!myPrivateKey) {
           return { ...msg, decryptionError: true };
         }
 
-        let resolvedPeerUserId = peerUserId ?? null;
         if (!resolvedPeerUserId) {
           resolvedPeerUserId =
             msg.senderUserId === userId
@@ -590,6 +643,13 @@ export const App: React.FC = () => {
         return { ...msg, decryptedContent: decrypted, decryptionError: false };
       } catch (err) {
         console.warn(`[ConnectX E2EE] Message ${msg.id} decryption failed:`, err);
+        // A cached-but-stale public key (e.g. the peer rotated/added a device) is
+        // a likely cause of an otherwise-unexplained failure — drop it so the next
+        // attempt fetches a fresh key instead of reusing the same bad one for up
+        // to KEY_CACHE_TTL_MS longer.
+        if (resolvedPeerUserId) {
+          conversationCache.invalidatePublicKeys(resolvedPeerUserId);
+        }
         return { ...msg, decryptionError: true };
       }
     },
@@ -620,6 +680,9 @@ export const App: React.FC = () => {
         return { decryptedContent: decrypted, decryptionError: false };
       } catch (err) {
         console.warn('[ConnectX E2EE] Re-decryption after edit failed:', err);
+        if (peerUserId) {
+          conversationCache.invalidatePublicKeys(peerUserId);
+        }
         return { decryptionError: true };
       }
     },
@@ -691,7 +754,12 @@ export const App: React.FC = () => {
           return;
         }
 
-        const sorted = sortMessages(decryptedList);
+        // Merge against whatever's already cached (rather than replacing outright)
+        // so a still-pending optimistic send isn't wiped from view just because the
+        // server's window doesn't include it yet — e.g. a fast switch-away-and-back
+        // triggering this fetch while the user's own message hasn't been ACKed.
+        const existingMessages = conversationCache.getConversation(convId)?.messages ?? [];
+        const sorted = mergeMessagesForConversation(convId, decryptedList, existingMessages);
         conversationCache.setConversation(convId, {
           messages: sorted,
           hasMore: response.hasMore,
@@ -722,6 +790,34 @@ export const App: React.FC = () => {
     },
     [currentUser, decryptSingleMessage, updatePreviewIfNewer]
   );
+
+  // ── P0-1: Reload conversations when WebSocket reconnects ──────────────────
+  // If the WS was dropped and reconnected, fetch fresh conversations to catch
+  // any messages that arrived while the socket was disconnected.
+  useEffect(() => {
+    const prev = prevWsStatusRef.current;
+    prevWsStatusRef.current = status;
+    // Only reload on a genuine reconnect (DISCONNECTED → CONNECTED)
+    if (prev === 'DISCONNECTED' && status === 'CONNECTED' && currentUser) {
+      console.log('[ConnectX] WebSocket reconnected — reloading conversations to catch missed messages.');
+      loadConversations();
+
+      // loadConversations() above only refreshes sidebar/list metadata -- it never
+      // refetches the currently-open conversation's own message list, so anything that
+      // happened there while disconnected (new messages, edits, reactions, read
+      // receipts) would otherwise stay stale until the user manually switches away and
+      // back. Re-fetch it the same way handleSelectConversation does.
+      const activeConvId = activeConversationIdRef.current;
+      if (activeConvId) {
+        if (abortControllerRef.current) {
+          abortControllerRef.current.abort();
+        }
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+        fetchAndSetMessagesForConversation(activeConvId, ++activeRequestSeqRef.current, controller.signal);
+      }
+    }
+  }, [status, currentUser, loadConversations, fetchAndSetMessagesForConversation]);
 
   const loadOlderMessages = useCallback(async () => {
     const convId = activeConversationIdRef.current;
@@ -814,33 +910,55 @@ export const App: React.FC = () => {
                 ? newMsg
                 : await decryptSingleMessage(newMsg, currentUser.id, peerUserId);
 
-            // 3. Mount message into active chat state
-            setMessages((prev) => {
-              if (prev.some((m) => m.id === processedMsg.id)) return prev;
-              const next = sortMessages([
-                ...prev.filter((m) => m.conversationId === conversationId),
-                processedMsg,
-              ]);
-              conversationCache.setConversation(conversationId, {
-                messages: next,
-                hasMore: conversationCache.getConversation(conversationId)?.hasMore ?? false,
-                oldestCursor: conversationCache.getConversation(conversationId)?.oldestCursor ?? null,
+            // The user may have switched to a different conversation while this was
+            // decrypting — re-check the LIVE ref (not the `currentActive` snapshot from
+            // before the await) so a slow decrypt can never clobber whichever
+            // conversation is actually on screen by the time we get here.
+            const stillActive = activeConversationRef.current?.id === conversationId;
+
+            if (stillActive) {
+              // 3. Mount message into active chat state
+              setMessages((prev) => {
+                if (prev.some((m) => m.id === processedMsg.id)) return prev;
+                const next = sortMessages([
+                  ...prev.filter((m) => m.conversationId === conversationId),
+                  processedMsg,
+                ]);
+                conversationCache.setConversation(conversationId, {
+                  messages: next,
+                  hasMore: conversationCache.getConversation(conversationId)?.hasMore ?? false,
+                  oldestCursor: conversationCache.getConversation(conversationId)?.oldestCursor ?? null,
+                });
+                return next;
               });
-              return next;
-            });
 
-            const preview = previewFromMessage(processedMsg);
-            updatePreviewIfNewer(conversationId, preview);
+              const preview = previewFromMessage(processedMsg);
+              updatePreviewIfNewer(conversationId, preview);
 
-            // 4. Mark READ now that message has actually become visible in active conversation
-            wsClient.sendRead(conversationId, msgId);
+              // 4. Mark READ now that message has actually become visible in active conversation
+              wsClient.sendRead(conversationId, msgId);
 
-            const isMuted =
-              currentActive.isMuted ||
-              (currentActive.mutedUntil && new Date(currentActive.mutedUntil).getTime() > Date.now());
+              const isMuted =
+                currentActive.isMuted ||
+                (currentActive.mutedUntil && new Date(currentActive.mutedUntil).getTime() > Date.now());
 
-            if (!isMuted) {
-              soundManager.playIncomingMessageSound();
+              if (!isMuted) {
+                soundManager.playIncomingMessageSound();
+              }
+            } else {
+              // No longer the active conversation — merge into its cache entry only
+              // (never touch `messages`, which belongs to whichever conversation is
+              // now on screen), and mark it unread like any other background message.
+              const cachedConv = conversationCache.getConversation(conversationId);
+              if (cachedConv && !cachedConv.messages.some((m) => m.id === processedMsg.id)) {
+                conversationCache.setConversation(conversationId, {
+                  messages: sortMessages([...cachedConv.messages, processedMsg]),
+                  hasMore: cachedConv.hasMore,
+                  oldestCursor: cachedConv.oldestCursor,
+                });
+              }
+              updatePreviewIfNewer(conversationId, previewFromMessage(processedMsg));
+              setUnreadConversationIds((prev) => new Set(prev).add(conversationId));
             }
           } else {
             // Reconcile our own message that was sent optimistically. If there's no
@@ -882,16 +1000,31 @@ export const App: React.FC = () => {
                   ? newMsg
                   : await decryptSingleMessage(newMsg, currentUser.id, peerUserId);
 
-              setMessages((prev) => {
-                if (prev.some((m) => m.id === processedMsg.id)) return prev;
-                const next = sortMessages([...prev, processedMsg]);
-                conversationCache.setConversation(conversationId, {
-                  messages: next,
-                  hasMore: conversationCache.getConversation(conversationId)?.hasMore ?? false,
-                  oldestCursor: conversationCache.getConversation(conversationId)?.oldestCursor ?? null,
+              // Same re-check as the peer-message branch above: don't let a slow
+              // decrypt apply this update to whichever conversation is now active.
+              const stillActive = activeConversationRef.current?.id === conversationId;
+
+              if (stillActive) {
+                setMessages((prev) => {
+                  if (prev.some((m) => m.id === processedMsg.id)) return prev;
+                  const next = sortMessages([...prev, processedMsg]);
+                  conversationCache.setConversation(conversationId, {
+                    messages: next,
+                    hasMore: conversationCache.getConversation(conversationId)?.hasMore ?? false,
+                    oldestCursor: conversationCache.getConversation(conversationId)?.oldestCursor ?? null,
+                  });
+                  return next;
                 });
-                return next;
-              });
+              } else {
+                const cachedConv = conversationCache.getConversation(conversationId);
+                if (cachedConv && !cachedConv.messages.some((m) => m.id === processedMsg.id)) {
+                  conversationCache.setConversation(conversationId, {
+                    messages: sortMessages([...cachedConv.messages, processedMsg]),
+                    hasMore: cachedConv.hasMore,
+                    oldestCursor: cachedConv.oldestCursor,
+                  });
+                }
+              }
 
               const preview = previewFromMessage(processedMsg);
               updatePreviewIfNewer(conversationId, preview);
@@ -1153,12 +1286,20 @@ export const App: React.FC = () => {
 
         if (activeConversationRef.current?.id === convId) {
           setMessages((prev) => {
+            // The blanket "any still-pending send" fallback is only safe when the ACK
+            // itself carries no identifier to match against — if it does carry one,
+            // matching strictly on that identifier is required, otherwise two sends
+            // in flight at once can both collapse onto whichever ACK arrives first.
+            const payloadHasIdentifier = Boolean(clientTempId) || msgId !== undefined;
+            let fallbackApplied = false;
             const updated = prev.map((m) => {
-              if (
-                (clientTempId && m.clientTempId === clientTempId) ||
-                (msgId && m.id === msgId) ||
-                (m.id < 0 && m.status === 'SENDING')
-              ) {
+              const isSpecificMatch =
+                (clientTempId && m.clientTempId === clientTempId) || (msgId !== undefined && m.id === msgId);
+              const isFallbackMatch =
+                !payloadHasIdentifier && !fallbackApplied && m.id < 0 && m.status === 'SENDING';
+
+              if (isSpecificMatch || isFallbackMatch) {
+                if (isFallbackMatch) fallbackApplied = true;
                 return {
                   ...m,
                   id: msgId ?? m.id,
@@ -1179,6 +1320,9 @@ export const App: React.FC = () => {
         const restoredConvId = event.payload.conversationId as number;
         loadConversations();
         if (activeConversationRef.current?.id === restoredConvId) {
+          if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+          }
           const controller = new AbortController();
           abortControllerRef.current = controller;
           fetchAndSetMessagesForConversation(restoredConvId, ++activeRequestSeqRef.current, controller.signal);
@@ -1284,7 +1428,7 @@ export const App: React.FC = () => {
     const tempIdStr = clientTempId || `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     const tempMessage: Message = {
-      id: -Date.now(),
+      id: nextOptimisticId(),
       clientTempId: tempIdStr,
       conversationId: activeConversation.id,
       senderUserId: currentUser.id,
@@ -1334,7 +1478,7 @@ export const App: React.FC = () => {
     const tempIdStr = clientTempId || `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     const tempMessage: Message = {
-      id: -Date.now(),
+      id: nextOptimisticId(),
       clientTempId: tempIdStr,
       conversationId: activeConversation.id,
       senderUserId: currentUser.id,
@@ -1386,7 +1530,7 @@ export const App: React.FC = () => {
     const tempIdStr = clientTempId || `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     const tempMessage: Message = {
-      id: -Date.now(),
+      id: nextOptimisticId(),
       clientTempId: tempIdStr,
       conversationId: activeConversation.id,
       senderUserId: currentUser.id,
@@ -1437,7 +1581,7 @@ export const App: React.FC = () => {
     const tempIdStr = clientTempId || `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     const tempMessage: Message = {
-      id: -Date.now(),
+      id: nextOptimisticId(),
       clientTempId: tempIdStr,
       conversationId: activeConversation.id,
       senderUserId: currentUser.id,
@@ -1800,9 +1944,13 @@ export const App: React.FC = () => {
 
   const handleSelectConversation = useCallback(
     (conv: Conversation) => {
-      // 1. Immediately switch active conversation synchronously (0 blocking network calls)
+      // 1. Immediately switch active conversation synchronously (0 blocking network calls).
+      // Both refs are set here, not just the id — activeConversationRef would otherwise only
+      // catch up via the [activeConversation] effect below, leaving a window where the two
+      // refs disagree about which conversation is active.
       setActiveConversation(conv);
       activeConversationIdRef.current = conv.id;
+      activeConversationRef.current = conv;
 
       // 2. Abort any previous pending message request to prevent race conditions
       if (abortControllerRef.current) {
@@ -1950,6 +2098,23 @@ export const App: React.FC = () => {
           <span>Connecting to server...</span>
         </div>
       )}
+      {pendingShare && !activeConversation && (
+        <div className="flex-shrink-0 w-full bg-indigo-500/15 dark:bg-indigo-950/40 border-b border-indigo-500/30 text-indigo-700 dark:text-indigo-300 text-xs py-1.5 px-3 text-center font-medium flex items-center justify-center gap-2 select-none z-50">
+          <Share2 className="w-3.5 h-3.5 flex-shrink-0" />
+          <span>
+            Choose a conversation to share {pendingShare.files.length}{' '}
+            {pendingShare.files.length === 1 ? 'file' : 'files'}
+          </span>
+          <button
+            type="button"
+            onClick={() => setPendingShare(null)}
+            className="p-0.5 rounded-full hover:bg-indigo-500/20 transition-colors"
+            aria-label="Cancel share"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
       <div className="flex-1 min-h-0 w-full flex overflow-hidden">
         {/* Conversation list — full screen on mobile when no chat selected */}
         <div
@@ -2038,6 +2203,8 @@ export const App: React.FC = () => {
               onUnstarMessage={handleUnstarMessage}
               onForwardMessages={handleForwardMessages}
               conversations={conversations}
+              initialSharedMedia={pendingShare ? splitSharedFiles(pendingShare.files) : null}
+              onSharedMediaConsumed={() => setPendingShare(null)}
             />
 
             {showInfoDrawer && (

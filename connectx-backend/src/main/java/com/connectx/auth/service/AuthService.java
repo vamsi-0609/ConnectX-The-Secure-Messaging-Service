@@ -13,6 +13,7 @@ import com.connectx.common.util.AfterCommitExecutor;
 import com.connectx.user.dto.UserDto;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -22,12 +23,24 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class AuthService {
+
+    // In-memory, best-effort rate limit on OTP requests per email — appropriate for a
+    // single-instance deployment (see application.yml; no distributed cache is wired up).
+    // Keyed by normalized email rather than IP so it also closes "reset griefing" (repeatedly
+    // re-requesting to invalidate the OTP the victim just received), not just email-bombing.
+    private static final Duration OTP_REQUEST_COOLDOWN = Duration.ofSeconds(60);
+    private final Map<String, Instant> lastOtpRequestByEmail = new ConcurrentHashMap<>();
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
@@ -74,7 +87,22 @@ public class AuthService {
                 passwordEncoder.encode(request.getPassword()),
                 displayName
         );
-        User savedUser = userRepository.save(user);
+        User savedUser;
+        try {
+            savedUser = userRepository.save(user);
+        } catch (DataIntegrityViolationException e) {
+            // A concurrent registration for the same username/email won the race between
+            // the existence checks above and this save -- translate the resulting unique
+            // constraint violation into the same clean error those checks would have
+            // produced, instead of letting a raw 500 through.
+            if (userRepository.existsByUsername(request.getUsername())) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "USERNAME_EXISTS", "Username is already taken");
+            }
+            if (userRepository.existsByEmail(request.getEmail())) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "EMAIL_EXISTS", "Email is already registered");
+            }
+            throw new ApiException(HttpStatus.BAD_REQUEST, "REGISTRATION_FAILED", "Registration failed. Please try again.");
+        }
 
         Authentication authentication = authenticationManager.authenticate(
                 new UsernamePasswordAuthenticationToken(request.getUsername(), request.getPassword())
@@ -118,7 +146,7 @@ public class AuthService {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User not found"));
 
-        String newAccessToken = tokenProvider.generateTokenFromUserId(user.getId(), user.getUsername(), 86400000);
+        String newAccessToken = tokenProvider.generateTokenFromUserId(user.getId(), user.getUsername());
         String newRefreshToken = tokenProvider.generateRefreshToken(user.getId(), user.getUsername());
 
         return new AuthResponse(newAccessToken, newRefreshToken, UserDto.fromEntity(user));
@@ -127,6 +155,7 @@ public class AuthService {
     @Transactional
     public void requestForgotPasswordOtp(String email) {
         String normalizedEmail = email.trim().toLowerCase();
+        enforceOtpRequestRateLimit(normalizedEmail);
 
         otpTokenRepository.findByEmailAndPurposeAndUsedFalseOrderByCreatedAtDesc(normalizedEmail, "FORGOT_PASSWORD")
                 .forEach(token -> {
@@ -176,6 +205,21 @@ public class AuthService {
         otpTokenRepository.save(token);
     }
 
+    private void enforceOtpRequestRateLimit(String normalizedEmail) {
+        Instant now = Instant.now();
+        // compute() makes the check-and-record atomic — without it, two concurrent
+        // requests could both read "no recent request" before either writes, letting both
+        // through. Throwing inside the remapping function is safe: compute() leaves the
+        // existing mapping untouched and rethrows.
+        lastOtpRequestByEmail.compute(normalizedEmail, (key, lastRequestAt) -> {
+            if (lastRequestAt != null && lastRequestAt.plus(OTP_REQUEST_COOLDOWN).isAfter(now)) {
+                throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "OTP_RATE_LIMITED",
+                        "Please wait a moment before requesting another code.");
+            }
+            return now;
+        });
+    }
+
     private OtpToken validateOtpToken(String email, String otpCode, String purpose) {
         OtpToken token = otpTokenRepository.findTopByEmailAndPurposeAndUsedFalseOrderByCreatedAtDesc(email, purpose)
                 .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "INVALID_OTP", "Invalid or expired verification code"));
@@ -192,7 +236,11 @@ public class AuthService {
             throw new ApiException(HttpStatus.TOO_MANY_REQUESTS, "OTP_LOCKED", "Too many failed attempts. Please request a new code.");
         }
 
-        if (!token.getOtpCode().equals(otpCode.trim())) {
+        boolean codeMatches = MessageDigest.isEqual(
+                token.getOtpCode().getBytes(StandardCharsets.UTF_8),
+                otpCode.trim().getBytes(StandardCharsets.UTF_8)
+        );
+        if (!codeMatches) {
             token.setAttempts(token.getAttempts() + 1);
             otpTokenRepository.save(token);
             throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_OTP", "Incorrect verification code. Please try again.");
