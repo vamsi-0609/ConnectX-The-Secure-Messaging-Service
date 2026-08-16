@@ -4,7 +4,10 @@ import jakarta.persistence.*;
 import java.time.Instant;
 
 @Entity
-@Table(name = "otp_tokens")
+@Table(name = "otp_tokens", indexes = {
+    // Every OTP flow (forgot-password, email-change) looks up by exactly this triple.
+    @Index(name = "idx_otp_email_purpose_used", columnList = "email, purpose, used")
+})
 public class OtpToken {
 
     @Id

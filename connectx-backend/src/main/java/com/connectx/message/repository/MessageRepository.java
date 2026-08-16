@@ -24,7 +24,17 @@ public interface MessageRepository extends JpaRepository<Message, Long> {
                                                            @Param("userId") Long userId,
                                                            @Param("clearedAfter") Instant clearedAfter);
 
-    @Query("SELECT m FROM Message m WHERE m.conversation.id = :conversationId " +
+    // LEFT JOIN FETCH on senderUser/replyToMessage(+its senderUser)/pinnedBy eliminates the
+    // N+1 SELECTs MessageDto.fromEntity would otherwise trigger per row (one hot-path page
+    // load could otherwise fire 100-300+ extra queries). All fetched associations are
+    // single-valued (@ManyToOne), so this is safe to combine with Pageable/LIMIT — no
+    // collection-fetch row-duplication or in-memory-pagination pitfall.
+    @Query("SELECT m FROM Message m " +
+           "LEFT JOIN FETCH m.senderUser " +
+           "LEFT JOIN FETCH m.replyToMessage rtm " +
+           "LEFT JOIN FETCH rtm.senderUser " +
+           "LEFT JOIN FETCH m.pinnedBy " +
+           "WHERE m.conversation.id = :conversationId " +
            "AND m.deletedForEveryone = false " +
            "AND (:beforeId IS NULL OR m.id < :beforeId) " +
            "AND NOT EXISTS (SELECT 1 FROM MessageUserState mus WHERE mus.message.id = m.id AND mus.user.id = :userId) " +
@@ -36,7 +46,11 @@ public interface MessageRepository extends JpaRepository<Message, Long> {
                                            @Param("clearedAfter") Instant clearedAfter,
                                            Pageable pageable);
 
-    @Query("SELECT m FROM Message m WHERE m.conversation.id = :conversationId " +
+    // JOIN FETCH senderUser avoids a second lazy SELECT per conversation when the
+    // conversation list is enriched with a last-message preview (called on every app load).
+    @Query("SELECT m FROM Message m " +
+           "LEFT JOIN FETCH m.senderUser " +
+           "WHERE m.conversation.id = :conversationId " +
            "AND m.deletedForEveryone = false " +
            "AND NOT EXISTS (SELECT 1 FROM MessageUserState mus WHERE mus.message.id = m.id AND mus.user.id = :userId) " +
            "AND (:clearedAfter IS NULL OR m.sentAt > :clearedAfter) " +

@@ -9,6 +9,7 @@ import com.connectx.common.exception.ApiException;
 import com.connectx.common.security.JwtTokenProvider;
 import com.connectx.common.security.UserPrincipal;
 import com.connectx.common.service.EmailService;
+import com.connectx.common.util.AfterCommitExecutor;
 import com.connectx.user.dto.UserDto;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
@@ -34,19 +35,22 @@ public class AuthService {
     private final JwtTokenProvider tokenProvider;
     private final OtpTokenRepository otpTokenRepository;
     private final EmailService emailService;
+    private final AfterCommitExecutor afterCommitExecutor;
 
     public AuthService(UserRepository userRepository,
                        PasswordEncoder passwordEncoder,
                        AuthenticationManager authenticationManager,
                        JwtTokenProvider tokenProvider,
                        OtpTokenRepository otpTokenRepository,
-                       EmailService emailService) {
+                       EmailService emailService,
+                       AfterCommitExecutor afterCommitExecutor) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.authenticationManager = authenticationManager;
         this.tokenProvider = tokenProvider;
         this.otpTokenRepository = otpTokenRepository;
         this.emailService = emailService;
+        this.afterCommitExecutor = afterCommitExecutor;
     }
 
     @Transactional
@@ -138,7 +142,12 @@ public class AuthService {
         otpTokenRepository.save(token);
 
         if (userRepository.existsByEmail(normalizedEmail)) {
-            emailService.sendOtpEmail(normalizedEmail, otpCode, "Password Reset");
+            // Held open until commit, the DB connection used for the OTP-token write above
+            // would otherwise stay checked out for the full blocking SMTP round trip too --
+            // with a 10-connection pool, a handful of concurrent requests (or a slow/down
+            // mail server) could exhaust it and stall unrelated requests app-wide.
+            afterCommitExecutor.runAfterCommit(() ->
+                    emailService.sendOtpEmail(normalizedEmail, otpCode, "Password Reset"));
         }
     }
 

@@ -6,7 +6,11 @@ import java.time.Instant;
 
 @Entity
 @Table(name = "conversation_members", indexes = {
-    @Index(name = "idx_conv_user", columnList = "conversation_id, user_id")
+    @Index(name = "idx_conv_user", columnList = "conversation_id, user_id"),
+    // conversation_id alone (leftmost prefix of idx_conv_user) doesn't help queries that
+    // filter by user_id without conversation_id -- e.g. the conversation list load (every
+    // app open) and presence broadcast (every WS connect/disconnect) both do.
+    @Index(name = "idx_convmember_user_deleted", columnList = "user_id, deleted_at")
 })
 public class ConversationMember {
 

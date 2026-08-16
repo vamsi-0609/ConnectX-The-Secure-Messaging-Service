@@ -297,6 +297,9 @@ export const App: React.FC = () => {
     const handleAuthExpired = () => {
       console.warn('[ConnectX] Authentication session expired. Resetting session state.');
       wsClient.disconnect();
+      Object.values(typingTimersRef.current).forEach(clearTimeout);
+      typingTimersRef.current = {};
+      processedMessageIdsRef.current.clear();
       conversationCache.clearAll();
       clearCachedConversationLists();
       setCurrentUser(null);
@@ -344,6 +347,9 @@ export const App: React.FC = () => {
 
   const handleLogout = async () => {
     wsClient.disconnect();
+    Object.values(typingTimersRef.current).forEach(clearTimeout);
+    typingTimersRef.current = {};
+    processedMessageIdsRef.current.clear();
     try {
       await authApi.logout();
     } catch {
@@ -783,6 +789,15 @@ export const App: React.FC = () => {
 
         if (processedMessageIds.has(msgId)) return;
         processedMessageIds.add(msgId);
+        // Bounded dedup window -- a session left open for days shouldn't accumulate
+        // every message id it's ever seen. 2000 is far beyond any realistic
+        // duplicate-redelivery race (WS reconnect, etc.) this set exists to catch.
+        if (processedMessageIds.size > 2000) {
+          const oldest = processedMessageIds.values().next().value;
+          if (oldest !== undefined) {
+            processedMessageIds.delete(oldest);
+          }
+        }
 
         const currentActive = activeConversationRef.current;
 

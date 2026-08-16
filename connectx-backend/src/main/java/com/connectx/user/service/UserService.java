@@ -4,6 +4,7 @@ import com.connectx.auth.entity.OtpToken;
 import com.connectx.auth.repository.OtpTokenRepository;
 import com.connectx.common.exception.ApiException;
 import com.connectx.common.service.EmailService;
+import com.connectx.common.util.AfterCommitExecutor;
 import com.connectx.user.dto.UserDto;
 import com.connectx.user.dto.UserProfileUpdateDto;
 import com.connectx.user.entity.User;
@@ -30,15 +31,18 @@ public class UserService {
     private final ProfileImageStorage profileImageStorage;
     private final OtpTokenRepository otpTokenRepository;
     private final EmailService emailService;
+    private final AfterCommitExecutor afterCommitExecutor;
 
     public UserService(UserRepository userRepository,
                        ProfileImageStorage profileImageStorage,
                        OtpTokenRepository otpTokenRepository,
-                       EmailService emailService) {
+                       EmailService emailService,
+                       AfterCommitExecutor afterCommitExecutor) {
         this.userRepository = userRepository;
         this.profileImageStorage = profileImageStorage;
         this.otpTokenRepository = otpTokenRepository;
         this.emailService = emailService;
+        this.afterCommitExecutor = afterCommitExecutor;
     }
 
     public UserDto getUserById(Long userId) {
@@ -47,11 +51,14 @@ public class UserService {
         return UserDto.fromEntity(user);
     }
 
+    private static final int USER_SEARCH_LIMIT = 20;
+
     public List<UserDto> searchUsersByUsername(String username) {
         if (username == null || username.trim().isEmpty()) {
             return List.of();
         }
-        return userRepository.findByUsernameContainingIgnoreCase(username.trim())
+        return userRepository.findByUsernameContainingIgnoreCase(
+                        username.trim(), org.springframework.data.domain.PageRequest.of(0, USER_SEARCH_LIMIT))
                 .stream()
                 .map(UserDto::fromEntity)
                 .collect(Collectors.toList());
@@ -120,7 +127,8 @@ public class UserService {
         OtpToken token = new OtpToken(normalizedEmail, otpCode, "EMAIL_CHANGE", expiresAt);
         otpTokenRepository.save(token);
 
-        emailService.sendOtpEmail(normalizedEmail, otpCode, "Email Address Change");
+        afterCommitExecutor.runAfterCommit(() ->
+                emailService.sendOtpEmail(normalizedEmail, otpCode, "Email Address Change"));
     }
 
     @Transactional

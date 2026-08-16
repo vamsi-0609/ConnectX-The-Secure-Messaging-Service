@@ -53,9 +53,15 @@ export function buildMessageGroups(messages: Message[], currentUserId: number): 
   sorted.forEach((message, index) => {
     const sentDate = new Date(message.sentAt);
     const dateLabel = formatDateSeparator(sentDate);
+    // An optimistically-sent message keeps its identity across reconciliation (temp
+    // negative id -> real server id) via clientTempId; every other message already has
+    // a stable id from the moment it's loaded. Keying on raw `message.id` here would
+    // change the instant an optimistic send gets acked, forcing React to unmount and
+    // remount that bubble (and silently close any menu/picker open on it) mid-render.
+    const stableKey = message.clientTempId ?? message.id;
 
     if (dateLabel !== lastDateLabel) {
-      groups.push({ type: 'date', label: dateLabel, key: `date-${dateLabel}-${message.id}` });
+      groups.push({ type: 'date', label: dateLabel, key: `date-${dateLabel}-${stableKey}` });
       lastDateLabel = dateLabel;
     }
 
@@ -81,7 +87,7 @@ export function buildMessageGroups(messages: Message[], currentUserId: number): 
       isSelf,
       isGroupedWithPrev,
       isGroupedWithNext,
-      key: `msg-${message.id}`,
+      key: `msg-${stableKey}`,
     });
   });
 

@@ -97,8 +97,10 @@ public class PresenceService {
         }
     }
 
+    // Public: Spring's proxy-based @Transactional only advises public methods --
+    // package-private would silently not be transactional at all.
     @Transactional
-    void markOnline(Long userId) {
+    public void markOnline(Long userId) {
         userRepository.findById(userId).ifPresent(user -> {
             user.setStatus("ONLINE");
             userRepository.save(user);
@@ -107,7 +109,7 @@ public class PresenceService {
     }
 
     @Transactional
-    void markOffline(Long userId) {
+    public void markOffline(Long userId) {
         userRepository.findById(userId).ifPresent(user -> {
             Instant lastSeenAt = Instant.now();
             user.setStatus("OFFLINE");

@@ -24,6 +24,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   restrictSaving = false,
 }) => {
   const [justSaved, setJustSaved] = useState(false);
+  const [privacyHidden, setPrivacyHidden] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -42,6 +43,28 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [open, onClose]);
+
+  // Browsers offer no API to block a real OS-level screenshot -- this can only
+  // blur the photo when the app is backgrounded/loses focus, which deters the
+  // task-switcher/app-preview snapshot leaking it, not an in-app screenshot.
+  useEffect(() => {
+    if (!open || !restrictSaving) return;
+
+    const handleVisibilityChange = () => setPrivacyHidden(document.hidden);
+    const handleBlur = () => setPrivacyHidden(true);
+    const handleFocus = () => setPrivacyHidden(false);
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleBlur);
+    window.addEventListener('focus', handleFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleBlur);
+      window.removeEventListener('focus', handleFocus);
+      setPrivacyHidden(false);
+    };
+  }, [open, restrictSaving]);
 
   useEffect(() => {
     if (!open) setJustSaved(false);
@@ -115,14 +138,24 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 flex items-center justify-center p-4" onClick={(e) => e.stopPropagation()}>
+      <div className="flex-1 min-h-0 flex items-center justify-center p-4 relative" onClick={(e) => e.stopPropagation()}>
         <img
           src={imageUrl}
           alt={alt}
-          className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+          className={`max-w-full max-h-full object-contain rounded-lg shadow-2xl transition-[filter] duration-200 ${
+            privacyHidden ? 'blur-2xl scale-105' : ''
+          }`}
           draggable={false}
           onContextMenu={restrictSaving ? (e) => e.preventDefault() : undefined}
         />
+        {privacyHidden && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/70 rounded-lg">
+            <span className="flex items-center gap-2 text-white/80 text-sm font-medium">
+              <ShieldCheck className="w-4 h-4" />
+              Hidden for privacy
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );

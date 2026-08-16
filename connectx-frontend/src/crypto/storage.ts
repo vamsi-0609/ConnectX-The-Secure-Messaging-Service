@@ -25,8 +25,19 @@ export interface StoredKeyVault {
   publicKeyBase64: string;
 }
 
+// A fresh connection used to be opened (and never closed) on every single storage call.
+// IndexedDB connections are safe to hold open across many transactions, so it's memoized
+// here instead. onversionchange closes it and clears the memo so a future schema bump
+// (this tab reloaded on a new deploy, or another tab) doesn't leave a stale connection
+// blocking the upgrade; onerror clears it too so a failed open can be retried.
+let dbConnectionPromise: Promise<IDBDatabase> | null = null;
+
 function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (dbConnectionPromise) {
+    return dbConnectionPromise;
+  }
+
+  dbConnectionPromise = new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
     request.onupgradeneeded = (event) => {
@@ -42,9 +53,21 @@ function openDB(): Promise<IDBDatabase> {
       }
     };
 
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => {
+        db.close();
+        dbConnectionPromise = null;
+      };
+      resolve(db);
+    };
+    request.onerror = () => {
+      dbConnectionPromise = null;
+      reject(request.error);
+    };
   });
+
+  return dbConnectionPromise;
 }
 
 export const cryptoStorage = {

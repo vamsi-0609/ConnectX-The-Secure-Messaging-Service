@@ -125,11 +125,13 @@ public class WebSocketMessageController {
 
     @MessageMapping("/message.delivered")
     public void handleMessageDelivered(@Payload WsEvent event, Principal principal) {
-        if (event != null && event.getPayload() != null) {
-            Long messageId = extractLong(event.getPayload(), "messageId");
-            if (messageId != null) {
-                messageService.markDelivered(messageId);
-            }
+        Long currentUserId = resolveCurrentUserId(principal);
+        if (currentUserId == null || event == null || event.getPayload() == null) {
+            return;
+        }
+        Long messageId = extractLong(event.getPayload(), "messageId");
+        if (messageId != null) {
+            messageService.markDelivered(messageId, currentUserId);
         }
     }
 
@@ -140,18 +142,21 @@ public class WebSocketMessageController {
         }
 
         Long currentUserId = resolveCurrentUserId(principal);
+        if (currentUserId == null) {
+            return;
+        }
         Long conversationId = extractLong(event.getPayload(), "conversationId");
         Long maxMessageId = extractLong(event.getPayload(), "maxMessageId");
         if (maxMessageId == null) {
             maxMessageId = extractLong(event.getPayload(), "upToMessageId");
         }
 
-        if (conversationId != null && currentUserId != null) {
+        if (conversationId != null) {
             messageService.markConversationAsRead(conversationId, currentUserId, maxMessageId);
         } else {
             Long messageId = extractLong(event.getPayload(), "messageId");
             if (messageId != null) {
-                messageService.markRead(messageId);
+                messageService.markRead(messageId, currentUserId);
             }
         }
     }
@@ -173,6 +178,11 @@ public class WebSocketMessageController {
 
         Long conversationId = extractLong(event.getPayload(), "conversationId");
         if (conversationId == null) {
+            return;
+        }
+
+        boolean isMember = conversationMemberRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull(conversationId, sender.getId());
+        if (!isMember) {
             return;
         }
 

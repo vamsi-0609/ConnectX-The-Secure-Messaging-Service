@@ -64,6 +64,14 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
     [messages, currentUserId]
   );
 
+  const messagesById = useMemo(() => {
+    const map = new Map<number, Message>();
+    for (const m of messages) {
+      map.set(m.id, m);
+    }
+    return map;
+  }, [messages]);
+
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -127,6 +135,26 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
 
     observer.observe(container);
     return () => observer.disconnect();
+  }, [scrollToBottom]);
+
+  // Re-pin to the bottom when the mobile on-screen keyboard opens/closes or the
+  // window otherwise resizes (orientation change). The keyboard shrinks the
+  // visual viewport without the message container's own content size changing,
+  // so the ResizeObserver above never fires for it -- without this, the last
+  // couple of messages end up hidden behind the keyboard/just above the fold.
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const handleViewportResize = () => {
+      if (isNearBottomRef.current) {
+        scrollToBottom('auto');
+      }
+    };
+    viewport?.addEventListener('resize', handleViewportResize);
+    window.addEventListener('resize', handleViewportResize);
+    return () => {
+      viewport?.removeEventListener('resize', handleViewportResize);
+      window.removeEventListener('resize', handleViewportResize);
+    };
   }, [scrollToBottom]);
 
   useLayoutEffect(() => {
@@ -222,6 +250,11 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
                     onReplyMessage={onReplyMessage}
                     onReactMessage={onReactMessage}
                     onScrollToMessage={scrollToMessage}
+                    quotedMessage={
+                      item.message.replyToMessageId
+                        ? messagesById.get(item.message.replyToMessageId)
+                        : undefined
+                    }
                     onEditMessage={onEditMessage}
                     onPinMessage={onPinMessage}
                     onUnpinMessage={onUnpinMessage}

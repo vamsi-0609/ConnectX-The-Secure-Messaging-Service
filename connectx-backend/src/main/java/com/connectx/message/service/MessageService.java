@@ -202,7 +202,11 @@ public class MessageService {
             if (memberUserId.equals(currentUserId)) {
                 continue;
             }
-            if (conversationService.restoreConversationVisibilityForUser(conversation.getId(), memberUserId, messageSentAt)) {
+            // Skip the restore-visibility round trip entirely for the common case (member
+            // hasn't deleted this conversation) -- restoreConversationVisibilityForUser
+            // would only re-fetch this same row and immediately no-op anyway.
+            if (member.getDeletedAt() != null
+                    && conversationService.restoreConversationVisibilityForUser(conversation.getId(), memberUserId, messageSentAt)) {
                 restoredUsernames.add(member.getUser().getUsername());
             }
         }
@@ -573,8 +577,13 @@ public class MessageService {
     }
 
     @Transactional
-    public void markDelivered(Long messageId) {
+    public void markDelivered(Long messageId, Long currentUserId) {
         messageRepository.findById(messageId).ifPresent(m -> {
+            boolean isMember = conversationMemberRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull(
+                    m.getConversation().getId(), currentUserId);
+            if (!isMember) {
+                return;
+            }
             if (m.getDeliveredAt() == null) {
                 Instant now = Instant.now();
                 m.setDeliveredAt(now);
@@ -597,8 +606,13 @@ public class MessageService {
     }
 
     @Transactional
-    public void markRead(Long messageId) {
+    public void markRead(Long messageId, Long currentUserId) {
         messageRepository.findById(messageId).ifPresent(m -> {
+            boolean isMember = conversationMemberRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull(
+                    m.getConversation().getId(), currentUserId);
+            if (!isMember) {
+                return;
+            }
             Instant now = Instant.now();
             boolean updated = false;
             if (m.getDeliveredAt() == null) {
@@ -635,6 +649,11 @@ public class MessageService {
 
     @Transactional
     public void markConversationAsRead(Long conversationId, Long currentUserId, Long maxMessageId) {
+        boolean isMember = conversationMemberRepository.existsByConversationIdAndUserIdAndDeletedAtIsNull(conversationId, currentUserId);
+        if (!isMember) {
+            return;
+        }
+
         // Opening/reading the conversation clears any manual "mark as unread" override,
         // regardless of whether there happen to be new messages from others to mark read.
         conversationService.clearManuallyMarkedUnreadIfSet(conversationId, currentUserId);

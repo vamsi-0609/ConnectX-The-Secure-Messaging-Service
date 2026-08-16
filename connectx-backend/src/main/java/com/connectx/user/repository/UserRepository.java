@@ -1,6 +1,7 @@
 package com.connectx.user.repository;
 
 import com.connectx.user.entity.User;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -18,5 +19,5 @@ public interface UserRepository extends JpaRepository<User, Long> {
 
     boolean existsByEmail(String email);
 
-    List<User> findByUsernameContainingIgnoreCase(String username);
+    List<User> findByUsernameContainingIgnoreCase(String username, Pageable pageable);
 }

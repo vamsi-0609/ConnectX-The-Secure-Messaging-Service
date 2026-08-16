@@ -26,6 +26,7 @@ import { LocationMessageContent } from './LocationMessageContent';
 import { DocumentMessageContent } from './DocumentMessageContent';
 import { getGoogleMapsLink } from '../../utils/googleMaps';
 import { saveImageToGallery } from '../../utils/saveMedia';
+import { linkifyText } from '../../utils/linkify';
 
 const QUICK_REACTIONS = ['❤️', '😂', '👍', '😮', '😢', '🔥'];
 const EDIT_WINDOW_MS = 15 * 60 * 1000;
@@ -102,6 +103,8 @@ interface MessageBubbleProps {
   onReplyMessage?: (message: Message) => void;
   onReactMessage?: (messageId: number, reaction: string) => void;
   onScrollToMessage?: (messageId: number) => void;
+  /** The locally-known copy of the message being replied to, if still loaded, used to show its real content in the quote card. */
+  quotedMessage?: Message;
   onEditMessage?: (message: Message) => void;
   onPinMessage?: (messageId: number) => void;
   onUnpinMessage?: (messageId: number) => void;
@@ -125,6 +128,7 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
   onReplyMessage,
   onReactMessage,
   onScrollToMessage,
+  quotedMessage,
   onEditMessage,
   onPinMessage,
   onUnpinMessage,
@@ -428,33 +432,43 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
           </div>
         )}
         {/* Reply Quote Card if this message is replying to another message */}
-        {message.replyToMessageId && (
-          <div
-            onClick={() => onScrollToMessage?.(message.replyToMessageId!)}
-            className="mb-1.5 p-2 rounded-lg bg-black/25 hover:bg-black/35 active:scale-[0.98] border-l-4 border-indigo-400 cursor-pointer text-xs transition-all select-none"
-            role="button"
-            tabIndex={0}
-            title="Click to view quoted message"
-          >
-            <div className="font-semibold text-indigo-300 dark:text-indigo-200 truncate flex items-center gap-1">
-              <CornerUpLeft className="w-3 h-3" />
-              <span>{message.replyToSenderUsername || 'User'}</span>
+        {message.replyToMessageId && (() => {
+          // Prefer the real content of the locally-loaded original message (like
+          // WhatsApp does) over the backend's replyToCaption, which is only ever
+          // populated for media captions -- for TEXT replies it's always empty
+          // since the server never sees plaintext in an E2E-encrypted chat.
+          const quotedType = quotedMessage?.messageType || message.replyToMessageType;
+          const quotedCaption = quotedMessage?.caption ?? message.replyToCaption;
+          const quotedText = quotedMessage?.decryptedContent || message.replyToCaption;
+
+          return (
+            <div
+              onClick={() => onScrollToMessage?.(message.replyToMessageId!)}
+              className="mb-1.5 p-2 rounded-lg bg-black/25 hover:bg-black/35 active:scale-[0.98] border-l-4 border-indigo-400 cursor-pointer text-xs transition-all select-none"
+              role="button"
+              tabIndex={0}
+              title="Click to view quoted message"
+            >
+              <div className="font-semibold text-indigo-300 dark:text-indigo-200 truncate flex items-center gap-1">
+                <CornerUpLeft className="w-3 h-3" />
+                <span>{message.replyToSenderUsername || 'User'}</span>
+              </div>
+              <div className="text-slate-200/90 truncate mt-0.5">
+                {message.replyToDeleted ? (
+                  <span className="italic text-slate-400">This message was deleted</span>
+                ) : quotedType === 'IMAGE' ? (
+                  '📷 Photo' + (quotedCaption ? ` — ${quotedCaption}` : '')
+                ) : quotedType === 'LOCATION' ? (
+                  '📍 Location'
+                ) : quotedType === 'DOCUMENT' ? (
+                  '📄 ' + (quotedCaption || 'Document')
+                ) : (
+                  quotedText || 'Message'
+                )}
+              </div>
             </div>
-            <div className="text-slate-200/90 truncate mt-0.5">
-              {message.replyToDeleted ? (
-                <span className="italic text-slate-400">This message was deleted</span>
-              ) : message.replyToMessageType === 'IMAGE' ? (
-                '📷 Photo' + (message.replyToCaption ? ` — ${message.replyToCaption}` : '')
-              ) : message.replyToMessageType === 'LOCATION' ? (
-                '📍 Location'
-              ) : message.replyToMessageType === 'DOCUMENT' ? (
-                '📄 ' + (message.replyToCaption || 'Document')
-              ) : (
-                message.replyToCaption || 'Quoted message'
-              )}
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         {message.deletedForEveryone ? (
           <p className="text-xs italic text-slate-400 flex items-center gap-1.5 select-none">
@@ -503,7 +517,7 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
           </div>
         ) : (
           <p className="text-[13px] md:text-[15px] md:leading-snug leading-snug whitespace-pre-wrap break-words pr-1 select-none">
-            {message.decryptedContent || '🔒 Encrypted message'}
+            {message.decryptedContent ? linkifyText(message.decryptedContent) : '🔒 Encrypted message'}
           </p>
         )}
 

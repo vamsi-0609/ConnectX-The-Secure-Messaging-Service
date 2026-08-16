@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { X, Image as ImageIcon, FileText, Plus, Send, Loader2, AlertCircle } from 'lucide-react';
 import { MEDIA_IMAGE_ACCEPT, validateMediaImageFile } from '../../utils/mediaImage';
 
@@ -30,6 +30,20 @@ export const MediaBatchPreviewModal: React.FC<MediaBatchPreviewModalProps> = ({
 
   const addImageRef = useRef<HTMLInputElement>(null);
   const addDocRef = useRef<HTMLInputElement>(null);
+
+  // Recomputed only when the file list actually changes (not on every re-render,
+  // e.g. the `sending` toggle) -- the matching cleanup below revokes the previous
+  // batch of URLs the instant this one replaces it, and again on unmount.
+  const imagePreviewUrls = useMemo(
+    () => imageFiles.map((file) => URL.createObjectURL(file)),
+    [imageFiles]
+  );
+
+  useEffect(() => {
+    return () => {
+      imagePreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, [imagePreviewUrls]);
 
   const handleRemoveImage = (index: number) => {
     setImageFiles((prev) => prev.filter((_, i) => i !== index));
@@ -184,7 +198,7 @@ export const MediaBatchPreviewModal: React.FC<MediaBatchPreviewModalProps> = ({
 
               <div className="grid grid-cols-3 gap-2">
                 {imageFiles.map((file, idx) => {
-                  const previewUrl = URL.createObjectURL(file);
+                  const previewUrl = imagePreviewUrls[idx];
                   return (
                     <div key={`img-${idx}-${file.name}`} className="relative aspect-square rounded-xl overflow-hidden group border border-slate-700 bg-slate-800">
                       <img src={previewUrl} alt={file.name} className="w-full h-full object-cover" />

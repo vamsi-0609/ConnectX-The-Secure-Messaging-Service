@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { X, Copy, Trash2, Forward, Star, SmilePlus, Pin, PinOff, CornerUpLeft, Pencil } from 'lucide-react';
 import { User, Message, ReplyTarget, Conversation } from '../../types';
 import { ChatHeader } from './ChatHeader';
@@ -139,33 +139,36 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
     setWallpaper(nextWallpaper);
   };
 
-  const handleReplyMessage = (message: Message) => {
-    let preview = 'Message';
-    if (message.messageType === 'IMAGE') {
-      preview = '📷 Photo' + (message.caption ? ` — ${message.caption}` : '');
-    } else if (message.messageType === 'LOCATION') {
-      preview = '📍 Location' + (message.locationLabel ? ` — ${message.locationLabel}` : '');
-    } else if (message.messageType === 'DOCUMENT') {
-      preview = '📄 ' + (message.caption || 'Document');
-    } else if (message.decryptedContent) {
-      preview = message.decryptedContent;
-    } else if (message.caption) {
-      preview = message.caption;
-    }
+  const handleReplyMessage = useCallback(
+    (message: Message) => {
+      let preview = 'Message';
+      if (message.messageType === 'IMAGE') {
+        preview = '📷 Photo' + (message.caption ? ` — ${message.caption}` : '');
+      } else if (message.messageType === 'LOCATION') {
+        preview = '📍 Location' + (message.locationLabel ? ` — ${message.locationLabel}` : '');
+      } else if (message.messageType === 'DOCUMENT') {
+        preview = '📄 ' + (message.caption || 'Document');
+      } else if (message.decryptedContent) {
+        preview = message.decryptedContent;
+      } else if (message.caption) {
+        preview = message.caption;
+      }
 
-    setEditTarget(null);
-    setReplyTarget({
-      messageId: message.id,
-      senderUsername: message.senderUsername || (message.senderUserId === currentUserId ? 'You' : 'User'),
-      messageType: message.messageType || 'TEXT',
-      previewText: preview,
-    });
-  };
+      setEditTarget(null);
+      setReplyTarget({
+        messageId: message.id,
+        senderUsername: message.senderUsername || (message.senderUserId === currentUserId ? 'You' : 'User'),
+        messageType: message.messageType || 'TEXT',
+        previewText: preview,
+      });
+    },
+    [currentUserId]
+  );
 
-  const handleEditMessageTrigger = (message: Message) => {
+  const handleEditMessageTrigger = useCallback((message: Message) => {
     setReplyTarget(null);
     setEditTarget(message);
-  };
+  }, []);
 
   const handleSubmitEdit = async (newPlaintext: string) => {
     if (!editTarget || !onEditMessage) return;
@@ -173,12 +176,12 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
     setEditTarget(null);
   };
 
-  const handleEnterSelectionMode = (message: Message) => {
+  const handleEnterSelectionMode = useCallback((message: Message) => {
     setSelectionMode(true);
     setSelectedMessageIds(new Set([message.id]));
-  };
+  }, []);
 
-  const handleToggleSelect = (message: Message) => {
+  const handleToggleSelect = useCallback((message: Message) => {
     setSelectedMessageIds((prev) => {
       const next = new Set(prev);
       if (next.has(message.id)) {
@@ -191,7 +194,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
       }
       return next;
     });
-  };
+  }, []);
 
   const handleExitSelectionMode = () => {
     setSelectionMode(false);
@@ -276,9 +279,9 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
     handleExitSelectionMode();
   };
 
-  const handleForwardMessage = (message: Message) => {
+  const handleForwardMessage = useCallback((message: Message) => {
     setForwardQueue([message]);
-  };
+  }, []);
 
   const handleForwardSelected = () => {
     if (selectedMessages.length === 0) return;
