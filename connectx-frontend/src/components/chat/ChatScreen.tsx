@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { X, Copy, Trash2, Forward, Star, SmilePlus, Pin, PinOff, CornerUpLeft, Pencil } from 'lucide-react';
-import { User, Message, ReplyTarget, Conversation } from '../../types';
+import { User, Message, ReplyTarget, Conversation, ConnectionRequestDto, RelationshipStatus } from '../../types';
 import { ChatHeader } from './ChatHeader';
 import { MessageFeed } from './MessageFeed';
 import { MessageInput } from './MessageInput';
+import { ChatRelationshipGate } from './ChatRelationshipGate';
 import { ChatWallpaperBackground } from './ChatWallpaperBackground';
 import { ForwardMessageModal } from './ForwardMessageModal';
 import {
@@ -78,6 +79,19 @@ interface ChatScreenProps {
   onScrollToPinned?: (messageId: number) => void;
   initialSharedMedia?: { images: File[]; docs: File[] } | null;
   onSharedMediaConsumed?: () => void;
+  // Current relationship with `recipient` (from utils/relationship.ts's getRelationshipStatus(),
+  // the same derivation UserSearchModal/ContactInfoDrawer use). Only 'CONNECTED' renders the real
+  // composer; every other value renders ChatRelationshipGate instead -- a past conversation must
+  // never grant a currently-valid send permission. Undefined (e.g. recipient unresolved) also
+  // gates, failing safe rather than open.
+  relationship?: RelationshipStatus;
+  sentRequest?: ConnectionRequestDto;
+  receivedRequest?: ConnectionRequestDto;
+  onSendConnectionRequest?: (userId: number) => Promise<void>;
+  onCancelConnectionRequest?: (requestId: number, userId: number) => Promise<void>;
+  onAcceptConnectionRequest?: (requestId: number, userId: number) => Promise<void>;
+  onRejectConnectionRequest?: (requestId: number, userId: number) => Promise<void>;
+  onUnblockUser?: (userId: number) => Promise<void>;
 }
 
 export const ChatScreen: React.FC<ChatScreenProps> = ({
@@ -116,6 +130,14 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   conversations,
   initialSharedMedia,
   onSharedMediaConsumed,
+  relationship,
+  sentRequest,
+  receivedRequest,
+  onSendConnectionRequest,
+  onCancelConnectionRequest,
+  onAcceptConnectionRequest,
+  onRejectConnectionRequest,
+  onUnblockUser,
 }) => {
   const [wallpaper, setWallpaper] = useState<ChatWallpaperSetting>(() =>
     getConversationWallpaper(conversationId)
@@ -491,25 +513,42 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
         </div>
       </main>
 
-      <footer className="chat-composer flex-shrink-0">
-        <MessageInput
-          conversationId={conversationId}
-          recipientUserId={recipient?.id || 0}
-          currentUserId={currentUserId}
-          replyTarget={replyTarget}
-          onCancelReply={() => setReplyTarget(null)}
-          editTarget={editTarget}
-          onCancelEdit={() => setEditTarget(null)}
-          onSubmitEdit={handleSubmitEdit}
-          onOptimisticMessage={onOptimisticMessage}
-          onOptimisticImageMessage={onOptimisticImageMessage}
-          onOptimisticLocationMessage={onOptimisticLocationMessage}
-          onOptimisticDocumentMessage={onOptimisticDocumentMessage}
-          onMessageSent={onMessageSent}
-          initialSharedMedia={initialSharedMedia}
-          onSharedMediaConsumed={onSharedMediaConsumed}
-        />
-      </footer>
+      {relationship === 'CONNECTED' ? (
+        <footer className="chat-composer flex-shrink-0">
+          <MessageInput
+            conversationId={conversationId}
+            recipientUserId={recipient?.id || 0}
+            currentUserId={currentUserId}
+            replyTarget={replyTarget}
+            onCancelReply={() => setReplyTarget(null)}
+            editTarget={editTarget}
+            onCancelEdit={() => setEditTarget(null)}
+            onSubmitEdit={handleSubmitEdit}
+            onOptimisticMessage={onOptimisticMessage}
+            onOptimisticImageMessage={onOptimisticImageMessage}
+            onOptimisticLocationMessage={onOptimisticLocationMessage}
+            onOptimisticDocumentMessage={onOptimisticDocumentMessage}
+            onMessageSent={onMessageSent}
+            initialSharedMedia={initialSharedMedia}
+            onSharedMediaConsumed={onSharedMediaConsumed}
+          />
+        </footer>
+      ) : (
+        recipient && (
+          <ChatRelationshipGate
+            recipientId={recipient.id}
+            recipientName={recipient.displayName || recipient.username}
+            relationship={relationship ?? 'NOT_CONNECTED'}
+            sentRequest={sentRequest}
+            receivedRequest={receivedRequest}
+            onSendRequest={onSendConnectionRequest}
+            onCancelRequest={onCancelConnectionRequest}
+            onAcceptRequest={onAcceptConnectionRequest}
+            onRejectRequest={onRejectConnectionRequest}
+            onUnblock={onUnblockUser}
+          />
+        )
+      )}
 
       {forwardQueue && (
         <ForwardMessageModal

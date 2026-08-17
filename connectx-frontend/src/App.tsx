@@ -1690,6 +1690,23 @@ export const App: React.FC = () => {
     upsertConversation,
   ]);
 
+  // Defense-in-depth send-boundary guard: ChatScreen already hides the composer entirely (renders
+  // ChatRelationshipGate instead) whenever the relationship isn't CONNECTED, so in normal operation
+  // none of the four onOptimistic*Message callbacks below can even be invoked for a gated
+  // conversation. This is the backstop for the narrow race where the relationship changes (e.g.
+  // the other side removes the connection) after the composer mounted but before this exact
+  // callback fires -- it must never let a message that will be rejected by the backend appear
+  // client-side as if it sent successfully. Purely a UX preflight; the backend remains the actual
+  // authorization boundary and is not weakened or bypassed by this check.
+  const canMessageRecipient = (targetUserId: number): boolean =>
+    getRelationshipStatus(targetUserId, {
+      conversations,
+      connectedUserIds,
+      blockedUserIds,
+      sentRequestsByUserId,
+      receivedRequestsByUserId,
+    }) === 'CONNECTED';
+
   const handleOptimisticMessage = (
     plaintext: string,
     ciphertext: string,
@@ -1699,6 +1716,11 @@ export const App: React.FC = () => {
     clientTempId?: string
   ) => {
     if (!activeConversation || !currentUser) return;
+    const peer = getOtherParticipant(activeConversation, currentUser.id);
+    if (!peer || !canMessageRecipient(peer.id)) {
+      console.warn('[ConnectX] Blocked optimistic message insert: current relationship does not permit messaging.');
+      return;
+    }
     const tempIdStr = clientTempId || `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     const tempMessage: Message = {
@@ -1749,6 +1771,11 @@ export const App: React.FC = () => {
     clientTempId?: string
   ) => {
     if (!activeConversation || !currentUser) return;
+    const peer = getOtherParticipant(activeConversation, currentUser.id);
+    if (!peer || !canMessageRecipient(peer.id)) {
+      console.warn('[ConnectX] Blocked optimistic image insert: current relationship does not permit messaging.');
+      return;
+    }
     const tempIdStr = clientTempId || `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     const tempMessage: Message = {
@@ -1801,6 +1828,11 @@ export const App: React.FC = () => {
     clientTempId?: string
   ) => {
     if (!activeConversation || !currentUser) return;
+    const peer = getOtherParticipant(activeConversation, currentUser.id);
+    if (!peer || !canMessageRecipient(peer.id)) {
+      console.warn('[ConnectX] Blocked optimistic document insert: current relationship does not permit messaging.');
+      return;
+    }
     const tempIdStr = clientTempId || `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     const tempMessage: Message = {
@@ -1852,6 +1884,11 @@ export const App: React.FC = () => {
     clientTempId?: string
   ) => {
     if (!activeConversation || !currentUser) return;
+    const peer = getOtherParticipant(activeConversation, currentUser.id);
+    if (!peer || !canMessageRecipient(peer.id)) {
+      console.warn('[ConnectX] Blocked optimistic location insert: current relationship does not permit messaging.');
+      return;
+    }
     const tempIdStr = clientTempId || `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     const tempMessage: Message = {
@@ -2407,6 +2444,21 @@ export const App: React.FC = () => {
       })
     : undefined;
 
+  // Same derivation, independent of whether ContactInfoDrawer happens to be open -- this is what
+  // decides whether ChatScreen renders the real composer or ChatRelationshipGate. A past DIRECT
+  // conversation (LEGACY_CHAT) must never grant a currently-valid send permission, so only
+  // 'CONNECTED' allows the composer; everything else (including an unresolved recipient) gates it.
+  const activeChatRecipient = getRecipientUser(activeConversation);
+  const activeChatRelationship = activeChatRecipient
+    ? getRelationshipStatus(activeChatRecipient.id, {
+        conversations,
+        connectedUserIds,
+        blockedUserIds,
+        sentRequestsByUserId,
+        receivedRequestsByUserId,
+      })
+    : undefined;
+
   return (
     <div className="app-shell flex flex-col bg-slate-100 dark:bg-[#090d16] transition-colors duration-300">
       {status !== 'CONNECTED' && (
@@ -2524,6 +2576,16 @@ export const App: React.FC = () => {
               conversations={conversations}
               initialSharedMedia={pendingShare ? splitSharedFiles(pendingShare.files) : null}
               onSharedMediaConsumed={() => setPendingShare(null)}
+              relationship={activeChatRelationship}
+              sentRequest={activeChatRecipient ? sentRequestsByUserId.get(activeChatRecipient.id) : undefined}
+              receivedRequest={
+                activeChatRecipient ? receivedRequestsByUserId.get(activeChatRecipient.id) : undefined
+              }
+              onSendConnectionRequest={handleSendConnectionRequest}
+              onCancelConnectionRequest={handleCancelConnectionRequest}
+              onAcceptConnectionRequest={handleAcceptConnectionRequest}
+              onRejectConnectionRequest={handleRejectConnectionRequest}
+              onUnblockUser={handleUnblockUser}
             />
 
             {showInfoDrawer && (
