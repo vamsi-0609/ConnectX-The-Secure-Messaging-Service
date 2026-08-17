@@ -37,6 +37,7 @@ import {
 import { applyTheme, isDarkTheme } from './utils/theme';
 import { soundManager } from './utils/notificationSound';
 import { browserNotifications } from './utils/browserNotifications';
+import { resolveProfileImageUrl } from './utils/profileImage';
 import { appBadge } from './utils/appBadge';
 import { registerWebPushSubscription } from './utils/pushSubscription';
 import {
@@ -139,6 +140,25 @@ function previewFromMessage(message: Message, text?: string): ConversationPrevie
   };
 }
 
+// Mirrors the background Web Push notification body exactly (see MessageService/WebPushService
+// on the backend) so the foreground and background OS notifications read the same -- deliberately
+// NOT previewFromMessage's richer list-preview text (captions, emoji), which is scoped to the
+// chat list sidebar, not the OS notification.
+function notificationBodyFromMessage(message: Message): string {
+  if (message.messageType === 'IMAGE') {
+    return 'Photo';
+  } else if (message.messageType === 'LOCATION') {
+    return 'Location';
+  } else if (message.messageType === 'DOCUMENT') {
+    return 'Document';
+  }
+  // TEXT: safe here (unlike the backend push payload) because this message has already been
+  // decrypted locally in this browser -- see decryptSingleMessage at this function's call site.
+  // This plaintext is only ever used for this local OS notification call; it is never sent to
+  // the backend or a push provider.
+  return message.decryptedContent || 'New message';
+}
+
 function messageFromWsPayload(payload: Record<string, unknown>): Message {
   return {
     id: payload.messageId as number,
@@ -217,6 +237,12 @@ export const App: React.FC = () => {
   // public/sw.js), waiting on the user to pick a conversation. Cleared as soon
   // as ChatScreen/MessageInput consumes it into the normal media-send flow.
   const [pendingShare, setPendingShare] = useState<PendingShare | null>(null);
+
+  // A conversation to open once `conversations` has loaded, requested either via the
+  // `?conversation=` URL param (SW opened a fresh window from a notification click while the
+  // PWA was closed) or an OPEN_CONVERSATION postMessage from the SW (PWA was already running --
+  // see the two useEffects below and public/sw.js's notificationclick handler).
+  const [pendingConversationId, setPendingConversationId] = useState<number | null>(null);
 
   const { subscribe, reconnect, status } = useWebSocket();
 
@@ -331,6 +357,38 @@ export const App: React.FC = () => {
         if (share) setPendingShare(share);
       })
       .catch((err) => console.warn('[ConnectX] Failed to load shared files:', err));
+  }, []);
+
+  // One-time: pick up a `?conversation=` param left by the Service Worker's notificationclick
+  // handler when it had to open a brand-new window (PWA was fully closed) -- see
+  // public/sw.js's `targetUrl`. Stripped immediately so a refresh doesn't re-trigger it.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const convParam = params.get('conversation');
+    if (!convParam) return;
+
+    const url = new URL(window.location.href);
+    url.searchParams.delete('conversation');
+    window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash);
+
+    const convId = Number(convParam);
+    if (Number.isFinite(convId)) {
+      setPendingConversationId(convId);
+    }
+  }, []);
+
+  // One-time: listen for the OPEN_CONVERSATION message the Service Worker posts to an
+  // already-open client instead of opening a new window (PWA was already running) -- see
+  // public/sw.js's notificationclick handler.
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    const handleSwMessage = (event: MessageEvent) => {
+      if (event.data && event.data.type === 'OPEN_CONVERSATION' && typeof event.data.conversationId === 'number') {
+        setPendingConversationId(event.data.conversationId);
+      }
+    };
+    navigator.serviceWorker.addEventListener('message', handleSwMessage);
+    return () => navigator.serviceWorker.removeEventListener('message', handleSwMessage);
   }, []);
 
   useEffect(() => {
@@ -450,6 +508,31 @@ export const App: React.FC = () => {
           }
         }
       });
+
+      // Best-effort, local-only upgrade: the server never sends TEXT plaintext, so any
+      // conversation still sitting on the generic "🔒 Encrypted message" fallback here is one
+      // this session hasn't decrypted yet. Check whether THIS device already decrypted that
+      // exact message in a past session -- keyManager.getDecryptedMessage reads the in-memory
+      // cache then the persisted decrypted_messages IndexedDB store, never the network -- so
+      // this can only upgrade the label, never trigger a request per conversation.
+      const undecryptedTextConvs = data.filter(
+        (conv) =>
+          conv.lastMessageId != null &&
+          conv.lastMessageType === 'TEXT' &&
+          syncedPreviews[conv.id]?.text === '🔒 Encrypted message' &&
+          syncedPreviews[conv.id]?.messageId === conv.lastMessageId
+      );
+      if (undecryptedTextConvs.length > 0) {
+        await Promise.all(
+          undecryptedTextConvs.map(async (conv) => {
+            const cachedPlaintext = await keyManager.getDecryptedMessage(conv.lastMessageId!);
+            if (cachedPlaintext) {
+              syncedPreviews[conv.id] = { ...syncedPreviews[conv.id], text: cachedPlaintext };
+            }
+          })
+        );
+      }
+
       setConversationPreviews(syncedPreviews);
 
       setConversations(() => {
@@ -1072,10 +1155,16 @@ export const App: React.FC = () => {
               (conv?.mutedUntil && new Date(conv.mutedUntil).getTime() > Date.now());
 
             if (!isMuted) {
-              soundManager.playIncomingMessageSound();
-
-              const senderName = (payload.senderUsername as string) || 'ConnectX User';
-              const senderAvatar = conv ? getOtherParticipant(conv, currentUser.id)?.profileImageUrl : undefined;
+              // No soundManager.playIncomingMessageSound() here (unlike the active-conversation
+              // branch above, which has no notification to accompany) -- browserNotifications
+              // .showNotification() below shows a real OS notification, which the platform
+              // already sounds and vibrates for on its own (no `silent` flag is set, so the
+              // native/system notification sound applies). Playing the synthesized ding too
+              // would mean two audible cues for one message.
+              const peer = conv ? getOtherParticipant(conv, currentUser.id) : null;
+              const senderName =
+                (peer?.displayName?.trim() || peer?.username || (payload.senderUsername as string)) || 'ConnectX User';
+              const senderAvatar = peer?.profileImageUrl;
 
               setCurrentToast({
                 id: `toast-${msgId}-${Date.now()}`,
@@ -1086,8 +1175,13 @@ export const App: React.FC = () => {
                 timestamp: (payload.sentAt as string) || new Date().toISOString(),
               });
 
-              browserNotifications.showNotification(`New message from ${senderName}`, {
-                body: preview.text,
+              // Mirrors the background Web Push notification (title/body/icon/vibration) so
+              // foreground and background OS notifications look, sound, and feel the same --
+              // see notificationBodyFromMessage above and WebPushService/MessageService on the
+              // backend for the equivalent background-path construction.
+              browserNotifications.showNotification(senderName, {
+                body: notificationBodyFromMessage(processedMsg),
+                icon: resolveProfileImageUrl(senderAvatar),
                 conversationId,
                 onClick: () => handleSelectToastConversation(conversationId),
               });
@@ -2002,6 +2096,18 @@ export const App: React.FC = () => {
     },
     [fetchAndSetMessagesForConversation]
   );
+
+  // Resolves a pending notification-click conversation (see the two useEffects above) as soon
+  // as `conversations` actually has it -- handles both orderings: the id can arrive before or
+  // after the conversation list finishes loading.
+  useEffect(() => {
+    if (pendingConversationId == null) return;
+    const target = conversations.find((c) => c.id === pendingConversationId);
+    if (target) {
+      handleSelectConversation(target);
+      setPendingConversationId(null);
+    }
+  }, [pendingConversationId, conversations, handleSelectConversation]);
 
   const handleUserUpdated = useCallback((updatedUser: User) => {
     setCurrentUser(updatedUser);

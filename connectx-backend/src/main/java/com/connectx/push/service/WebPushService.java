@@ -13,6 +13,7 @@ import org.bouncycastle.jce.spec.ECNamedCurveParameterSpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -50,6 +51,14 @@ public class WebPushService {
     private final UserRepository userRepository;
     private final HttpClient httpClient;
     private final ExecutorService asyncPushExecutor = Executors.newVirtualThreadPerTaskExecutor();
+    // Self-injected (via @Lazy, same pattern as MessageService#self) so
+    // removeStaleSubscription below can be called as a real proxied bean method --
+    // required for its own @Transactional to take effect, since Spring's AOP proxy
+    // is bypassed on a plain `this.` call from inside the same class. This matters here
+    // because dispatchPushNotification runs off the calling thread's transaction context
+    // anyway (it's invoked from a virtual-thread executor task), so the delete needs its
+    // own transaction rather than inheriting one that was never there.
+    private final WebPushService self;
 
     private KeyPair vapidKeyPair;
     private String vapidPublicKeyBase64Url;
@@ -58,12 +67,14 @@ public class WebPushService {
                           UserRepository userRepository,
                           @Value("${connectx.push.subject:mailto:admin@connectx.com}") String pushSubject,
                           @Value("${connectx.push.vapid.private-key:}") String configuredPrivateKey,
-                          @Value("${connectx.push.vapid.public-key:}") String configuredPublicKey) {
+                          @Value("${connectx.push.vapid.public-key:}") String configuredPublicKey,
+                          @Lazy WebPushService self) {
         this.pushSubscriptionRepository = pushSubscriptionRepository;
         this.userRepository = userRepository;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
+        this.self = self;
         initVapidKeys(configuredPrivateKey, configuredPublicKey);
     }
 
@@ -168,7 +179,25 @@ public class WebPushService {
         }
     }
 
+    // Deletes are scoped to just this call (not wrapped around the FCM HTTP request in
+    // dispatchPushNotification) so a slow push provider can't hold a DB transaction open.
+    // Derived delete-by-endpoint queries are a no-op if nothing matches, so this is safe
+    // to call more than once for the same endpoint.
+    @Transactional
+    public void removeStaleSubscription(String endpoint) {
+        pushSubscriptionRepository.deleteByEndpoint(endpoint);
+    }
+
     public void sendPushToUserAsync(Long recipientUserId, String title, String body, Long conversationId) {
+        sendPushToUserAsync(recipientUserId, title, body, conversationId, null);
+    }
+
+    /**
+     * @param iconUrl sender's profile image URL (relative, e.g. "/api/v1/profile-images/{id}"),
+     *                shown as the notification icon where the Service Worker/OS supports it.
+     *                Null/blank is fine -- sw.js already falls back to the app icon.
+     */
+    public void sendPushToUserAsync(Long recipientUserId, String title, String body, Long conversationId, String iconUrl) {
         asyncPushExecutor.submit(() -> {
             try {
                 List<UserPushSubscription> subscriptions = pushSubscriptionRepository.findByUserId(recipientUserId);
@@ -176,12 +205,19 @@ public class WebPushService {
                     return;
                 }
 
+                // Optional field: only appended when present, so the payload shape for
+                // subscriptions without an avatar is unchanged from before this field existed.
+                String iconField = (iconUrl != null && !iconUrl.isBlank())
+                        ? ",\"icon\":\"" + escapeJson(iconUrl) + "\""
+                        : "";
+
                 String payloadJson = String.format(
-                        "{\"title\":\"%s\",\"body\":\"%s\",\"conversationId\":%d,\"url\":\"/?conversation=%d\"}",
+                        "{\"title\":\"%s\",\"body\":\"%s\",\"conversationId\":%d,\"url\":\"/?conversation=%d\"%s}",
                         escapeJson(title),
                         escapeJson(body),
                         conversationId,
-                        conversationId
+                        conversationId,
+                        iconField
                 );
 
                 for (UserPushSubscription sub : subscriptions) {
@@ -201,15 +237,20 @@ public class WebPushService {
             String jwtToken = createVapidJwt(origin);
             String authHeader = "vapid t=" + jwtToken + ", k=" + vapidPublicKeyBase64Url;
 
-            byte[] bodyBytes = payloadJson.getBytes(StandardCharsets.UTF_8);
+            // RFC 8291: push services and browsers both require a non-empty payload to be
+            // aes128gcm-encrypted with the subscription's own p256dh/auth keys -- a plaintext
+            // body (the previous behavior) gets rejected or silently dropped before it ever
+            // reaches the Service Worker's `push` event.
+            byte[] encryptedBody = WebPushPayloadEncryptor.encrypt(
+                    sub.getP256dhKey(), sub.getAuthKey(), payloadJson.getBytes(StandardCharsets.UTF_8));
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(endpointUri)
                     .header("Authorization", authHeader)
                     .header("TTL", "86400")
                     .header("Urgency", "high")
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofByteArray(bodyBytes))
+                    .header("Content-Encoding", "aes128gcm")
+                    .POST(HttpRequest.BodyPublishers.ofByteArray(encryptedBody))
                     .timeout(Duration.ofSeconds(10))
                     .build();
 
@@ -220,7 +261,7 @@ public class WebPushService {
                 log.info("[ConnectX WebPush] Push notification delivered successfully to endpoint (status {})", statusCode);
             } else if (statusCode == 404 || statusCode == 410) {
                 log.info("[ConnectX WebPush] Subscription expired or unsubscribed (status {}). Cleaning up...", statusCode);
-                pushSubscriptionRepository.deleteByEndpoint(sub.getEndpoint());
+                self.removeStaleSubscription(sub.getEndpoint());
             } else {
                 log.warn("[ConnectX WebPush] Push provider returned status {} body {}", statusCode, response.body());
             }

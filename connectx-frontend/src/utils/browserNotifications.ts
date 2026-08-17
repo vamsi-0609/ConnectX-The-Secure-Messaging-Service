@@ -60,6 +60,10 @@ export class BrowserNotificationManager {
       icon: options.icon || '/pwa-192x192.png',
       badge: '/pwa-192x192.png',
       tag: options.conversationId ? `conv-${options.conversationId}` : 'connectx-msg',
+      // Deliberately not silent, so this uses the platform's own default notification sound --
+      // the caller (App.tsx's WS handler) no longer plays its own synthesized sound alongside
+      // this notification, specifically to avoid two audible cues for one message.
+      silent: false,
       vibrate: [200, 100, 200],
       data: {
         conversationId: options.conversationId,

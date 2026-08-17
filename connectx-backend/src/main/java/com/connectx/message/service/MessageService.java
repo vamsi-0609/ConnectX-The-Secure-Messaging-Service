@@ -275,14 +275,25 @@ public class MessageService {
                     if (!member.getUser().getId().equals(currentUserId)) {
                         boolean isMuted = member.getMutedUntil() != null && member.getMutedUntil().isAfter(Instant.now());
                         if (!isMuted) {
-                            String pushTitle = "New message from " + currentUser.getUsername();
+                            String pushTitle = currentUser.getDisplayName() != null && !currentUser.getDisplayName().isBlank()
+                                    ? currentUser.getDisplayName()
+                                    : currentUser.getUsername();
+                            // TEXT is never previewed here: its "ciphertext" field (see above) is
+                            // genuinely E2EE and this method never decrypts it -- doing so just to
+                            // populate a push preview would mean the server routinely decrypting
+                            // "end-to-end encrypted" messages, which defeats the point regardless
+                            // of the push transport itself being encrypted. DOCUMENT similarly
+                            // never forwards its caption, even though captions aren't E2EE today
+                            // (encryptionAlgorithm "NONE"), to avoid handing the push provider any
+                            // more than the minimum needed to render a notification.
                             String pushBody = switch (savedMessage.getMessageType()) {
-                                case IMAGE -> "📷 Photo";
-                                case LOCATION -> "📍 Location";
-                                case DOCUMENT -> "📄 " + (savedMessage.getCaption() != null ? savedMessage.getCaption() : "Document");
-                                default -> "Sent you a message";
+                                case IMAGE -> "Photo";
+                                case LOCATION -> "Location";
+                                case DOCUMENT -> "Document";
+                                case TEXT -> "New message";
                             };
-                            webPushService.sendPushToUserAsync(member.getUser().getId(), pushTitle, pushBody, conversation.getId());
+                            webPushService.sendPushToUserAsync(member.getUser().getId(), pushTitle, pushBody,
+                                    conversation.getId(), currentUser.getProfileImageUrl());
                         }
                     }
                 }

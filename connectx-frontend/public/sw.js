@@ -189,6 +189,11 @@ self.addEventListener('push', (event) => {
     body: data.body || 'You have received a new secure message.',
     icon: data.icon || '/pwa-192x192.png',
     badge: '/pwa-192x192.png',
+    // Deliberately not silent: the SW can't play custom audio anyway (no page/AudioContext
+    // exists once the PWA is fully closed), so the platform's own default notification sound
+    // is the only -- and correct -- source of sound here. Explicit so it reads as an intentional
+    // choice rather than an accidental omission.
+    silent: false,
     vibrate: [200, 100, 200],
     data: {
       url: data.url || '/',
