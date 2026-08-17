@@ -193,7 +193,7 @@ export const UserSearchModal: React.FC<UserSearchModalProps> = ({
                       </>
                     )}
 
-                    {(relationship === 'CONNECTED' || relationship === 'LEGACY_CHAT') && (
+                    {relationship === 'CONNECTED' && (
                       <button
                         onClick={() => handleMessage(user)}
                         disabled={busy}
@@ -204,7 +204,11 @@ export const UserSearchModal: React.FC<UserSearchModalProps> = ({
                       </button>
                     )}
 
-                    {relationship === 'NOT_CONNECTED' && (
+                    {/* LEGACY_CHAT (past conversation, no current connection) is intentionally
+                        treated the same as NOT_CONNECTED here -- chat history must not grant a
+                        currently-valid "Message" action; see getRelationshipStatus's priority
+                        comment in relationship.ts. */}
+                    {(relationship === 'NOT_CONNECTED' || relationship === 'LEGACY_CHAT') && (
                       <button
                         onClick={() => withBusy(user.id, () => onSendRequest(user.id))}
                         disabled={busy}
