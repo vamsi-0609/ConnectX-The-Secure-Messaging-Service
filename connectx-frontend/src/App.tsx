@@ -30,6 +30,7 @@ import { authApi } from './api/authApi';
 import { connectionApi } from './api/connectionApi';
 import { blockApi } from './api/blockApi';
 import { ApiRequestError } from './api/apiClient';
+import { getRelationshipStatus } from './utils/relationship';
 import { keyManager } from './crypto/keyManager';
 import { decryptMessage } from './crypto/decryption';
 import { encryptMessage } from './crypto/encryption';
@@ -2392,6 +2393,20 @@ export const App: React.FC = () => {
     return <AuthModal onSuccess={handleAuthSuccess} />;
   }
 
+  // Computed once per render (not per action) so ContactInfoDrawer derives its relationship
+  // section from the exact same getRelationshipStatus() used by UserSearchModal -- one
+  // derivation mechanism, no second relationship-state system.
+  const infoDrawerRecipient = showInfoDrawer ? getRecipientUser(activeConversation) : null;
+  const infoDrawerRelationship = infoDrawerRecipient
+    ? getRelationshipStatus(infoDrawerRecipient.id, {
+        conversations,
+        connectedUserIds,
+        blockedUserIds,
+        sentRequestsByUserId,
+        receivedRequestsByUserId,
+      })
+    : undefined;
+
   return (
     <div className="app-shell flex flex-col bg-slate-100 dark:bg-[#090d16] transition-colors duration-300">
       {status !== 'CONNECTED' && (
@@ -2514,19 +2529,21 @@ export const App: React.FC = () => {
             {showInfoDrawer && (
               <React.Suspense fallback={null}>
                 <ContactInfoDrawer
-                  recipient={getRecipientUser(activeConversation)}
+                  recipient={infoDrawerRecipient}
                   onClose={() => setShowInfoDrawer(false)}
-                  isBlocked={Boolean(
-                    getRecipientUser(activeConversation) &&
-                      blockedUserIds.has(getRecipientUser(activeConversation)!.id)
-                  )}
+                  isBlocked={Boolean(infoDrawerRecipient && blockedUserIds.has(infoDrawerRecipient.id))}
                   onBlock={handleBlockUser}
                   onUnblock={handleUnblockUser}
-                  isConnected={Boolean(
-                    getRecipientUser(activeConversation) &&
-                      connectedUserIds.has(getRecipientUser(activeConversation)!.id)
-                  )}
+                  relationship={infoDrawerRelationship}
+                  sentRequest={infoDrawerRecipient ? sentRequestsByUserId.get(infoDrawerRecipient.id) : undefined}
+                  receivedRequest={
+                    infoDrawerRecipient ? receivedRequestsByUserId.get(infoDrawerRecipient.id) : undefined
+                  }
                   onRemoveConnection={handleRemoveConnection}
+                  onSendRequest={handleSendConnectionRequest}
+                  onCancelRequest={handleCancelConnectionRequest}
+                  onAcceptRequest={handleAcceptConnectionRequest}
+                  onRejectRequest={handleRejectConnectionRequest}
                 />
               </React.Suspense>
             )}

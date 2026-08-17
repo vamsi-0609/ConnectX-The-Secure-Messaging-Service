@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { ShieldCheck, X, ArrowLeft, Laptop, ShieldOff, UserMinus, Loader2 } from 'lucide-react';
-import { User, UserPublicKey } from '../../types';
+import { ShieldCheck, X, ArrowLeft, Laptop, ShieldOff, UserMinus, UserPlus, Check, XCircle, Clock, Loader2 } from 'lucide-react';
+import { User, UserPublicKey, ConnectionRequestDto, RelationshipStatus } from '../../types';
 import { deviceApi } from '../../api/deviceApi';
 import { UserAvatar } from '../common/UserAvatar';
 import { BlockUserConfirmDialog } from './BlockUserConfirmDialog';
@@ -12,8 +12,18 @@ interface ContactInfoDrawerProps {
   isBlocked?: boolean;
   onBlock?: (userId: number) => Promise<void>;
   onUnblock?: (userId: number) => Promise<void>;
-  isConnected?: boolean;
+  // Same RelationshipStatus produced by utils/relationship.ts's getRelationshipStatus() --
+  // the one derivation mechanism shared with UserSearchModal, not a second relationship system.
+  // LEGACY_CHAT and NOT_CONNECTED are treated identically here: a past conversation with no
+  // current connection is historical chat only, never a substitute for one.
+  relationship?: RelationshipStatus;
+  sentRequest?: ConnectionRequestDto;
+  receivedRequest?: ConnectionRequestDto;
   onRemoveConnection?: (userId: number) => Promise<void>;
+  onSendRequest?: (userId: number) => Promise<void>;
+  onCancelRequest?: (requestId: number, userId: number) => Promise<void>;
+  onAcceptRequest?: (requestId: number, userId: number) => Promise<void>;
+  onRejectRequest?: (requestId: number, userId: number) => Promise<void>;
 }
 
 export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({
@@ -22,8 +32,14 @@ export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({
   isBlocked = false,
   onBlock,
   onUnblock,
-  isConnected = false,
+  relationship,
+  sentRequest,
+  receivedRequest,
   onRemoveConnection,
+  onSendRequest,
+  onCancelRequest,
+  onAcceptRequest,
+  onRejectRequest,
 }) => {
   const [publicKeys, setPublicKeys] = useState<UserPublicKey[]>([]);
   const [loading, setLoading] = useState(false);
@@ -31,6 +47,7 @@ export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({
   const [blockActionBusy, setBlockActionBusy] = useState(false);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [removeActionBusy, setRemoveActionBusy] = useState(false);
+  const [connectionActionBusy, setConnectionActionBusy] = useState(false);
 
   useEffect(() => {
     if (recipient) {
@@ -83,6 +100,58 @@ export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({
       alert(message);
     } finally {
       setRemoveActionBusy(false);
+    }
+  };
+
+  const handleAddConnection = async () => {
+    if (!onSendRequest || connectionActionBusy) return;
+    setConnectionActionBusy(true);
+    try {
+      await onSendRequest(recipient.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to send connection request';
+      alert(message);
+    } finally {
+      setConnectionActionBusy(false);
+    }
+  };
+
+  const handleWithdrawRequest = async () => {
+    if (!onCancelRequest || !sentRequest || connectionActionBusy) return;
+    setConnectionActionBusy(true);
+    try {
+      await onCancelRequest(sentRequest.id, recipient.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to withdraw request';
+      alert(message);
+    } finally {
+      setConnectionActionBusy(false);
+    }
+  };
+
+  const handleAcceptRequest = async () => {
+    if (!onAcceptRequest || !receivedRequest || connectionActionBusy) return;
+    setConnectionActionBusy(true);
+    try {
+      await onAcceptRequest(receivedRequest.id, recipient.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to accept request';
+      alert(message);
+    } finally {
+      setConnectionActionBusy(false);
+    }
+  };
+
+  const handleRejectRequest = async () => {
+    if (!onRejectRequest || !receivedRequest || connectionActionBusy) return;
+    setConnectionActionBusy(true);
+    try {
+      await onRejectRequest(receivedRequest.id, recipient.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to reject request';
+      alert(message);
+    } finally {
+      setConnectionActionBusy(false);
     }
   };
 
@@ -163,10 +232,10 @@ export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({
         ))}
       </div>
 
-      {/* Relationship: Remove Connection / Block / Unblock */}
-      {(onBlock || onUnblock || (isConnected && onRemoveConnection)) && (
+      {/* Relationship: Connected / Not Connected / Request Pending / Connection Request, then Block / Unblock */}
+      {(onBlock || onUnblock || relationship !== undefined) && (
         <div className="p-4 border-t border-slate-200 dark:border-slate-800/80 space-y-3">
-          {isConnected && onRemoveConnection && (
+          {relationship === 'CONNECTED' && onRemoveConnection && (
             <div className="space-y-2">
               <div className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
                 Relationship &middot; Connected
@@ -179,6 +248,74 @@ export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({
                 {removeActionBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserMinus className="w-4 h-4" />}
                 Remove Connection
               </button>
+            </div>
+          )}
+
+          {/* LEGACY_CHAT means "no current connection, but a past conversation exists" -- treated
+              identically to NOT_CONNECTED here, matching UserSearchModal: chat history never
+              implies a currently-valid connection. */}
+          {(relationship === 'NOT_CONNECTED' || relationship === 'LEGACY_CHAT') && onSendRequest && (
+            <div className="space-y-2">
+              <div className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                Relationship &middot; Not Connected
+              </div>
+              <button
+                onClick={handleAddConnection}
+                disabled={connectionActionBusy}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-50"
+              >
+                {connectionActionBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
+                Add Connection
+              </button>
+            </div>
+          )}
+
+          {relationship === 'REQUEST_SENT' && sentRequest && onCancelRequest && (
+            <div className="space-y-2">
+              <div className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                Relationship &middot; Request Pending
+              </div>
+              <button
+                disabled
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-indigo-600/40 text-white cursor-not-allowed"
+              >
+                <Clock className="w-4 h-4" />
+                Request Pending
+              </button>
+              <button
+                onClick={handleWithdrawRequest}
+                disabled={connectionActionBusy}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
+              >
+                {connectionActionBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                Withdraw Request
+              </button>
+            </div>
+          )}
+
+          {relationship === 'REQUEST_RECEIVED' && receivedRequest && onAcceptRequest && onRejectRequest && (
+            <div className="space-y-2">
+              <div className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                Relationship &middot; Connection Request
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleAcceptRequest}
+                  disabled={connectionActionBusy}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors disabled:opacity-50"
+                >
+                  {connectionActionBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                  Accept
+                </button>
+                <button
+                  onClick={handleRejectRequest}
+                  disabled={connectionActionBusy}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
+                >
+                  {connectionActionBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
+                  Reject
+                </button>
+              </div>
             </div>
           )}
 
