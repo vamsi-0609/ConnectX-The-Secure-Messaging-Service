@@ -2272,6 +2272,13 @@ export const App: React.FC = () => {
 
   const handleSelectConversation = useCallback(
     (conv: Conversation) => {
+      // Switching to a different conversation must not carry over Contact Info being left open
+      // from the previous one -- it must only ever open via the explicit header toggle, never
+      // implicitly just because it happened to already be open.
+      if (activeConversationRef.current?.id !== conv.id) {
+        setShowInfoDrawer(false);
+      }
+
       // 1. Immediately switch active conversation synchronously (0 blocking network calls).
       // Both refs are set here, not just the id — activeConversationRef would otherwise only
       // catch up via the [activeConversation] effect below, leaving a window where the two
