@@ -304,7 +304,7 @@ entities, per the master control prompt's inspect-before-implementing rule.
 | Stage | Status | Commit |
 |---|---|---|
 | 0A | Complete | `6afa0be` |
-| 0B | Complete | (this commit — see `git log`) |
+| 0B | Complete | `3996197` |
 | 1 | Not started | — |
 | 1.5 | Not started | — |
 | 2 | Not started | — |
