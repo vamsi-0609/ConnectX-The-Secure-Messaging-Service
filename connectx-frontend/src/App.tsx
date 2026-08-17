@@ -1268,7 +1268,7 @@ export const App: React.FC = () => {
           }
         } else {
           // Background conversation event
-          const conv = conversationsRef.current.find((c) => c.id === conversationId);
+          let conv = conversationsRef.current.find((c) => c.id === conversationId);
           const peerUserId =
             conv && currentUser
               ? getOtherParticipant(conv, currentUser.id)?.id ?? payload.senderUserId
@@ -1284,6 +1284,20 @@ export const App: React.FC = () => {
 
           const preview = previewFromMessage(processedMsg);
           updatePreviewIfNewer(conversationId, preview);
+
+          if (!conv) {
+            // First message this client has ever seen for this conversation --
+            // e.g. the other side just connected and messaged immediately, so
+            // `conversations` was never fetched for it. Without this, the message
+            // still delivers (notification/toast fire below) but the conversation
+            // itself never appears in the sidebar until the next full reload,
+            // since upsertConversation() further down only runs `if (conv)`.
+            try {
+              conv = await conversationApi.getConversationById(conversationId);
+            } catch (err) {
+              console.warn('[ConnectX] Failed to fetch newly-received conversation:', err);
+            }
+          }
 
           // Update LRU cache for this background conversation if it exists in cache
           const cachedConv = conversationCache.getConversation(conversationId);
