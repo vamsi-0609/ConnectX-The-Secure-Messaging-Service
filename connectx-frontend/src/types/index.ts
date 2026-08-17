@@ -182,3 +182,49 @@ export interface WsEvent<T = any> {
 }
 
 export type ConnectionStatus = 'CONNECTED' | 'CONNECTING' | 'DISCONNECTED' | 'ERROR';
+
+export type ConnectionRequestStatus = 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'CANCELLED';
+
+export interface ConnectionRequestDto {
+  id: number;
+  requesterId: number;
+  requesterUsername: string;
+  requesterDisplayName: string;
+  requesterProfileImageUrl?: string;
+  recipientId: number;
+  recipientUsername: string;
+  recipientDisplayName: string;
+  recipientProfileImageUrl?: string;
+  status: ConnectionRequestStatus;
+  createdAt: string;
+  respondedAt?: string;
+}
+
+export interface UserConnectionDto {
+  id: number;
+  connectedUserId: number;
+  connectedUsername: string;
+  connectedDisplayName: string;
+  connectedProfileImageUrl?: string;
+  createdAt: string;
+}
+
+export interface UserBlockDto {
+  id: number;
+  blockedUserId: number;
+  blockedUsername: string;
+  blockedDisplayName: string;
+  blockedProfileImageUrl?: string;
+  createdAt: string;
+}
+
+// Derived client-side only -- never sent to or trusted in place of the backend,
+// which re-enforces every one of these transitions independently (see
+// ConnectionService / BlockService / ConversationService on the backend).
+export type RelationshipStatus =
+  | 'CONNECTED'
+  | 'LEGACY_CHAT'
+  | 'REQUEST_SENT'
+  | 'REQUEST_RECEIVED'
+  | 'BLOCKED_BY_ME'
+  | 'NOT_CONNECTED';

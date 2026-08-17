@@ -11,6 +11,9 @@ const ContactInfoDrawer = React.lazy(() =>
 const UserSearchModal = React.lazy(() =>
   import('./components/chat/UserSearchModal').then((m) => ({ default: m.UserSearchModal }))
 );
+const ConnectionRequestsModal = React.lazy(() =>
+  import('./components/chat/ConnectionRequestsModal').then((m) => ({ default: m.ConnectionRequestsModal }))
+);
 const DeviceManagerModal = React.lazy(() =>
   import('./components/devices/DeviceManagerModal').then((m) => ({ default: m.DeviceManagerModal }))
 );
@@ -24,6 +27,9 @@ import { messageApi } from './api/messageApi';
 import { userApi } from './api/userApi';
 import { deviceApi } from './api/deviceApi';
 import { authApi } from './api/authApi';
+import { connectionApi } from './api/connectionApi';
+import { blockApi } from './api/blockApi';
+import { ApiRequestError } from './api/apiClient';
 import { keyManager } from './crypto/keyManager';
 import { decryptMessage } from './crypto/decryption';
 import { encryptMessage } from './crypto/encryption';
@@ -49,7 +55,14 @@ import {
 } from './utils/shareTarget';
 import { NotificationToast, ToastNotificationData } from './components/common/NotificationToast';
 import { PWAInstallBanner } from './components/common/PWAInstallBanner';
-import { User, Conversation, Message, AuthResponse, ConversationPreview } from './types';
+import {
+  User,
+  Conversation,
+  Message,
+  AuthResponse,
+  ConversationPreview,
+  ConnectionRequestDto,
+} from './types';
 import { MessageSquare, Plus, Share2, X } from 'lucide-react';
 import {
   getConversationListMeta,
@@ -232,6 +245,18 @@ export const App: React.FC = () => {
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showDeviceModal, setShowDeviceModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [showRequestsModal, setShowRequestsModal] = useState(false);
+
+  // Connection/blocking relationship data -- loaded in bulk once on startup (see
+  // loadRelationshipData below) and kept in sync locally after each action, so
+  // per-search-result relationship lookups never need their own network request.
+  // The backend independently re-enforces every transition; this is UX only.
+  const [connectedUserIds, setConnectedUserIds] = useState<Set<number>>(new Set());
+  const [blockedUserIds, setBlockedUserIds] = useState<Set<number>>(new Set());
+  const [sentRequestsByUserId, setSentRequestsByUserId] = useState<Map<number, ConnectionRequestDto>>(new Map());
+  const [receivedRequestsByUserId, setReceivedRequestsByUserId] = useState<Map<number, ConnectionRequestDto>>(
+    new Map()
+  );
 
   // Files handed off from the OS "Share" sheet via the PWA share_target (see
   // public/sw.js), waiting on the user to pick a conversation. Cleared as soon
@@ -417,6 +442,10 @@ export const App: React.FC = () => {
       setActiveConversation(null);
       setMessages([]);
       setConversationPreviews({});
+      setConnectedUserIds(new Set());
+      setBlockedUserIds(new Set());
+      setSentRequestsByUserId(new Map());
+      setReceivedRequestsByUserId(new Map());
     };
 
     window.addEventListener('connectx_auth_expired', handleAuthExpired);
@@ -483,6 +512,11 @@ export const App: React.FC = () => {
     setMessages([]);
     setConversationPreviews({});
     setShowProfileModal(false);
+    setShowRequestsModal(false);
+    setConnectedUserIds(new Set());
+    setBlockedUserIds(new Set());
+    setSentRequestsByUserId(new Map());
+    setReceivedRequestsByUserId(new Map());
   };
 
   const loadConversations = useCallback(async () => {
@@ -599,6 +633,125 @@ export const App: React.FC = () => {
       loadConversations();
     }
   }, [currentUser, loadConversations]);
+
+  // Bulk-load connection/block relationship state once per login -- O(1) network
+  // calls regardless of how many users get searched afterward. A failure here is
+  // non-fatal: the app still renders, search results just fall back to
+  // NOT_CONNECTED until this succeeds (existing DIRECT chats stay unaffected,
+  // since those are derived from `conversations`, not this data).
+  const loadRelationshipData = useCallback(async () => {
+    if (!currentUser) return;
+    try {
+      const [connections, pending, sent, blocks] = await Promise.all([
+        connectionApi.getConnections(),
+        connectionApi.getPendingIncoming(),
+        connectionApi.getSentOutgoing(),
+        blockApi.getBlocks(),
+      ]);
+      setConnectedUserIds(new Set(connections.map((c) => c.connectedUserId)));
+      setReceivedRequestsByUserId(new Map(pending.map((r) => [r.requesterId, r])));
+      setSentRequestsByUserId(new Map(sent.map((r) => [r.recipientId, r])));
+      setBlockedUserIds(new Set(blocks.map((b) => b.blockedUserId)));
+    } catch (err) {
+      console.warn('[ConnectX] Failed to load connection/block relationship data:', err);
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (currentUser) {
+      loadRelationshipData();
+    }
+  }, [currentUser, loadRelationshipData]);
+
+  const handleSendConnectionRequest = useCallback(async (userId: number) => {
+    try {
+      const req = await connectionApi.sendRequest(userId);
+      setSentRequestsByUserId((prev) => new Map(prev).set(userId, req));
+    } catch (err) {
+      // Local state was stale relative to the backend -- reconcile it so the
+      // button doesn't keep offering an action that will just fail again.
+      if (err instanceof ApiRequestError && err.code === 'ALREADY_CONNECTED') {
+        setConnectedUserIds((prev) => new Set(prev).add(userId));
+      }
+      throw err;
+    }
+  }, []);
+
+  const handleCancelConnectionRequest = useCallback(async (requestId: number, userId: number) => {
+    try {
+      await connectionApi.cancelRequest(requestId);
+    } catch (err) {
+      if (
+        err instanceof ApiRequestError &&
+        (err.code === 'REQUEST_NOT_FOUND' || err.code === 'REQUEST_NOT_PENDING')
+      ) {
+        // Already resolved server-side (accepted/rejected/cancelled elsewhere) --
+        // fall through and clear it locally too instead of leaving a stale entry.
+      } else {
+        throw err;
+      }
+    }
+    setSentRequestsByUserId((prev) => {
+      const next = new Map(prev);
+      next.delete(userId);
+      return next;
+    });
+  }, []);
+
+  const handleAcceptConnectionRequest = useCallback(async (requestId: number, requesterUserId: number) => {
+    try {
+      await connectionApi.acceptRequest(requestId);
+    } catch (err) {
+      if (err instanceof ApiRequestError && (err.code === 'REQUEST_NOT_FOUND' || err.code === 'REQUEST_NOT_PENDING')) {
+        setReceivedRequestsByUserId((prev) => {
+          const next = new Map(prev);
+          next.delete(requesterUserId);
+          return next;
+        });
+      }
+      throw err;
+    }
+    setReceivedRequestsByUserId((prev) => {
+      const next = new Map(prev);
+      next.delete(requesterUserId);
+      return next;
+    });
+    setConnectedUserIds((prev) => new Set(prev).add(requesterUserId));
+  }, []);
+
+  const handleRejectConnectionRequest = useCallback(async (requestId: number, requesterUserId: number) => {
+    try {
+      await connectionApi.rejectRequest(requestId);
+    } catch (err) {
+      if (
+        err instanceof ApiRequestError &&
+        (err.code === 'REQUEST_NOT_FOUND' || err.code === 'REQUEST_NOT_PENDING')
+      ) {
+        // Already resolved server-side -- clear it locally below regardless.
+      } else {
+        throw err;
+      }
+    }
+    setReceivedRequestsByUserId((prev) => {
+      const next = new Map(prev);
+      next.delete(requesterUserId);
+      return next;
+    });
+  }, []);
+
+  const handleBlockUser = useCallback(async (userId: number) => {
+    await blockApi.blockUser(userId);
+    setBlockedUserIds((prev) => new Set(prev).add(userId));
+  }, []);
+
+  const handleUnblockUser = useCallback(async (userId: number) => {
+    await blockApi.unblockUser(userId);
+    setBlockedUserIds((prev) => {
+      const next = new Set(prev);
+      next.delete(userId);
+      return next;
+    });
+  }, []);
 
   // Mirror the conversation list to localStorage (debounced) so a reload can
   // paint instantly from cache next time instead of showing a blank sidebar
@@ -2253,6 +2406,8 @@ export const App: React.FC = () => {
           conversationPreviews={conversationPreviews}
           onSelectConversation={handleSelectConversation}
           onOpenSearch={() => setShowSearchModal(true)}
+          onOpenConnectionRequests={() => setShowRequestsModal(true)}
+          pendingConnectionRequestCount={receivedRequestsByUserId.size}
           onOpenProfile={async () => {
             try {
               const freshUser = await userApi.getCurrentUser();
@@ -2335,6 +2490,12 @@ export const App: React.FC = () => {
                 <ContactInfoDrawer
                   recipient={getRecipientUser(activeConversation)}
                   onClose={() => setShowInfoDrawer(false)}
+                  isBlocked={Boolean(
+                    getRecipientUser(activeConversation) &&
+                      blockedUserIds.has(getRecipientUser(activeConversation)!.id)
+                  )}
+                  onBlock={handleBlockUser}
+                  onUnblock={handleUnblockUser}
                 />
               </React.Suspense>
             )}
@@ -2387,6 +2548,29 @@ export const App: React.FC = () => {
               setActiveConversation(conv);
               loadConversations();
             }}
+            conversations={conversations}
+            connectedUserIds={connectedUserIds}
+            blockedUserIds={blockedUserIds}
+            sentRequestsByUserId={sentRequestsByUserId}
+            receivedRequestsByUserId={receivedRequestsByUserId}
+            onSendRequest={handleSendConnectionRequest}
+            onCancelRequest={handleCancelConnectionRequest}
+            onAcceptRequest={handleAcceptConnectionRequest}
+            onRejectRequest={handleRejectConnectionRequest}
+            onUnblockUser={handleUnblockUser}
+          />
+        </React.Suspense>
+      )}
+
+      {showRequestsModal && (
+        <React.Suspense fallback={null}>
+          <ConnectionRequestsModal
+            onClose={() => setShowRequestsModal(false)}
+            receivedRequests={Array.from(receivedRequestsByUserId.values())}
+            sentRequests={Array.from(sentRequestsByUserId.values())}
+            onAcceptRequest={handleAcceptConnectionRequest}
+            onRejectRequest={handleRejectConnectionRequest}
+            onCancelRequest={handleCancelConnectionRequest}
           />
         </React.Suspense>
       )}

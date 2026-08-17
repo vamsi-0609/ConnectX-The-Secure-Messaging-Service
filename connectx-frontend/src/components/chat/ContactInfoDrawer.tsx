@@ -1,17 +1,29 @@
 import React, { useEffect, useState } from 'react';
-import { ShieldCheck, X, ArrowLeft, Laptop } from 'lucide-react';
+import { ShieldCheck, X, ArrowLeft, Laptop, ShieldOff, Loader2 } from 'lucide-react';
 import { User, UserPublicKey } from '../../types';
 import { deviceApi } from '../../api/deviceApi';
 import { UserAvatar } from '../common/UserAvatar';
+import { BlockUserConfirmDialog } from './BlockUserConfirmDialog';
 
 interface ContactInfoDrawerProps {
   recipient: User | null;
   onClose: () => void;
+  isBlocked?: boolean;
+  onBlock?: (userId: number) => Promise<void>;
+  onUnblock?: (userId: number) => Promise<void>;
 }
 
-export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({ recipient, onClose }) => {
+export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({
+  recipient,
+  onClose,
+  isBlocked = false,
+  onBlock,
+  onUnblock,
+}) => {
   const [publicKeys, setPublicKeys] = useState<UserPublicKey[]>([]);
   const [loading, setLoading] = useState(false);
+  const [showBlockConfirm, setShowBlockConfirm] = useState(false);
+  const [blockActionBusy, setBlockActionBusy] = useState(false);
 
   useEffect(() => {
     if (recipient) {
@@ -25,6 +37,33 @@ export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({ recipient,
   }, [recipient]);
 
   if (!recipient) return null;
+
+  const handleConfirmBlock = async () => {
+    if (!onBlock) return;
+    setBlockActionBusy(true);
+    try {
+      await onBlock(recipient.id);
+      setShowBlockConfirm(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to block user';
+      alert(message);
+    } finally {
+      setBlockActionBusy(false);
+    }
+  };
+
+  const handleUnblock = async () => {
+    if (!onUnblock) return;
+    setBlockActionBusy(true);
+    try {
+      await onUnblock(recipient.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to unblock user';
+      alert(message);
+    } finally {
+      setBlockActionBusy(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-40 md:static md:inset-auto md:z-20 w-full md:w-80 h-full bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800/80 flex flex-col flex-shrink-0 transition-colors duration-300 animate-slide-right overflow-y-auto text-slate-900 dark:text-white select-none">
@@ -102,6 +141,40 @@ export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({ recipient,
           </div>
         ))}
       </div>
+
+      {/* Block / Unblock */}
+      {(onBlock || onUnblock) && (
+        <div className="p-4 border-t border-slate-200 dark:border-slate-800/80">
+          {isBlocked ? (
+            <button
+              onClick={handleUnblock}
+              disabled={blockActionBusy}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
+            >
+              {blockActionBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldOff className="w-4 h-4" />}
+              Unblock {recipient.displayName || recipient.username}
+            </button>
+          ) : (
+            <button
+              onClick={() => setShowBlockConfirm(true)}
+              disabled={blockActionBusy}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-red-600 dark:text-red-400 border border-red-200 dark:border-red-900/50 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors disabled:opacity-50"
+            >
+              <ShieldOff className="w-4 h-4" />
+              Block {recipient.displayName || recipient.username}
+            </button>
+          )}
+        </div>
+      )}
+
+      {showBlockConfirm && (
+        <BlockUserConfirmDialog
+          contactName={recipient.displayName || recipient.username}
+          blocking={blockActionBusy}
+          onCancel={() => setShowBlockConfirm(false)}
+          onConfirm={handleConfirmBlock}
+        />
+      )}
     </div>
   );
 };

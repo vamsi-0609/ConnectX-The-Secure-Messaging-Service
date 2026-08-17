@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Search, Plus, Lock, Trash2, Pin, PinOff, BellOff, Archive, ArchiveRestore, MailOpen, Mail, MoreVertical } from 'lucide-react';
+import { Search, Plus, Lock, Trash2, Pin, PinOff, BellOff, Archive, ArchiveRestore, MailOpen, Mail, MoreVertical, UserPlus } from 'lucide-react';
 import { User, Conversation, ConversationPreview } from '../../types';
 import { formatConversationTime } from '../../utils/messageGroups';
 import {
@@ -20,6 +20,8 @@ interface ChatListSidebarProps {
   onSelectConversation: (conv: Conversation) => void;
   onOpenSearch: () => void;
   onOpenProfile?: () => void;
+  onOpenConnectionRequests?: () => void;
+  pendingConnectionRequestCount?: number;
   onDeleteConversation?: (conversationId: number) => void;
   onPinConversation?: (conversationId: number) => void;
   onUnpinConversation?: (conversationId: number) => void;
@@ -38,6 +40,8 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
   onSelectConversation,
   onOpenSearch,
   onOpenProfile,
+  onOpenConnectionRequests,
+  pendingConnectionRequestCount = 0,
   onDeleteConversation,
   onPinConversation,
   onUnpinConversation,
@@ -109,6 +113,22 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
 
           {/* Header actions — both buttons identical: w-9 h-9 rounded-xl */}
           <div className="flex items-center gap-1.5 flex-shrink-0">
+            {onOpenConnectionRequests && (
+              <button
+                onClick={onOpenConnectionRequests}
+                className="relative w-9 h-9 flex items-center justify-center text-slate-500 dark:text-slate-300 bg-slate-100 dark:bg-slate-800/80 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition-colors"
+                title="Connection requests"
+                aria-label="Connection requests"
+              >
+                <UserPlus className="w-4 h-4" />
+                {pendingConnectionRequestCount > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 flex items-center justify-center text-[10px] font-bold text-white bg-red-500 rounded-full">
+                    {pendingConnectionRequestCount > 9 ? '9+' : pendingConnectionRequestCount}
+                  </span>
+                )}
+              </button>
+            )}
+
             <button
               onClick={onOpenSearch}
               className="w-9 h-9 flex items-center justify-center text-white bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 rounded-xl transition-colors shadow-sm"
