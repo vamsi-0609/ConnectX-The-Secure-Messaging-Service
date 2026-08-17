@@ -28,4 +28,9 @@ export const connectionApi = {
     }),
 
   getConnections: () => apiRequest<UserConnectionDto[]>('/connections'),
+
+  removeConnection: (userId: number) =>
+    apiRequest<string>(`/connections/${userId}`, {
+      method: 'DELETE',
+    }),
 };

@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { ShieldCheck, X, ArrowLeft, Laptop, ShieldOff, Loader2 } from 'lucide-react';
+import { ShieldCheck, X, ArrowLeft, Laptop, ShieldOff, UserMinus, Loader2 } from 'lucide-react';
 import { User, UserPublicKey } from '../../types';
 import { deviceApi } from '../../api/deviceApi';
 import { UserAvatar } from '../common/UserAvatar';
 import { BlockUserConfirmDialog } from './BlockUserConfirmDialog';
+import { RemoveConnectionConfirmDialog } from './RemoveConnectionConfirmDialog';
 
 interface ContactInfoDrawerProps {
   recipient: User | null;
@@ -11,6 +12,8 @@ interface ContactInfoDrawerProps {
   isBlocked?: boolean;
   onBlock?: (userId: number) => Promise<void>;
   onUnblock?: (userId: number) => Promise<void>;
+  isConnected?: boolean;
+  onRemoveConnection?: (userId: number) => Promise<void>;
 }
 
 export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({
@@ -19,11 +22,15 @@ export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({
   isBlocked = false,
   onBlock,
   onUnblock,
+  isConnected = false,
+  onRemoveConnection,
 }) => {
   const [publicKeys, setPublicKeys] = useState<UserPublicKey[]>([]);
   const [loading, setLoading] = useState(false);
   const [showBlockConfirm, setShowBlockConfirm] = useState(false);
   const [blockActionBusy, setBlockActionBusy] = useState(false);
+  const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+  const [removeActionBusy, setRemoveActionBusy] = useState(false);
 
   useEffect(() => {
     if (recipient) {
@@ -62,6 +69,20 @@ export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({
       alert(message);
     } finally {
       setBlockActionBusy(false);
+    }
+  };
+
+  const handleConfirmRemoveConnection = async () => {
+    if (!onRemoveConnection) return;
+    setRemoveActionBusy(true);
+    try {
+      await onRemoveConnection(recipient.id);
+      setShowRemoveConfirm(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to remove connection';
+      alert(message);
+    } finally {
+      setRemoveActionBusy(false);
     }
   };
 
@@ -142,9 +163,25 @@ export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({
         ))}
       </div>
 
-      {/* Block / Unblock */}
-      {(onBlock || onUnblock) && (
-        <div className="p-4 border-t border-slate-200 dark:border-slate-800/80">
+      {/* Relationship: Remove Connection / Block / Unblock */}
+      {(onBlock || onUnblock || (isConnected && onRemoveConnection)) && (
+        <div className="p-4 border-t border-slate-200 dark:border-slate-800/80 space-y-3">
+          {isConnected && onRemoveConnection && (
+            <div className="space-y-2">
+              <div className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                Relationship &middot; Connected
+              </div>
+              <button
+                onClick={() => setShowRemoveConfirm(true)}
+                disabled={removeActionBusy}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
+              >
+                {removeActionBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserMinus className="w-4 h-4" />}
+                Remove Connection
+              </button>
+            </div>
+          )}
+
           {isBlocked ? (
             <button
               onClick={handleUnblock}
@@ -173,6 +210,15 @@ export const ContactInfoDrawer: React.FC<ContactInfoDrawerProps> = ({
           blocking={blockActionBusy}
           onCancel={() => setShowBlockConfirm(false)}
           onConfirm={handleConfirmBlock}
+        />
+      )}
+
+      {showRemoveConfirm && (
+        <RemoveConnectionConfirmDialog
+          contactName={recipient.displayName || recipient.username}
+          removing={removeActionBusy}
+          onCancel={() => setShowRemoveConfirm(false)}
+          onConfirm={handleConfirmRemoveConnection}
         />
       )}
     </div>

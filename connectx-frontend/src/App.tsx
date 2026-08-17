@@ -753,6 +753,18 @@ export const App: React.FC = () => {
     });
   }, []);
 
+  const handleRemoveConnection = useCallback(async (userId: number) => {
+    await connectionApi.removeConnection(userId);
+    // Existing DIRECT conversation is untouched -- only the connections-set
+    // membership changes, letting getRelationshipStatus() derive NOT_CONNECTED
+    // (or LEGACY_CHAT, if a conversation already exists) on its own.
+    setConnectedUserIds((prev) => {
+      const next = new Set(prev);
+      next.delete(userId);
+      return next;
+    });
+  }, []);
+
   // Mirror the conversation list to localStorage (debounced) so a reload can
   // paint instantly from cache next time instead of showing a blank sidebar
   // while the network request is in flight. Only non-sensitive metadata is
@@ -2510,6 +2522,11 @@ export const App: React.FC = () => {
                   )}
                   onBlock={handleBlockUser}
                   onUnblock={handleUnblockUser}
+                  isConnected={Boolean(
+                    getRecipientUser(activeConversation) &&
+                      connectedUserIds.has(getRecipientUser(activeConversation)!.id)
+                  )}
+                  onRemoveConnection={handleRemoveConnection}
                 />
               </React.Suspense>
             )}
