@@ -1,5 +1,6 @@
 package com.connectx.connection.service;
 
+import com.connectx.block.repository.UserBlockRepository;
 import com.connectx.common.exception.ApiException;
 import com.connectx.connection.dto.ConnectionRequestDto;
 import com.connectx.connection.dto.SendConnectionRequestDto;
@@ -33,6 +34,7 @@ public class ConnectionService {
     private final ConnectionRequestRepository connectionRequestRepository;
     private final UserConnectionRepository userConnectionRepository;
     private final UserRepository userRepository;
+    private final UserBlockRepository userBlockRepository;
     // Self-injected proxy so the REQUIRES_NEW methods below actually run through Spring's
     // transactional AOP proxy when invoked from within this class -- the same pattern already
     // proven in MessageService for the reaction/star insert races (see
@@ -45,10 +47,12 @@ public class ConnectionService {
     public ConnectionService(ConnectionRequestRepository connectionRequestRepository,
                               UserConnectionRepository userConnectionRepository,
                               UserRepository userRepository,
+                              UserBlockRepository userBlockRepository,
                               @Lazy ConnectionService self) {
         this.connectionRequestRepository = connectionRequestRepository;
         this.userConnectionRepository = userConnectionRepository;
         this.userRepository = userRepository;
+        this.userBlockRepository = userBlockRepository;
         this.self = self;
     }
 
@@ -64,6 +68,14 @@ public class ConnectionService {
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "Current user not found"));
         User recipient = userRepository.findById(recipientId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "Target user not found"));
+
+        // A block is directional in storage but bilateral for new-relationship purposes: neither
+        // side may initiate a connection request while a block exists in either direction. Checked
+        // before ALREADY_CONNECTED/REQUEST_ALREADY_PENDING so blocking takes precedence over any
+        // pre-existing relationship state, per the Stage 2 blocking-precedence requirement.
+        if (userBlockRepository.existsEitherDirection(currentUserId, recipientId)) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "BLOCKED", "You cannot send a connection request to this user");
+        }
 
         Long low = Math.min(currentUserId, recipientId);
         Long high = Math.max(currentUserId, recipientId);
@@ -125,6 +137,12 @@ public class ConnectionService {
         }
         if (request.getStatus() != ConnectionRequestStatus.PENDING) {
             throw new ApiException(HttpStatus.CONFLICT, "REQUEST_NOT_PENDING", "This request is no longer pending");
+        }
+        // A block created after the request was sent (by either party, in either direction) must
+        // still prevent the connection from being formed at accept time -- required so a stale
+        // PENDING request can't be used to bypass a block that didn't exist yet when it was sent.
+        if (userBlockRepository.existsEitherDirection(request.getRequester().getId(), request.getRecipient().getId())) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "BLOCKED", "This request cannot be accepted");
         }
 
         request.setStatus(ConnectionRequestStatus.ACCEPTED);

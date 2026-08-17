@@ -33,6 +33,14 @@ public interface ConversationMemberRepository extends JpaRepository<Conversation
 
     boolean existsByConversationIdAndUserIdAndDeletedAtIsNull(Long conversationId, Long userId);
 
+    // Used only for the DIRECT-conversation block check in MessageService#sendMessage -- for a
+    // DIRECT conversation this returns exactly one id (the other member), regardless of that
+    // member's own deletedAt (a block must still apply even if the other party has hidden the
+    // conversation for themselves, since deletedAt is a per-user visibility flag, not a
+    // membership removal).
+    @Query("SELECT cm.user.id FROM ConversationMember cm WHERE cm.conversation.id = :conversationId AND cm.user.id <> :userId")
+    List<Long> findMemberUserIdsExcluding(@Param("conversationId") Long conversationId, @Param("userId") Long userId);
+
     long countByConversationIdAndDeletedAtIsNull(Long conversationId);
 
     long countByUserIdAndPinnedTrueAndDeletedAtIsNull(Long userId);

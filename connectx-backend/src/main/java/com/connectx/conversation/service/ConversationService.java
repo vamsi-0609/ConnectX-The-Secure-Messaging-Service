@@ -1,5 +1,6 @@
 package com.connectx.conversation.service;
 
+import com.connectx.block.repository.UserBlockRepository;
 import com.connectx.common.exception.ApiException;
 import com.connectx.connection.repository.UserConnectionRepository;
 import com.connectx.conversation.dto.ConversationDto;
@@ -37,6 +38,7 @@ public class ConversationService {
     private final ConversationMemberRepository conversationMemberRepository;
     private final UserRepository userRepository;
     private final UserConnectionRepository userConnectionRepository;
+    private final UserBlockRepository userBlockRepository;
     private final com.connectx.message.repository.MessageRepository messageRepository;
     private final com.connectx.message.repository.MessageUserStateRepository messageUserStateRepository;
     private final com.connectx.message.repository.MessageStarRepository messageStarRepository;
@@ -49,6 +51,7 @@ public class ConversationService {
                                ConversationMemberRepository conversationMemberRepository,
                                UserRepository userRepository,
                                UserConnectionRepository userConnectionRepository,
+                               UserBlockRepository userBlockRepository,
                                com.connectx.message.repository.MessageRepository messageRepository,
                                com.connectx.message.repository.MessageUserStateRepository messageUserStateRepository,
                                com.connectx.message.repository.MessageStarRepository messageStarRepository,
@@ -60,6 +63,7 @@ public class ConversationService {
         this.conversationMemberRepository = conversationMemberRepository;
         this.userRepository = userRepository;
         this.userConnectionRepository = userConnectionRepository;
+        this.userBlockRepository = userBlockRepository;
         this.messageRepository = messageRepository;
         this.messageUserStateRepository = messageUserStateRepository;
         this.messageStarRepository = messageStarRepository;
@@ -119,6 +123,15 @@ public class ConversationService {
             }
 
             return enrichConversationDto(existing, currentUserId);
+        }
+
+        // A block takes precedence over connection state for NEW conversation creation -- checked
+        // before the connection-required check below so a blocked pair always sees BLOCKED, never
+        // NOT_CONNECTED. Pre-existing conversations (checked above, already returned by this
+        // point) are exempt: a block never deletes or hides an existing DIRECT conversation, it
+        // only prevents a brand-new relationship from being formed.
+        if (userBlockRepository.existsEitherDirection(currentUserId, targetUserId)) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "BLOCKED", "You cannot start a conversation with this user");
         }
 
         // No existing DIRECT conversation for this pair -- a brand-new one may only be created

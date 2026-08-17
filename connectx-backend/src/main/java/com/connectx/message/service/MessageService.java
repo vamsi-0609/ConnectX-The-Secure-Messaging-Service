@@ -1,9 +1,11 @@
 package com.connectx.message.service;
 
+import com.connectx.block.repository.UserBlockRepository;
 import com.connectx.common.exception.ApiException;
 import com.connectx.common.util.AfterCommitExecutor;
 import com.connectx.conversation.entity.Conversation;
 import com.connectx.conversation.entity.ConversationMember;
+import com.connectx.conversation.entity.ConversationType;
 import com.connectx.conversation.repository.ConversationMemberRepository;
 import com.connectx.conversation.repository.ConversationRepository;
 import com.connectx.conversation.service.ConversationService;
@@ -51,6 +53,7 @@ public class MessageService {
     private final ConversationService conversationService;
     private final DeviceRepository deviceRepository;
     private final UserRepository userRepository;
+    private final UserBlockRepository userBlockRepository;
     private final MediaService mediaService;
     private final MessageMediaRepository messageMediaRepository;
     private final com.connectx.message.repository.MessageReactionRepository messageReactionRepository;
@@ -71,6 +74,7 @@ public class MessageService {
                           ConversationService conversationService,
                           DeviceRepository deviceRepository,
                           UserRepository userRepository,
+                          UserBlockRepository userBlockRepository,
                           MediaService mediaService,
                           MessageMediaRepository messageMediaRepository,
                           com.connectx.message.repository.MessageReactionRepository messageReactionRepository,
@@ -86,6 +90,7 @@ public class MessageService {
         this.conversationService = conversationService;
         this.deviceRepository = deviceRepository;
         this.userRepository = userRepository;
+        this.userBlockRepository = userBlockRepository;
         this.mediaService = mediaService;
         this.messageMediaRepository = messageMediaRepository;
         this.messageReactionRepository = messageReactionRepository;
@@ -105,6 +110,20 @@ public class MessageService {
 
         ConversationMember senderMembership = conversationMemberRepository.findByConversationIdAndUserId(conversation.getId(), currentUserId)
                 .orElseThrow(() -> new ApiException(HttpStatus.FORBIDDEN, "NOT_CONVERSATION_MEMBER", "User is not a member of this conversation"));
+
+        // Block enforcement is scoped to DIRECT conversations only (per architecture: a group
+        // send is authorized by membership, not by every pairwise relationship among members --
+        // checking all C(N,2) pairs for a block would be both expensive and outside the actual
+        // threat model). A DIRECT conversation always has exactly one other member; existing
+        // conversation history and the conversation itself are never touched by this check --
+        // only a NEW send is rejected, so a block never deletes or hides what already exists.
+        if (conversation.getType() == ConversationType.DIRECT) {
+            for (Long otherMemberId : conversationMemberRepository.findMemberUserIdsExcluding(conversation.getId(), currentUserId)) {
+                if (userBlockRepository.existsEitherDirection(currentUserId, otherMemberId)) {
+                    throw new ApiException(HttpStatus.FORBIDDEN, "BLOCKED", "You cannot send messages to this user");
+                }
+            }
+        }
 
         MessageType messageType = dto.getMessageType() != null ? dto.getMessageType() : MessageType.TEXT;
         MessageMedia linkedMedia = null;
