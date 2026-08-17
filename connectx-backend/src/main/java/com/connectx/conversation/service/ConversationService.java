@@ -36,6 +36,10 @@ public class ConversationService {
     private final UserRepository userRepository;
     private final com.connectx.message.repository.MessageRepository messageRepository;
     private final com.connectx.message.repository.MessageUserStateRepository messageUserStateRepository;
+    private final com.connectx.message.repository.MessageStarRepository messageStarRepository;
+    private final com.connectx.message.repository.MessageReactionRepository messageReactionRepository;
+    private final com.connectx.media.repository.MessageMediaRepository messageMediaRepository;
+    private final com.connectx.media.storage.MediaStorage mediaStorage;
     private final org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate;
 
     public ConversationService(ConversationRepository conversationRepository,
@@ -43,12 +47,20 @@ public class ConversationService {
                                UserRepository userRepository,
                                com.connectx.message.repository.MessageRepository messageRepository,
                                com.connectx.message.repository.MessageUserStateRepository messageUserStateRepository,
+                               com.connectx.message.repository.MessageStarRepository messageStarRepository,
+                               com.connectx.message.repository.MessageReactionRepository messageReactionRepository,
+                               com.connectx.media.repository.MessageMediaRepository messageMediaRepository,
+                               com.connectx.media.storage.MediaStorage mediaStorage,
                                org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate) {
         this.conversationRepository = conversationRepository;
         this.conversationMemberRepository = conversationMemberRepository;
         this.userRepository = userRepository;
         this.messageRepository = messageRepository;
         this.messageUserStateRepository = messageUserStateRepository;
+        this.messageStarRepository = messageStarRepository;
+        this.messageReactionRepository = messageReactionRepository;
+        this.messageMediaRepository = messageMediaRepository;
+        this.mediaStorage = mediaStorage;
         this.messagingTemplate = messagingTemplate;
     }
 
@@ -121,10 +133,19 @@ public class ConversationService {
         Map<Long, List<ConversationMember>> membersByConvId = allMembers.stream()
                 .collect(Collectors.groupingBy(cm -> cm.getConversation().getId()));
 
+        // M-04: fetch every conversation's latest-message preview in one round trip instead of
+        // one query per conversation (findLatestMessageInConversation, called from
+        // enrichConversationDto below, was previously invoked once per conversation here).
+        Map<Long, Message> latestMessageByConvId = messageRepository
+                .findLatestMessagesForConversations(conversationIds, currentUserId).stream()
+                .collect(Collectors.toMap(m -> m.getConversation().getId(), m -> m));
+
         return activeConversations.stream()
                 .map(conversation -> {
                     List<ConversationMember> members = membersByConvId.getOrDefault(conversation.getId(), List.of());
-                    return enrichConversationDtoWithMembers(conversation, currentUserId, members);
+                    ConversationDto dto = buildConversationDto(conversation, currentUserId, members);
+                    applyLastMessage(dto, latestMessageByConvId.get(conversation.getId()));
+                    return dto;
                 })
                 .collect(Collectors.toList());
     }
@@ -148,6 +169,25 @@ public class ConversationService {
     }
 
     private ConversationDto enrichConversationDtoWithMembers(Conversation conversation, Long currentUserId, List<ConversationMember> members) {
+        ConversationDto dto = buildConversationDto(conversation, currentUserId, members);
+
+        ConversationMember currentMember = members.stream()
+                .filter(m -> m.getUser() != null && m.getUser().getId().equals(currentUserId))
+                .findFirst()
+                .orElse(null);
+        Instant clearedAfter = currentMember != null ? currentMember.getClearedAt() : null;
+
+        List<Message> latestMessages = messageRepository.findLatestMessageInConversation(
+                conversation.getId(),
+                currentUserId,
+                clearedAfter,
+                PageRequest.of(0, 1)
+        );
+        applyLastMessage(dto, latestMessages.isEmpty() ? null : latestMessages.get(0));
+        return dto;
+    }
+
+    private ConversationDto buildConversationDto(Conversation conversation, Long currentUserId, List<ConversationMember> members) {
         ConversationDto dto = new ConversationDto();
         dto.setId(conversation.getId());
         dto.setType(conversation.getType().name());
@@ -173,32 +213,27 @@ public class ConversationService {
             dto.setManuallyMarkedUnread(currentMember.isManuallyMarkedUnread());
         }
 
-        Instant clearedAfter = currentMember != null ? currentMember.getClearedAt() : null;
-
-        List<Message> latestMessages = messageRepository.findLatestMessageInConversation(
-                conversation.getId(),
-                currentUserId,
-                clearedAfter,
-                PageRequest.of(0, 1)
-        );
-        if (!latestMessages.isEmpty()) {
-            Message latest = latestMessages.get(0);
-            dto.setLastMessageId(latest.getId());
-            dto.setLastMessageSentAt(latest.getSentAt());
-            dto.setLastMessageDeletedForEveryone(latest.isDeletedForEveryone());
-            dto.setLastMessageType(latest.getMessageType() != null ? latest.getMessageType().name() : "TEXT");
-            if (latest.getMessageType() == MessageType.LOCATION) {
-                dto.setLastMessageCaption(latest.getLocationLabel());
-            } else {
-                dto.setLastMessageCaption(latest.getCaption());
-            }
-            if (latest.getSenderUser() != null) {
-                dto.setLastMessageSenderUserId(latest.getSenderUser().getId());
-            } else if (latest.getSenderDevice() != null && latest.getSenderDevice().getUser() != null) {
-                dto.setLastMessageSenderUserId(latest.getSenderDevice().getUser().getId());
-            }
-        }
         return dto;
+    }
+
+    private void applyLastMessage(ConversationDto dto, Message latest) {
+        if (latest == null) {
+            return;
+        }
+        dto.setLastMessageId(latest.getId());
+        dto.setLastMessageSentAt(latest.getSentAt());
+        dto.setLastMessageDeletedForEveryone(latest.isDeletedForEveryone());
+        dto.setLastMessageType(latest.getMessageType() != null ? latest.getMessageType().name() : "TEXT");
+        if (latest.getMessageType() == MessageType.LOCATION) {
+            dto.setLastMessageCaption(latest.getLocationLabel());
+        } else {
+            dto.setLastMessageCaption(latest.getCaption());
+        }
+        if (latest.getSenderUser() != null) {
+            dto.setLastMessageSenderUserId(latest.getSenderUser().getId());
+        } else if (latest.getSenderDevice() != null && latest.getSenderDevice().getUser() != null) {
+            dto.setLastMessageSenderUserId(latest.getSenderDevice().getUser().getId());
+        }
     }
 
     @Transactional
@@ -307,20 +342,39 @@ public class ConversationService {
         User currentUser = userRepository.findById(currentUserId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User not found"));
 
-        // 1. Mark ALL existing messages in this conversation as deleted for current user
-        List<com.connectx.message.entity.Message> allMessages = messageRepository.findByConversationId(conversationId);
-        for (com.connectx.message.entity.Message msg : allMessages) {
-            if (!messageUserStateRepository.existsByMessageIdAndUserId(msg.getId(), currentUserId)) {
-                com.connectx.message.entity.MessageUserState userState = new com.connectx.message.entity.MessageUserState(msg, currentUser);
-                messageUserStateRepository.save(userState);
-            }
-        }
-        messageUserStateRepository.flush();
+        // 1. Mark ALL existing messages in this conversation as deleted for current user, in a
+        // single bulk statement (M-05: previously an exists-check + insert per message, which
+        // could be 100+ round trips for one "delete conversation" click).
+        messageUserStateRepository.bulkInsertDeletedStateForConversation(conversationId, currentUserId, Instant.now());
 
         // 2. Check if all members have deleted this conversation via direct DB count query
         long activeMembers = conversationMemberRepository.countByConversationIdAndDeletedAtIsNull(conversationId);
         if (activeMembers == 0) {
+            // H-05: message_reactions and message_stars both hold a NOT NULL FK to
+            // messages.id, so they must be cleared before the messages themselves or the
+            // DELETE below violates that FK and the whole conversation deletion fails.
+            // message_media holds a NOT NULL FK to conversations.id, so it must be cleared
+            // before the conversation row -- and since removing the DB row is the only place
+            // that "forgets" about a file, the physical files must be deleted here too, or
+            // they're permanently orphaned on disk (no other code path ever cleans them up).
+            messageReactionRepository.deleteByConversationId(conversationId);
+            messageStarRepository.deleteByConversationId(conversationId);
             messageUserStateRepository.deleteByConversationId(conversationId);
+
+            List<com.connectx.media.entity.MessageMedia> mediaToDelete = messageMediaRepository.findByConversationId(conversationId);
+            for (com.connectx.media.entity.MessageMedia media : mediaToDelete) {
+                try {
+                    mediaStorage.delete(media.getStorageKey(), media.getMimeType());
+                } catch (Exception ex) {
+                    // A single unreadable/locked file shouldn't block cleanup of the rest or
+                    // the DB-level delete -- worst case here is one orphaned file, not an
+                    // undeletable conversation.
+                    log.error("Failed to delete media file during conversation cleanup: conversationId={}, mediaId={}, storageKey={}",
+                            conversationId, media.getId(), media.getStorageKey(), ex);
+                }
+            }
+            messageMediaRepository.deleteByConversationId(conversationId);
+
             messageRepository.deleteByConversationId(conversationId);
             conversationMemberRepository.deleteByConversationId(conversationId);
             conversationRepository.deleteById(conversationId);

@@ -60,6 +60,31 @@ public interface MessageRepository extends JpaRepository<Message, Long> {
                                                    @Param("clearedAfter") Instant clearedAfter,
                                                    Pageable pageable);
 
+    // Batched equivalent of findLatestMessageInConversation for the conversation list load
+    // (M-04): that method issued one query per conversation (100 conversations -> ~100
+    // queries); this does the same "latest visible message, respecting this user's per-
+    // conversation clearedAt cutoff" lookup for every conversation in one round trip by
+    // correlating each candidate against its own per-conversation MAX(id). JOINs directly to
+    // ConversationMember (rather than taking clearedAt as a parameter) because clearedAt
+    // varies per conversation and JPQL has no clean way to pass a per-row parameter map.
+    @Query("SELECT m FROM Message m " +
+           "LEFT JOIN FETCH m.senderUser " +
+           "JOIN ConversationMember cm ON cm.conversation.id = m.conversation.id AND cm.user.id = :userId " +
+           "WHERE m.conversation.id IN :conversationIds " +
+           "AND m.deletedForEveryone = false " +
+           "AND (cm.clearedAt IS NULL OR m.sentAt > cm.clearedAt) " +
+           "AND NOT EXISTS (SELECT 1 FROM MessageUserState mus WHERE mus.message.id = m.id AND mus.user.id = :userId) " +
+           "AND m.id = (" +
+           "  SELECT MAX(m2.id) FROM Message m2 " +
+           "  JOIN ConversationMember cm2 ON cm2.conversation.id = m2.conversation.id AND cm2.user.id = :userId " +
+           "  WHERE m2.conversation.id = m.conversation.id " +
+           "  AND m2.deletedForEveryone = false " +
+           "  AND (cm2.clearedAt IS NULL OR m2.sentAt > cm2.clearedAt) " +
+           "  AND NOT EXISTS (SELECT 1 FROM MessageUserState mus2 WHERE mus2.message.id = m2.id AND mus2.user.id = :userId)" +
+           ")")
+    List<Message> findLatestMessagesForConversations(@Param("conversationIds") List<Long> conversationIds,
+                                                       @Param("userId") Long userId);
+
     List<Message> findByConversationId(Long conversationId);
 
     /**

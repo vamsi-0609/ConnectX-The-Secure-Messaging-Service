@@ -2,6 +2,7 @@ package com.connectx.message.repository;
 
 import com.connectx.message.entity.MessageReaction;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -21,4 +22,8 @@ public interface MessageReactionRepository extends JpaRepository<MessageReaction
     Optional<MessageReaction> findByMessageIdAndUserId(Long messageId, Long userId);
 
     void deleteByMessageIdAndUserId(Long messageId, Long userId);
+
+    @Modifying(clearAutomatically = true)
+    @Query("DELETE FROM MessageReaction r WHERE r.message.conversation.id = :conversationId")
+    void deleteByConversationId(@Param("conversationId") Long conversationId);
 }

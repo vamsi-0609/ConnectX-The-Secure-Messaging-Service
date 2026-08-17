@@ -39,6 +39,8 @@ import java.util.stream.Collectors;
 @Service
 public class MessageService {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(MessageService.class);
+
     private static final long EDIT_WINDOW_MINUTES = 15;
 
     private final MessageRepository messageRepository;
@@ -575,10 +577,28 @@ public class MessageService {
             throw new ApiException(HttpStatus.FORBIDDEN, "NOT_CONVERSATION_MEMBER", "You are not a member of this conversation");
         }
         if (!messageStarRepository.existsByMessageIdAndUserId(messageId, currentUserId)) {
-            User user = userRepository.findById(currentUserId)
-                    .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User not found"));
-            messageStarRepository.save(new MessageStar(message, user));
+            try {
+                self.insertStarInNewTransaction(messageId, currentUserId);
+            } catch (org.springframework.dao.DataIntegrityViolationException e) {
+                // Lost a race with a concurrent star insert for the same (message, user) pair --
+                // same isolated-REQUIRES_NEW pattern as insertReactionInNewTransaction below.
+                // The winner's row is already committed, so the star already exists; nothing
+                // more to do (unlike reactions, a star has no value to reconcile).
+                log.debug("Duplicate star insert lost race, already starred: messageId={}, userId={}", messageId, currentUserId);
+            }
         }
+    }
+
+    /**
+     * Attempts the "first star from this user on this message" insert in its own, independent
+     * transaction (REQUIRES_NEW) -- see {@link #insertReactionInNewTransaction} for why this
+     * needs its own transaction and must be invoked through {@code self}, not {@code this}.
+     */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
+    public void insertStarInNewTransaction(Long messageId, Long userId) {
+        Message messageRef = messageRepository.getReferenceById(messageId);
+        User userRef = userRepository.getReferenceById(userId);
+        messageStarRepository.saveAndFlush(new MessageStar(messageRef, userRef));
     }
 
     @Transactional
@@ -760,7 +780,21 @@ public class MessageService {
                 new com.connectx.message.entity.MessageReaction(messageRef, userRef, cleanReaction));
     }
 
-    @Transactional
+    /**
+     * Isolation is deliberately widened to READ_COMMITTED (MySQL's default is REPEATABLE READ):
+     * this method's own consistent-read snapshot is established by its first SELECT below, and
+     * under REPEATABLE READ that snapshot predates the REQUIRES_NEW insert further down (see
+     * insertReactionInNewTransaction) -- a genuinely separate, already-committed transaction by
+     * the time this method reads the message's full reaction list again to build its response
+     * and WebSocket broadcast, but invisible to a snapshot taken before it committed. The net
+     * effect was that a user's first reaction on a message would persist correctly (a page
+     * reload shows it, since that's a fresh transaction/snapshot) but silently never appear in
+     * the REST response or the live broadcast that the UI actually renders from -- reactions
+     * looked "not working" even though every insert was landing in the database. READ_COMMITTED
+     * makes every SELECT in this method take a fresh snapshot, so it sees its own REQUIRES_NEW
+     * work as soon as that work commits.
+     */
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public MessageDto addOrUpdateReaction(Long currentUserId, Long messageId, String reaction) {
         if (reaction == null || reaction.trim().isEmpty()) {
             return removeReaction(currentUserId, messageId);

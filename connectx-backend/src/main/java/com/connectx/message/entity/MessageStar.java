@@ -5,9 +5,11 @@ import jakarta.persistence.*;
 import java.time.Instant;
 
 @Entity
-@Table(name = "message_stars", indexes = {
-    @Index(name = "idx_msg_star", columnList = "message_id, user_id")
-})
+@Table(name = "message_stars",
+    uniqueConstraints = {
+        @UniqueConstraint(name = "uk_message_star", columnNames = {"message_id", "user_id"})
+    }
+)
 public class MessageStar {
 
     @Id
