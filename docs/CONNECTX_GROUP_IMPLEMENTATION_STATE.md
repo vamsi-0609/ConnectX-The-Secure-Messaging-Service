@@ -499,7 +499,7 @@ stage (control-prompt Stage 3), not bundled into the frontend work.
 | 0B | Complete | `3996197` |
 | 1 | Complete | `7ae17f3` |
 | 1.5 | Not started (frontend) | — |
-| 2 | Not started — no backfill script exists (`grep -r backfill` across the repo returns nothing). `02c3444` did not backfill `connections` rows for pre-existing DIRECT pairs; instead it exempts any conversation that already exists from the new connection check, which is a different mechanism than the PDF's Stage 2 backfill. Flag for a later stage to confirm this substitution is intentional and permanent rather than a gap. | — |
+| 2 | **Data backfill script exists and has been run against the local dev `connectx_db`** (see "Legacy DIRECT connection backfill" checkpoint below) — this is the PDF's Stage 2 backfill, executed as an explicit, reviewed, one-time data operation, not application logic. The Stage 3 (`02c3444`) exemption mechanism is untouched and remains the reason old conversations keep working regardless of `connections` row presence; the two are complementary, not one replacing the other. | — (data-only; no code commit) |
 | 3 | Complete — backend only (DM creation now requires an accepted connection for *new* pairs; pre-existing pairs exempted per above) | `02c3444` |
 | 4 | Backend only, complete (blocking foundation + enforcement at DM-create, connection-request, and message-send boundaries). Frontend not started. | `00fb852` |
 | 5 | Not started | — |
@@ -601,3 +601,65 @@ frontend work; listed for later use):**
 
 **No code was changed this checkpoint.** Working tree was clean before and after; this document edit
 is the only change made.
+
+---
+
+## Checkpoint — Legacy DIRECT connection backfill (2026-08-18)
+
+Executes the PDF's Stage 2 backfill, left undone since the checkpoint above flagged it. Explicit,
+reviewed, one-time **data** operation against the local development `connectx_db` — no application
+code changed.
+
+**Source-value decision:** the task instructions asked for a new `LEGACY_BACKFILL` `ConnectionSource`
+value; inspection found `ConnectionSource` already has an unused `MIGRATED` value, present in both the
+Java enum and this table's native `ENUM('REQUEST','MIGRATED')` column since Stage 0B (`V1__...sql`),
+referenced nowhere in any code path. Stopped and asked before proceeding, per the instruction not to
+silently reuse `REQUEST` or silently modify the enum; user chose to use the existing `MIGRATED` value
+instead of adding a new one. Net effect: **zero schema or Java enum changes** — this backfill is pure
+data (a single `INSERT IGNORE ... SELECT` against the already-provisioned `connections` table).
+
+**What `MIGRATED` means here — read before ever pointing this script at non-test data:** a
+`connections` row with `source = MIGRATED` means *"these two users already had a DIRECT conversation
+before the connection-request system existed, and this development/test database's data was migrated
+into the new connection model for consistency."* It is **not** evidence that either user ever sent or
+accepted a connection request — historical DIRECT conversations could be (and were) created by one
+user unilaterally searching and clicking a result, with no acceptance step, back before Stage 1.5
+added the search-modal gating. A future feature that treats `connections` rows as proof of mutual
+consent (e.g. "mutual connections", any compliance/audit surface) must account for this distinction,
+or must exclude `MIGRATED` rows. Do not re-run this script against a database containing real user
+relationships without re-confirming this caveat still holds and is acceptable for that use case.
+
+**Artifact:** `connectx-backend/db/migrations/V2__backfill_legacy_direct_connections.sql` — standalone,
+same convention as V1 (not Flyway, not wired into application startup). Applied manually:
+`mysql -u root -p connectx_db < db/migrations/V2__backfill_legacy_direct_connections.sql`.
+
+**Results (local `connectx_db`, verified by direct read-only SQL before and after):**
+- Before: 84 users, 56 DIRECT conversations (0 GROUP), 56 unique DIRECT user-pairs, 3 `connections`
+  rows (all `source=REQUEST`), 53 DIRECT pairs with no `connections` row.
+- After: 56 `connections` rows total — the original 3 `REQUEST` rows byte-for-byte unchanged (same
+  `id`/`user_id_low`/`user_id_high`/`source`/`created_at`), plus 53 new `MIGRATED` rows, one per
+  previously-missing pair. 0 self-connections, 0 duplicate pairs, 0 GROUP-sourced rows, 0 DIRECT pairs
+  still missing a connection.
+- Idempotency verified empirically: ran the script a second time, inserted 0 additional rows, the 3
+  `REQUEST` rows remained identical.
+- `conversations`/`conversation_members`/`messages`/`users`/`connection_requests`/`user_blocks` row
+  counts identical before and after (56/112/1740/84/3/0); a message-content fingerprint
+  (`MD5` over id+ciphertext+nonce+encryption_algorithm for all 1740 rows) was recorded post-backfill
+  for future tamper-evidence, though the script's SQL text makes it structurally impossible for it to
+  have touched `messages` in the first place (it contains exactly one `INSERT` statement, targeting
+  `connections` only).
+
+**Application logic unchanged:** `getRelationshipStatus()`, `ConversationService`, `UserSearchModal`,
+`ContactInfoDrawer`, `ConnectionService.removeConnection()` were not modified. `GET /api/v1/connections`
+now simply returns more rows for users who were backfilled — the frontend's existing Stage 3 relationship
+derivation and Remove Connection flow apply to those rows exactly as they already do for `REQUEST` rows,
+with no code change required.
+
+**Regression:** `mvn test` — 86/86 passing (unchanged; no backend code touched). Frontend
+`npx tsc --noEmit` clean, `npm run build` produced byte-identical asset hashes to the pre-backfill
+build (confirms zero frontend source changes).
+
+**No application code was changed this checkpoint.** Only `connectx-backend/db/migrations/V2__...sql`
+(new) and this document were added/edited; `connectx_db` gained 53 new `connections` rows via the
+script above. `connectx_test_db` was not touched (it is rebuilt fresh by `ddl-auto=create-drop` on
+every `mvn test` run and never depends on this script).
