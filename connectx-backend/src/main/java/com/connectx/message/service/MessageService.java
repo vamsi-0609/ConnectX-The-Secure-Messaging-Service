@@ -3,6 +3,7 @@ package com.connectx.message.service;
 import com.connectx.block.repository.UserBlockRepository;
 import com.connectx.common.exception.ApiException;
 import com.connectx.common.util.AfterCommitExecutor;
+import com.connectx.connection.repository.UserConnectionRepository;
 import com.connectx.conversation.entity.Conversation;
 import com.connectx.conversation.entity.ConversationMember;
 import com.connectx.conversation.entity.ConversationType;
@@ -54,6 +55,7 @@ public class MessageService {
     private final DeviceRepository deviceRepository;
     private final UserRepository userRepository;
     private final UserBlockRepository userBlockRepository;
+    private final UserConnectionRepository userConnectionRepository;
     private final MediaService mediaService;
     private final MessageMediaRepository messageMediaRepository;
     private final com.connectx.message.repository.MessageReactionRepository messageReactionRepository;
@@ -75,6 +77,7 @@ public class MessageService {
                           DeviceRepository deviceRepository,
                           UserRepository userRepository,
                           UserBlockRepository userBlockRepository,
+                          UserConnectionRepository userConnectionRepository,
                           MediaService mediaService,
                           MessageMediaRepository messageMediaRepository,
                           com.connectx.message.repository.MessageReactionRepository messageReactionRepository,
@@ -91,6 +94,7 @@ public class MessageService {
         this.deviceRepository = deviceRepository;
         this.userRepository = userRepository;
         this.userBlockRepository = userBlockRepository;
+        this.userConnectionRepository = userConnectionRepository;
         this.mediaService = mediaService;
         this.messageMediaRepository = messageMediaRepository;
         this.messageReactionRepository = messageReactionRepository;
@@ -111,16 +115,31 @@ public class MessageService {
         ConversationMember senderMembership = conversationMemberRepository.findByConversationIdAndUserId(conversation.getId(), currentUserId)
                 .orElseThrow(() -> new ApiException(HttpStatus.FORBIDDEN, "NOT_CONVERSATION_MEMBER", "User is not a member of this conversation"));
 
-        // Block enforcement is scoped to DIRECT conversations only (per architecture: a group
-        // send is authorized by membership, not by every pairwise relationship among members --
-        // checking all C(N,2) pairs for a block would be both expensive and outside the actual
-        // threat model). A DIRECT conversation always has exactly one other member; existing
-        // conversation history and the conversation itself are never touched by this check --
-        // only a NEW send is rejected, so a block never deletes or hides what already exists.
+        // Block and connection enforcement are scoped to DIRECT conversations only (per
+        // architecture: a group send is authorized by membership, not by every pairwise
+        // relationship among members -- checking all C(N,2) pairs would be both expensive and
+        // outside the actual threat model; group authorization is a separate, not-yet-built
+        // concern). A DIRECT conversation always has exactly one other member; existing
+        // conversation history and the conversation itself are never touched by either check --
+        // only a NEW send is rejected, so blocking/disconnecting never deletes or hides what
+        // already exists.
+        //
+        // Conversation membership alone is NOT messaging authorization: a DIRECT conversation
+        // can predate the connection system (grandfathered) or outlive a connection that was
+        // later removed (e.g. via blocking -- see BlockService#terminateExistingConnectionAnd
+        // PendingRequest). Without this UserConnection check, membership plus "not currently
+        // blocked" was sufficient to send into any conversation the user still belonged to, even
+        // with zero current relationship -- the actual bug this check closes.
         if (conversation.getType() == ConversationType.DIRECT) {
             for (Long otherMemberId : conversationMemberRepository.findMemberUserIdsExcluding(conversation.getId(), currentUserId)) {
                 if (userBlockRepository.existsEitherDirection(currentUserId, otherMemberId)) {
                     throw new ApiException(HttpStatus.FORBIDDEN, "BLOCKED", "You cannot send messages to this user");
+                }
+                Long low = Math.min(currentUserId, otherMemberId);
+                Long high = Math.max(currentUserId, otherMemberId);
+                if (!userConnectionRepository.existsByUserLowIdAndUserHighId(low, high)) {
+                    throw new ApiException(HttpStatus.FORBIDDEN, "NOT_CONNECTED",
+                            "You must be connected with this user to send messages");
                 }
             }
         }

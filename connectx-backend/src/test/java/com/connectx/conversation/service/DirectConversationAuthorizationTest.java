@@ -131,10 +131,14 @@ class DirectConversationAuthorizationTest {
         assertFalse(userConnectionRepository.existsByUserLowIdAndUserHighId(low, high));
     }
 
-    // 5 & 6. messages on a pre-existing, connection-less DIRECT conversation still send, and
-    // ciphertext/nonce/encryption-algorithm remain byte-for-byte unchanged by this stage's changes.
+    // 5 & 6. Updated for the "existing DIRECT chat bypasses current connection authorization" fix:
+    // opening a pre-existing, connection-less conversation and reading its history still works and
+    // never touches existing ciphertext/nonce/encryption-algorithm, but MessageService now requires
+    // a currently-CONNECTED pair to send a NEW message even into an existing DIRECT conversation --
+    // conversation membership alone is no longer sufficient. See MessageService#sendMessage's DIRECT
+    // authorization block and MessageConnectionAuthorizationTest for the full matrix of cases.
     @Test
-    void existingConversationMessaging_stillWorksAndCiphertextUnaffected() {
+    void existingConversationHistory_preservedButNewMessageRejectedWithoutConnection() {
         User a = newUser("msg_a");
         User b = newUser("msg_b");
 
@@ -151,16 +155,15 @@ class DirectConversationAuthorizationTest {
         assertEquals("unchanged-nonce", reloaded.getNonce());
         assertEquals("ECDH-P256+AES-256-GCM", reloaded.getEncryptionAlgorithm());
 
-        // Sending a brand-new message on this connection-less conversation must still succeed --
-        // membership, not connection state, is what MessageService authorizes on.
+        // Sending a brand-new message on this connection-less conversation must now be rejected --
+        // membership alone is no longer sufficient authorization to send.
         SendMessageRequestDto sendDto = new SendMessageRequestDto();
         sendDto.setConversationId(direct.getId());
         sendDto.setEncryptionAlgorithm("ECDH-P256+AES-256-GCM");
         sendDto.setCiphertext("new-ciphertext");
         sendDto.setNonce("new-nonce");
-        var sent = messageService.sendMessage(b.getId(), sendDto);
-        assertEquals("new-ciphertext", sent.getCiphertext());
-        assertTrue(messageRepository.findById(sent.getId()).isPresent());
+        ApiException ex = assertThrows(ApiException.class, () -> messageService.sendMessage(b.getId(), sendDto));
+        assertEquals("NOT_CONNECTED", ex.getCode());
     }
 
     // 7, 8, 9. search remains usable for an unconnected user, and never creates a conversation or

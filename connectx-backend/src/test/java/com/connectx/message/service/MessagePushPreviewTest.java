@@ -1,5 +1,8 @@
 package com.connectx.message.service;
 
+import com.connectx.connection.dto.ConnectionRequestDto;
+import com.connectx.connection.dto.SendConnectionRequestDto;
+import com.connectx.connection.service.ConnectionService;
 import com.connectx.conversation.entity.Conversation;
 import com.connectx.conversation.entity.ConversationMember;
 import com.connectx.conversation.entity.ConversationType;
@@ -83,6 +86,8 @@ class MessagePushPreviewTest {
 
     @Autowired
     private MessageService messageService;
+    @Autowired
+    private ConnectionService connectionService;
     @Autowired
     private UserRepository userRepository;
     @Autowired
@@ -201,12 +206,21 @@ class MessagePushPreviewTest {
                              AtomicReference<byte[]> capturedBody, AtomicInteger hitCount) {
     }
 
+    // MessageService now requires a currently-CONNECTED pair to send into a DIRECT conversation
+    // (see MessageConnectionAuthorizationTest) -- this test file is about push-notification
+    // payload content, not authorization, so it simply satisfies that precondition.
+    private void connect(User a, User b) {
+        ConnectionRequestDto req = connectionService.sendRequest(a.getId(), new SendConnectionRequestDto(b.getId()));
+        connectionService.acceptRequest(b.getId(), req.getId());
+    }
+
     private Scenario setUpScenario(String senderDisplayName, String senderAvatarUrl) throws Exception {
         long n = System.nanoTime();
         User sender = userRepository.save(new User("push_sender_" + n, "push_sender_" + n + "@test.com", "hash", senderDisplayName));
         sender.setProfileImageUrl(senderAvatarUrl);
         sender = userRepository.save(sender);
         User recipient = userRepository.save(new User("push_recipient_" + n, "push_recipient_" + n + "@test.com", "hash", "Recipient"));
+        connect(sender, recipient);
 
         Conversation conversation = conversationRepository.save(new Conversation(ConversationType.DIRECT));
         conversationMemberRepository.save(new ConversationMember(conversation, sender));

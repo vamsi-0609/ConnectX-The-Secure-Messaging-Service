@@ -1969,6 +1969,26 @@ export const App: React.FC = () => {
     });
   };
 
+  // Rolls back a text message's optimistic bubble when the actual send request fails (e.g. the
+  // backend now rejects NOT_CONNECTED even though the composer was briefly reachable -- a stale
+  // local relationship snapshot, or a race where the connection was removed after the composer
+  // mounted). Only handleOptimisticMessage (TEXT) needs this: the image/document/location send
+  // paths in MessageInput already await the network call before ever calling their optimistic-
+  // insert callback, so they can never show a false "sent" bubble in the first place.
+  const handleOptimisticMessageFailed = useCallback((clientTempId: string) => {
+    const activeConv = activeConversationRef.current;
+    if (!activeConv) return;
+    setMessages((prev) => {
+      const next = prev.filter((m) => m.clientTempId !== clientTempId);
+      conversationCache.setConversation(activeConv.id, {
+        messages: next,
+        hasMore: conversationCache.getConversation(activeConv.id)?.hasMore ?? false,
+        oldestCursor: conversationCache.getConversation(activeConv.id)?.oldestCursor ?? null,
+      });
+      return next;
+    });
+  }, []);
+
   const handleMessageSent = useCallback(() => {
     // Zero full reload on send!
   }, []);
@@ -2603,6 +2623,7 @@ export const App: React.FC = () => {
               }}
               onDeleteMessage={handleDeleteMessage}
               onOptimisticMessage={handleOptimisticMessage}
+              onOptimisticMessageFailed={handleOptimisticMessageFailed}
               onOptimisticImageMessage={handleOptimisticImageMessage}
               onOptimisticLocationMessage={handleOptimisticLocationMessage}
               onOptimisticDocumentMessage={handleOptimisticDocumentMessage}

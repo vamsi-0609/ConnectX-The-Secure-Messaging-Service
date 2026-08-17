@@ -28,6 +28,7 @@ import { ReplyTarget, Message } from '../../types';
 import { conversationCache } from '../../cache/conversationCache';
 import { wsClient } from '../../websocket/WebSocketClient';
 import { activityGuard } from '../../utils/activityGuard';
+import { ApiRequestError } from '../../api/apiClient';
 
 const TYPING_IDLE_MS = 3000;
 
@@ -48,6 +49,7 @@ interface MessageInputProps {
     replyToMessageId?: number,
     clientTempId?: string
   ) => void;
+  onOptimisticMessageFailed?: (clientTempId: string) => void;
   onOptimisticImageMessage: (
     mediaId: number,
     caption: string | undefined,
@@ -84,6 +86,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   onCancelEdit,
   onSubmitEdit,
   onOptimisticMessage,
+  onOptimisticMessageFailed,
   onOptimisticImageMessage,
   onOptimisticLocationMessage,
   onOptimisticDocumentMessage,
@@ -402,6 +405,9 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       onMessageSent?.();
     } catch (err: unknown) {
       console.error('[ConnectX E2EE] Message transmission failure:', err);
+      // The optimistic bubble inserted above must not linger looking "sent" once the backend has
+      // actually rejected it (e.g. NOT_CONNECTED) -- remove it before surfacing the error.
+      onOptimisticMessageFailed?.(clientTempId);
       let message = err instanceof Error ? err.message : 'Unknown error';
       if (
         message.includes('NO_ACTIVE_CRYPTO_DEVICE') ||
@@ -409,6 +415,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         message.includes("hasn't activated secure messaging")
       ) {
         message = "This user hasn't activated secure messaging yet.";
+      } else if (err instanceof ApiRequestError && err.code === 'NOT_CONNECTED') {
+        message = "You're no longer connected with this user. Send a new connection request to message them again.";
       }
       alert(message);
       // Restore unsent text on failure

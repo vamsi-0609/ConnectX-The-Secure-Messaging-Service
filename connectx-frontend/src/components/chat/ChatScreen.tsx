@@ -43,6 +43,10 @@ interface ChatScreenProps {
     replyToMessageId?: number,
     clientTempId?: string
   ) => void;
+  // Rolls back the optimistic bubble onOptimisticMessage just inserted when the actual send
+  // request fails (e.g. backend NOT_CONNECTED) -- so a rejected send never lingers as a
+  // misleading "sent" message. Text-only; see App.tsx's handler for why.
+  onOptimisticMessageFailed?: (clientTempId: string) => void;
   onOptimisticImageMessage: (
     mediaId: number,
     caption: string | undefined,
@@ -112,6 +116,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   onBack,
   onDeleteMessage,
   onOptimisticMessage,
+  onOptimisticMessageFailed,
   onOptimisticImageMessage,
   onOptimisticLocationMessage,
   onOptimisticDocumentMessage,
@@ -525,6 +530,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
             onCancelEdit={() => setEditTarget(null)}
             onSubmitEdit={handleSubmitEdit}
             onOptimisticMessage={onOptimisticMessage}
+            onOptimisticMessageFailed={onOptimisticMessageFailed}
             onOptimisticImageMessage={onOptimisticImageMessage}
             onOptimisticLocationMessage={onOptimisticLocationMessage}
             onOptimisticDocumentMessage={onOptimisticDocumentMessage}
