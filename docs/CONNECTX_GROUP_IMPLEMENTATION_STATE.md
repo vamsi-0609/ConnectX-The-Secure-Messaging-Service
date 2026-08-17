@@ -32,8 +32,8 @@ stage list above; revisit only if explicitly requested later.
 
 ## Current status
 
-**Current stage: 0B — Database/schema preparation only — COMPLETE**
-**Next stage: 1 — Connection backend**
+**Current stage: 1 — Connection backend — COMPLETE**
+**Next stage: 1.5 — Connection frontend**
 
 ---
 
@@ -280,11 +280,187 @@ by `git revert`). To fully roll back the database itself, manually drop the 5 ne
 Stage 1 adds entities. No existing table, row, or column needs to change either way.
 
 ### Next stage
-**Stage 1 — Connection backend** (PDF Stage 1): new `connection` backend package
-(entity/repository/service/controller/dto) implementing the `connection_requests`/`connections` REST
-endpoints (PDF §10.1). Must map cleanly onto the schema created in this stage — no application-side DDL
-drift expected, but Stage 1 should re-verify field-by-field against the live schema before writing
-entities, per the master control prompt's inspect-before-implementing rule.
+Stage 1 (below).
+
+---
+
+## Stage 1 — Connection backend
+
+### What was done
+Inspected the existing architecture before writing anything: `UserController`/`ConversationController`
+(confirmed `@AuthenticationPrincipal UserPrincipal currentUser` is the only source of "current user" ID
+anywhere in the app — never trusted from a request body), `ConversationService.createOrGetDirectConversation`
+(confirmed, exactly as the PDF claims, it performs no relationship check today — deliberately **not**
+touched this stage; enforcement is a later, explicitly-approved stage), `SecurityConfig` (confirmed
+`anyRequest().authenticated()` already covers any new `/api/v1/**` controller with zero config changes),
+`CreateDirectConversationDto` (confirmed the established convention: a mutation DTO carries only the
+*target* user's id, never the caller's — mirrored exactly for the new `SendConnectionRequestDto`),
+`MessageService`'s reaction/star insert-race handling (the proven `REQUIRES_NEW` self-proxy +
+`DataIntegrityViolationException`-catch pattern — reused verbatim for both new race-sensitive inserts),
+and `MessageReaction`/`MessageStar` (confirmed the established pattern for re-declaring an
+already-raw-SQL-created unique constraint on the JPA entity via `@Table(uniqueConstraints=...)`, with the
+same constraint name, so `ddl-auto=update`/`create-drop` both work correctly).
+
+Implemented the connection-request backend: entities, repositories, service, and controller for
+`connection_requests` and `connections` (Stage 0B's schema — no new tables, no schema changes this
+stage). `chat_groups`, `group_invitations`, and `user_blocks` remain completely unused, exactly as
+required.
+
+**Two findings surfaced during implementation, both resolved without needing to stop:**
+
+1. **Entity naming collision risk**: a JPA entity named `Connection` would collide with the extremely
+   common `java.sql.Connection` in any file that needs both. Renamed the entity to `UserConnection`
+   (table name `connections` is unaffected — decoupled via `@Table(name = "connections")`, the same
+   pattern already used for `chat_groups` in Stage 0B). Purely a Java class-naming choice; no schema or
+   design impact.
+2. **Test-database constraint parity gap**: `connectx_test_db` is rebuilt from JPA entity metadata alone
+   on every test run (`ddl-auto=create-drop`), so any DB-level protection not expressible via plain JPA
+   annotations — Stage 0B's partial-unique-on-PENDING generated column for `connection_requests` — would
+   be silently *absent* in the test environment, even though it's present in `connectx_db`. Left
+   unaddressed, the "duplicate pending request" and "concurrent request" tests would only be exercising
+   the service-layer pre-check, not the real DB backstop, which is exactly the class of gap the codebase's
+   own testing philosophy exists to catch (H2 was rejected for this project for the identical reason).
+   Resolved two ways:
+   - `UserConnection`'s full unique constraint (`uk_connections_pair`) and both CHECK constraints
+     (`chk_connections_canonical_order`, `chk_connreq_not_self`) **are** expressible via
+     `@Table(uniqueConstraints=...)` and Hibernate's `@Check` — added to the entities, verified empirically
+     (via a temporary diagnostic test, since removed) to generate identically in `connectx_test_db` and to
+     leave `connectx_db`'s existing Stage 0B constraints undisturbed.
+   - The partial-unique-on-PENDING index genuinely isn't expressible via JPA annotations (it needs a
+     generated column). `ConnectionRequestRaceIntegrationTest` adds the identical DDL directly via a
+     `@BeforeEach` idempotent `ALTER TABLE`, so its race test exercises the same real constraint
+     production has.
+
+**A third, minor observation (not a blocker):** booting the app against `connectx_db` caused Hibernate's
+`ddl-auto=update` to silently re-order `connection_requests.status`'s native MySQL `ENUM(...)` literal
+list from Stage 0B's declaration order to alphabetical. Root cause: Hibernate's own DDL generation for
+`@Enumerated(EnumType.STRING)` always emits alphabetically-sorted `ENUM(...)` — confirmed by
+`messages.message_type`, a pre-existing column created purely by Hibernate from day one, already being
+alphabetical. Harmless (the table was empty; MySQL's `ALTER ... MODIFY COLUMN` for enum reordering safely
+remaps existing rows by string value even when there is data) and not something Stage 1 introduced as a
+new risk — it's a pre-existing characteristic of this app's `ddl-auto=update` mechanism, now directly
+observed and documented for future stages (`chat_groups.who_can_invite` will likely see the same cosmetic
+reorder whenever Stage 4/5 adds its entity).
+
+### Connection request lifecycle implemented
+`PENDING → ACCEPTED` / `PENDING → REJECTED` / `PENDING → CANCELLED` (matches Stage 0B's schema and the
+PDF exactly — no additional states invented). A new request after a terminal state inserts a new row,
+preserving history. A pending request already existing in *either* direction between two users blocks a
+new request in either direction (`409 REQUEST_ALREADY_PENDING`) — the correct next action is to respond to
+the existing one, not create a redundant second row.
+
+### Files changed (all new; nothing existing modified)
+**Main** (`connectx-backend/src/main/java/com/connectx/connection/`):
+`entity/ConnectionRequest.java`, `entity/ConnectionRequestStatus.java`, `entity/UserConnection.java`,
+`entity/ConnectionSource.java`, `repository/ConnectionRequestRepository.java`,
+`repository/UserConnectionRepository.java`, `service/ConnectionService.java`,
+`controller/ConnectionController.java`, `dto/SendConnectionRequestDto.java`,
+`dto/ConnectionRequestDto.java`, `dto/UserConnectionDto.java`
+
+**Test** (`connectx-backend/src/test/java/com/connectx/connection/`):
+`service/ConnectionServiceTest.java`, `service/ConnectionRequestRaceIntegrationTest.java`,
+`controller/ConnectionControllerSecurityTest.java`
+
+Zero changes to any existing file — confirmed via `git diff --stat` (empty) and `git status` (only the new
+`connection` directories untracked).
+
+### Database changes
+None. Stage 0B's `connection_requests`/`connections` tables are used exactly as created; `chat_groups`,
+`group_invitations`, `user_blocks` remain untouched and unused. The only DB-adjacent additions are the
+entity-level `@Table(uniqueConstraints=...)` and `@Check` declarations described above, which reproduce
+(never alter) constraints Stage 0B already created.
+
+### API added
+All under `/api/v1/connections`, JWT-authenticated via the existing `anyRequest().authenticated()` rule
+(zero `SecurityConfig` changes needed):
+- `POST /requests` — `{recipientId}` → send a request (requester always taken from the authenticated
+  principal, never from the body)
+- `GET /requests/pending` — my incoming PENDING requests
+- `GET /requests/sent` — my outgoing PENDING requests
+- `POST /requests/{id}/accept` — recipient only
+- `POST /requests/{id}/reject` — recipient only
+- `POST /requests/{id}/cancel` — requester only (needed so the `CANCELLED` state, already in Stage 0B's
+  schema, is actually reachable)
+- `GET /connections` — my accepted connections
+
+Deliberately **not** added: any single-request-by-ID lookup endpoint. Since `/pending` and `/sent` are
+always scoped to the caller's own id server-side, and no other endpoint accepts an arbitrary request ID
+for *reading*, there is no IDOR surface for "view private request information belonging to unrelated
+users" — closed by simply not exposing that lookup, not by an extra permission check.
+
+### Authorization rules enforced
+- Requester identity is always the authenticated caller (`UserPrincipal.getId()`), never client-supplied —
+  `SendConnectionRequestDto` structurally has only `recipientId`.
+- Self-request blocked (`400 SELF_REQUEST`), backed by `chk_connreq_not_self` at the DB layer too.
+- Only the recipient may accept/reject (`403 FORBIDDEN` otherwise, including the requester trying to
+  accept their own outgoing request).
+- Only the requester may cancel (`403 FORBIDDEN` otherwise, including the recipient trying to cancel).
+- A non-PENDING request cannot be accepted/rejected/cancelled again (`409 REQUEST_NOT_PENDING`).
+- Already-connected pair cannot send/receive a new request (`409 ALREADY_CONNECTED`).
+- Duplicate/reverse-direction PENDING request blocked (`409 REQUEST_ALREADY_PENDING`), both via a
+  service-layer pre-check (clean error in the common case) and a DB-level backstop (generated-column
+  partial-unique index, for the genuine race case).
+
+### Database queries/constraints relied on
+`uk_connreq_pending_pair` (Stage 0B's generated-column partial-unique index) and `uk_connections_pair`
+(now also entity-declared) are the actual race backstops; the service layer's `REQUIRES_NEW` +
+`DataIntegrityViolationException`-catch pattern (verbatim reuse of `MessageService`'s proven
+reaction/star-race fix) converts a lost race into the same typed `409` a non-racing caller would see,
+never an unhandled 500.
+
+### Tests added — 17 total, all passing
+`ConnectionServiceTest` (12): send/accept/reject/cancel lifecycle, self-request rejection, duplicate and
+reverse-direction pending rejection, non-recipient accept/reject rejection, requester-attribution
+(non-forgeability), already-connected rejection, and a dedicated non-interference check that exercises the
+full connection-request flow alongside a pre-existing DIRECT conversation/message and asserts the
+message's ciphertext/nonce/encryptionAlgorithm and the conversation's loadability are byte-for-byte
+unchanged (covers test items 12–14).
+`ConnectionRequestRaceIntegrationTest` (2): concurrent duplicate-pending-request race (exactly one winner,
+exactly one `PENDING` row, loser gets the typed `409`) and concurrent-accept-of-the-same-request race
+(never throws, exactly one `connections` row) — both against real MySQL, both confirmed to actually hit
+the DB constraint (visible as expected "Duplicate entry" log lines during the run, same pattern as the
+existing reaction/star race tests).
+`ConnectionControllerSecurityTest` (3): unauthenticated `POST /requests`, `GET /requests/pending`, and
+`POST /requests/{id}/accept` all rejected (401/403) — the one Stage 1 test needing HTTP/security-filter
+coverage rather than direct service calls; introduces `@AutoConfigureMockMvc` as a new-but-standard
+pattern for this codebase (no existing precedent, kept scoped to exactly this boundary).
+
+### Existing tests result
+All 25 Stage-0-baseline tests still pass unchanged. Full suite: **42/42 passing, 0 failures, 0 errors,
+BUILD SUCCESS.**
+
+### Frontend build result
+No frontend file was touched (not required to keep the app compiling). `npx tsc --noEmit` clean;
+`npm run build` succeeded with an identical output profile to the Stage 0 baseline (1653 modules, same
+bundle sizes).
+
+### Existing DIRECT compatibility behavior
+`ConversationService.createOrGetDirectConversation` was inspected but **not modified** — it still performs
+no connection check, exactly as before. Enforcement is deliberately deferred to a later, explicitly
+approved stage. `ConnectionServiceTest.existingDirectConversationAndCiphertextUnaffectedByConnectionActivity`
+directly verifies a pre-existing DIRECT conversation's message ciphertext/nonce/encryptionAlgorithm and
+loadability are untouched while the new connection system is exercised alongside it.
+
+### Risks discovered
+- None blocking. The enum-reordering observation and the `java.sql.Connection` naming collision (both
+  above) were found and resolved within this stage; neither required stopping per the fail-safe rule since
+  neither touched E2EE, Web Push, PWA, message encryption, existing message delivery, existing DIRECT data,
+  the migration mechanism, or authentication architecture.
+- `ConnectionControllerSecurityTest` introduces `@AutoConfigureMockMvc`, a testing pattern with no prior
+  precedent in this codebase. Scoped tightly to the one boundary that genuinely needs it; flagged here so a
+  future stage doesn't mistake it for an established convention to expand casually.
+
+### Rollback procedure
+Delete the `connectx-backend/src/main/java/com/connectx/connection/` and
+`connectx-backend/src/test/java/com/connectx/connection/` directories and revert the Stage 1 commit. No
+schema, existing entity, existing endpoint, or existing test was modified, so no other cleanup is needed.
+
+### Next stage
+**Stage 1.5 — Connection frontend** (PDF Stage 1, frontend half): `connectionApi.ts`, a
+`ConnectionRequestsPanel.tsx`-equivalent, and gating `UserSearchModal.tsx`'s "Start Chat" action on
+connection status (PDF §12.2) — but per the master control prompt, DM enforcement itself
+(`connectx.connections.enforce`-style gating of `createOrGetDirectConversation`) is a separate, later
+stage (control-prompt Stage 3), not bundled into the frontend work.
 
 ---
 
@@ -305,7 +481,7 @@ entities, per the master control prompt's inspect-before-implementing rule.
 |---|---|---|
 | 0A | Complete | `6afa0be` |
 | 0B | Complete | `3996197` |
-| 1 | Not started | — |
+| 1 | Complete | (this commit — see `git log`) |
 | 1.5 | Not started | — |
 | 2 | Not started | — |
 | 3 | Not started | — |
