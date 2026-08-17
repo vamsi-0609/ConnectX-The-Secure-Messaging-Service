@@ -1,6 +1,7 @@
 package com.connectx.conversation.service;
 
 import com.connectx.common.exception.ApiException;
+import com.connectx.connection.repository.UserConnectionRepository;
 import com.connectx.conversation.dto.ConversationDto;
 import com.connectx.conversation.dto.ConversationMemberDto;
 import com.connectx.conversation.dto.CreateDirectConversationDto;
@@ -18,6 +19,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
@@ -34,6 +36,7 @@ public class ConversationService {
     private final ConversationRepository conversationRepository;
     private final ConversationMemberRepository conversationMemberRepository;
     private final UserRepository userRepository;
+    private final UserConnectionRepository userConnectionRepository;
     private final com.connectx.message.repository.MessageRepository messageRepository;
     private final com.connectx.message.repository.MessageUserStateRepository messageUserStateRepository;
     private final com.connectx.message.repository.MessageStarRepository messageStarRepository;
@@ -45,6 +48,7 @@ public class ConversationService {
     public ConversationService(ConversationRepository conversationRepository,
                                ConversationMemberRepository conversationMemberRepository,
                                UserRepository userRepository,
+                               UserConnectionRepository userConnectionRepository,
                                com.connectx.message.repository.MessageRepository messageRepository,
                                com.connectx.message.repository.MessageUserStateRepository messageUserStateRepository,
                                com.connectx.message.repository.MessageStarRepository messageStarRepository,
@@ -55,6 +59,7 @@ public class ConversationService {
         this.conversationRepository = conversationRepository;
         this.conversationMemberRepository = conversationMemberRepository;
         this.userRepository = userRepository;
+        this.userConnectionRepository = userConnectionRepository;
         this.messageRepository = messageRepository;
         this.messageUserStateRepository = messageUserStateRepository;
         this.messageStarRepository = messageStarRepository;
@@ -64,7 +69,15 @@ public class ConversationService {
         this.messagingTemplate = messagingTemplate;
     }
 
-    @Transactional
+    // READ_COMMITTED (not the MySQL default REPEATABLE READ): the pessimistic lock below can
+    // block waiting for a concurrent createOrGet call on the same pair to commit, and once
+    // unblocked, the existence check right after it must see that just-committed conversation.
+    // Under REPEATABLE READ, this method's earlier plain SELECTs (e.g. the target-user lookup)
+    // would already have fixed a consistent-read snapshot from before the wait, so the
+    // existence check would miss the other transaction's commit and both sides would create
+    // their own conversation -- the same cross-transaction visibility gap documented for
+    // MessageService#addOrUpdateReaction's REQUIRES_NEW + re-read pattern.
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ConversationDto createOrGetDirectConversation(Long currentUserId, CreateDirectConversationDto dto) {
         Long targetUserId = dto.getUserId();
 
@@ -74,6 +87,15 @@ public class ConversationService {
 
         userRepository.findById(targetUserId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "Target user not found"));
+
+        // Serialize concurrent createOrGet attempts for this exact pair (regardless of who
+        // initiates) by taking a pessimistic write lock on the deterministically-lower user id.
+        // Conversations have no DB-level uniqueness guard for a DIRECT pair (unlike the Stage 1
+        // connections table), so without this, two concurrent requests could both pass the
+        // existence check below and each insert their own conversation. Held for the rest of
+        // this transaction, covering both the existence check and, on the new-conversation path,
+        // the connection-authorization check and the insert itself.
+        userRepository.findByIdForUpdate(Math.min(currentUserId, targetUserId));
 
         Optional<Conversation> existingOpt = conversationRepository.findDirectConversationBetweenUsers(currentUserId, targetUserId);
         if (existingOpt.isPresent()) {
@@ -97,6 +119,17 @@ public class ConversationService {
             }
 
             return enrichConversationDto(existing, currentUserId);
+        }
+
+        // No existing DIRECT conversation for this pair -- a brand-new one may only be created
+        // between connected users. Pre-existing conversations (checked above) are exempt from
+        // this: users who already have a DIRECT conversation from before Stage 1.5 keep working
+        // even though no connections row exists for them.
+        Long lowId = Math.min(currentUserId, targetUserId);
+        Long highId = Math.max(currentUserId, targetUserId);
+        if (!userConnectionRepository.existsByUserLowIdAndUserHighId(lowId, highId)) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "NOT_CONNECTED",
+                    "You must be connected with this user to start a conversation");
         }
 
         User currentUser = userRepository.findById(currentUserId)
