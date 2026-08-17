@@ -7,11 +7,14 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface UserConnectionRepository extends JpaRepository<UserConnection, Long> {
 
     boolean existsByUserLowIdAndUserHighId(Long userLowId, Long userHighId);
+
+    Optional<UserConnection> findByUserLowIdAndUserHighId(Long userLowId, Long userHighId);
 
     @Query("SELECT c FROM UserConnection c JOIN FETCH c.userLow JOIN FETCH c.userHigh " +
            "WHERE c.userLow.id = :userId OR c.userHigh.id = :userId ORDER BY c.createdAt DESC")

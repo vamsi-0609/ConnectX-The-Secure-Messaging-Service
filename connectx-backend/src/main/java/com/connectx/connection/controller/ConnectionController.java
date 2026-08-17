@@ -75,4 +75,12 @@ public class ConnectionController {
         List<UserConnectionDto> connections = connectionService.getMyConnections(currentUser.getId());
         return ResponseEntity.ok(ApiResponse.success("Your connections", connections));
     }
+
+    @DeleteMapping("/{userId}")
+    public ResponseEntity<ApiResponse<String>> removeConnection(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long userId) {
+        connectionService.removeConnection(currentUser.getId(), userId);
+        return ResponseEntity.ok(ApiResponse.success("Connection removed", "Removed"));
+    }
 }

@@ -217,4 +217,27 @@ public class ConnectionService {
                 .map(c -> UserConnectionDto.fromEntity(c, currentUserId))
                 .collect(Collectors.toList());
     }
+
+    // Deletes only the UserConnection row for this pair -- never touches Conversation,
+    // ConversationMember, Message, or block rows. A plain find-then-delete (no REQUIRES_NEW
+    // self-proxy, unlike sendRequest/acceptRequest above) is sufficient here because a DELETE has
+    // no unique-constraint race to recover from the way concurrent INSERTs do: on a concurrent
+    // double-removal, whichever request's transaction commits first deletes the row, and the
+    // other's findByUserLowIdAndUserHighId simply comes up empty, landing on the same
+    // CONNECTION_NOT_FOUND path as removing an already-nonexistent connection.
+    @Transactional
+    public void removeConnection(Long currentUserId, Long otherUserId) {
+        if (currentUserId.equals(otherUserId)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "CANNOT_REMOVE_SELF", "Cannot remove a connection with yourself");
+        }
+
+        Long low = Math.min(currentUserId, otherUserId);
+        Long high = Math.max(currentUserId, otherUserId);
+
+        UserConnection connection = userConnectionRepository.findByUserLowIdAndUserHighId(low, high)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONNECTION_NOT_FOUND",
+                        "You are not connected with this user"));
+
+        userConnectionRepository.delete(connection);
+    }
 }

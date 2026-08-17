@@ -50,4 +50,14 @@ class ConnectionControllerSecurityTest {
                 .andExpect(status().is(org.hamcrest.Matchers.anyOf(
                         org.hamcrest.Matchers.is(401), org.hamcrest.Matchers.is(403))));
     }
+
+    // 10. the current user for removeConnection comes only from the security context -- there is
+    // no request body at all on a DELETE, so an unauthenticated caller must be rejected before
+    // ever reaching the controller/service, structurally ruling out a forged current-user id.
+    @Test
+    void removeConnectionWithoutAuthenticationIsRejected() throws Exception {
+        mockMvc.perform(delete("/api/v1/connections/1"))
+                .andExpect(status().is(org.hamcrest.Matchers.anyOf(
+                        org.hamcrest.Matchers.is(401), org.hamcrest.Matchers.is(403))));
+    }
 }
