@@ -481,7 +481,7 @@ stage (control-prompt Stage 3), not bundled into the frontend work.
 |---|---|---|
 | 0A | Complete | `6afa0be` |
 | 0B | Complete | `3996197` |
-| 1 | Complete | (this commit — see `git log`) |
+| 1 | Complete | `7ae17f3` |
 | 1.5 | Not started | — |
 | 2 | Not started | — |
 | 3 | Not started | — |
