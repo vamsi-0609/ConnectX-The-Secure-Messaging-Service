@@ -93,8 +93,7 @@ None.
 Backend: **BUILD SUCCESS**. Frontend: **BUILD SUCCESS** (`tsc && vite build`).
 
 ### Git commit hash
-Recorded in the Stage 0B entry of this document once that stage's commit lands (see `git log` for the
-commit whose message begins `chore(connectx): Stage 0A baseline checkpoint`).
+`6afa0be` — `chore(connectx): Stage 0A baseline checkpoint`
 
 ### Known issues (pre-existing, not introduced or fixed this stage)
 - Mail credentials are committed in plaintext in `connectx-backend/src/main/resources/application.yml`
@@ -141,7 +140,7 @@ or write the new schema yet. Per PDF §5.3, evaluate introducing Flyway at this 
 
 | Stage | Status | Commit |
 |---|---|---|
-| 0A | Complete | (this commit — see `git log`) |
+| 0A | Complete | `6afa0be` |
 | 0B | Not started | — |
 | 1 | Not started | — |
 | 1.5 | Not started | — |
