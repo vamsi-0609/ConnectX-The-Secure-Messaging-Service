@@ -4,11 +4,20 @@
     <meta charset="UTF-8" />
     <script>
       (function () {
+        // Runs synchronously before first paint, so the system status bar (via the
+        // theme-color meta tag below, kept in sync at runtime by utils/theme.ts's
+        // applyTheme()) is never briefly wrong on load -- same source of truth
+        // (connectx_theme) as the dark/light class toggle right below it.
         var theme = localStorage.getItem('connectx_theme');
-        if (theme === 'light') {
-          document.documentElement.classList.remove('dark');
-        } else {
+        var isDark = theme !== 'light';
+        if (isDark) {
           document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) {
+          meta.setAttribute('content', isDark ? '#090d16' : '#f1f5f9');
         }
       })();
       if (typeof global === 'undefined') {
@@ -19,7 +28,12 @@
     <link rel="apple-touch-icon" href="/pwa-192x192.png" />
     <link rel="manifest" href="/manifest.json" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
-    <meta name="theme-color" content="#4f46e5" />
+    <!-- Default matches ConnectX's default (dark) shell background (--bg-main / bg-slate-100
+         dark:bg-[#090d16] in App.tsx); the inline script above corrects this synchronously
+         before paint if the stored preference is 'light', and utils/theme.ts's applyTheme()
+         keeps it in sync on every runtime theme toggle. Never left as a static brand-purple
+         value -- that was the entire cause of the violet system status bar. -->
+    <meta name="theme-color" content="#090d16" />
     <meta name="description" content="ConnectX — Real-time end-to-end encrypted secure messaging. Chat privately with full encryption." />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />

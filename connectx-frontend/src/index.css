@@ -14,6 +14,11 @@
     --border-color: #e2e8f0;
     --text-primary: #0f172a;
     --text-secondary: #64748b;
+    /* Tells the browser which native UI (scrollbars, form controls, and on some
+       platforms the system chrome around the page) to render in -- kept in sync
+       with the same .dark class utils/theme.ts's applyTheme() already toggles,
+       so no separate theme mechanism is introduced. */
+    color-scheme: light;
   }
 
   .dark {
@@ -25,6 +30,7 @@
     --border-color: #334155;
     --text-primary: #f8fafc;
     --text-secondary: #94a3b8;
+    color-scheme: dark;
   }
 }
 

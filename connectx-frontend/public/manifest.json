@@ -24,7 +24,7 @@
   "start_url": "/",
   "scope": "/",
   "background_color": "#090d16",
-  "theme_color": "#4f46e5",
+  "theme_color": "#090d16",
   "display": "standalone",
   "orientation": "portrait",
   "categories": ["social", "utilities"],
