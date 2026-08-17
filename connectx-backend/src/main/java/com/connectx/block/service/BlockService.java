@@ -4,6 +4,9 @@ import com.connectx.block.dto.UserBlockDto;
 import com.connectx.block.entity.UserBlock;
 import com.connectx.block.repository.UserBlockRepository;
 import com.connectx.common.exception.ApiException;
+import com.connectx.connection.entity.ConnectionRequestStatus;
+import com.connectx.connection.repository.ConnectionRequestRepository;
+import com.connectx.connection.repository.UserConnectionRepository;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
 import org.slf4j.Logger;
@@ -16,6 +19,7 @@ import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -26,6 +30,8 @@ public class BlockService {
 
     private final UserBlockRepository userBlockRepository;
     private final UserRepository userRepository;
+    private final UserConnectionRepository userConnectionRepository;
+    private final ConnectionRequestRepository connectionRequestRepository;
     // Self-injected proxy so insertBlockInNewTransaction below actually runs through Spring's
     // transactional AOP proxy when invoked from within this class -- the same REQUIRES_NEW +
     // DataIntegrityViolationException-catch pattern already proven in ConnectionService
@@ -34,9 +40,13 @@ public class BlockService {
 
     public BlockService(UserBlockRepository userBlockRepository,
                          UserRepository userRepository,
+                         UserConnectionRepository userConnectionRepository,
+                         ConnectionRequestRepository connectionRequestRepository,
                          @Lazy BlockService self) {
         this.userBlockRepository = userBlockRepository;
         this.userRepository = userRepository;
+        this.userConnectionRepository = userConnectionRepository;
+        this.connectionRequestRepository = connectionRequestRepository;
         this.self = self;
     }
 
@@ -62,10 +72,21 @@ public class BlockService {
         // Idempotent: re-blocking an already-blocked user is a safe no-op that returns the
         // existing block, not an error -- matches this codebase's existing idempotency
         // convention for repeat actions (e.g. ConversationService#deleteConversationForUser).
+        // Safe to skip re-running the termination logic below on this path: once a block exists,
+        // ConnectionService#sendRequest's own BLOCKED check (evaluated before ALREADY_CONNECTED/
+        // REQUEST_ALREADY_PENDING) makes it structurally impossible for a new connection or
+        // pending request to have appeared since.
         UserBlock existing = userBlockRepository.findByBlockerIdAndBlockedId(currentUserId, targetUserId).orElse(null);
         if (existing != null) {
             return UserBlockDto.fromEntity(existing);
         }
+
+        // A connection is an explicit mutual relationship; a block is an explicit termination of
+        // interaction -- the two must never coexist. Done here, in this (outer) transaction,
+        // before the block row itself is inserted below: if that insert then fails for any reason
+        // other than the handled duplicate-race case, this whole transaction rolls back and
+        // leaves the original CONNECTED/pending state intact instead of a half-applied one.
+        terminateExistingConnectionAndPendingRequest(currentUserId, targetUserId);
 
         try {
             UserBlock saved = self.insertBlockInNewTransaction(blocker, blocked);
@@ -83,6 +104,25 @@ public class BlockService {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public UserBlock insertBlockInNewTransaction(User blocker, User blocked) {
         return userBlockRepository.saveAndFlush(new UserBlock(blocker, blocked));
+    }
+
+    // Removes the UserConnection row for this pair (if any) and cancels the single PENDING
+    // ConnectionRequest between them in either direction (the pending-pair unique constraint
+    // guarantees there is at most one) -- mirrors ConnectionService#cancelRequest/#rejectRequest's
+    // status-transition convention rather than hard-deleting, preserving the audit trail. Never
+    // touches Conversation, ConversationMember, or Message data.
+    private void terminateExistingConnectionAndPendingRequest(Long userA, Long userB) {
+        Long low = Math.min(userA, userB);
+        Long high = Math.max(userA, userB);
+        userConnectionRepository.findByUserLowIdAndUserHighId(low, high)
+                .ifPresent(userConnectionRepository::delete);
+
+        connectionRequestRepository.findBetweenUsersAndStatus(userA, userB, ConnectionRequestStatus.PENDING)
+                .ifPresent(request -> {
+                    request.setStatus(ConnectionRequestStatus.CANCELLED);
+                    request.setRespondedAt(Instant.now());
+                    connectionRequestRepository.save(request);
+                });
     }
 
     @Transactional

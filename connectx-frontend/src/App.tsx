@@ -747,6 +747,30 @@ export const App: React.FC = () => {
   const handleBlockUser = useCallback(async (userId: number) => {
     await blockApi.blockUser(userId);
     setBlockedUserIds((prev) => new Set(prev).add(userId));
+    // The backend also terminates any existing connection and cancels any pending request
+    // between the pair when blocking (a connection is an explicit mutual relationship; a block
+    // is an explicit termination of it) -- mirror that locally so connectedUserIds/pending-
+    // request maps don't go stale. Without this, unblocking later would incorrectly show
+    // "Message"/a stale pending state instead of "Add Connection", since getRelationshipStatus()
+    // would still see the pre-block entries once BLOCKED_BY_ME no longer takes priority.
+    setConnectedUserIds((prev) => {
+      if (!prev.has(userId)) return prev;
+      const next = new Set(prev);
+      next.delete(userId);
+      return next;
+    });
+    setSentRequestsByUserId((prev) => {
+      if (!prev.has(userId)) return prev;
+      const next = new Map(prev);
+      next.delete(userId);
+      return next;
+    });
+    setReceivedRequestsByUserId((prev) => {
+      if (!prev.has(userId)) return prev;
+      const next = new Map(prev);
+      next.delete(userId);
+      return next;
+    });
   }, []);
 
   const handleUnblockUser = useCallback(async (userId: number) => {

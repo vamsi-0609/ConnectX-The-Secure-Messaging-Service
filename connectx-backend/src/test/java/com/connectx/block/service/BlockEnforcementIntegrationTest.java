@@ -3,6 +3,9 @@ package com.connectx.block.service;
 import com.connectx.common.exception.ApiException;
 import com.connectx.connection.dto.ConnectionRequestDto;
 import com.connectx.connection.dto.SendConnectionRequestDto;
+import com.connectx.connection.entity.ConnectionRequest;
+import com.connectx.connection.entity.ConnectionRequestStatus;
+import com.connectx.connection.repository.ConnectionRequestRepository;
 import com.connectx.connection.repository.UserConnectionRepository;
 import com.connectx.connection.service.ConnectionService;
 import com.connectx.conversation.dto.ConversationDto;
@@ -27,6 +30,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -49,6 +53,8 @@ class BlockEnforcementIntegrationTest {
     private ConnectionService connectionService;
     @Autowired
     private UserConnectionRepository userConnectionRepository;
+    @Autowired
+    private ConnectionRequestRepository connectionRequestRepository;
     @Autowired
     private ConversationRepository conversationRepository;
     @Autowired
@@ -123,6 +129,13 @@ class BlockEnforcementIntegrationTest {
     // 11. a pending request cannot be accepted once a blocking relationship exists between the
     // two parties, even though it was sent before the block (both directions of "who blocked
     // whom" relative to "who is the recipient" are exercised).
+    //
+    // Updated for the "block terminates the connection" mini-stage: blockUser() now proactively
+    // cancels any PENDING request between the pair (see BlockService#terminateExistingConnection
+    // AndPendingRequest), so by the time acceptRequest runs, the request is already CANCELLED --
+    // its own status check fires before its own (still-present, defense-in-depth) BLOCKED
+    // re-check, so the code is now REQUEST_NOT_PENDING rather than BLOCKED. The outcome that
+    // matters -- acceptance is impossible and no connection is ever created -- is unchanged.
     @Test
     void acceptRequest_rejectedWhenBlockingRelationshipExists() {
         User a = newUser("accept_block_a");
@@ -131,7 +144,7 @@ class BlockEnforcementIntegrationTest {
         blockService.blockUser(a.getId(), b.getId());
 
         ApiException ex = assertThrows(ApiException.class, () -> connectionService.acceptRequest(b.getId(), request.getId()));
-        assertEquals("BLOCKED", ex.getCode());
+        assertEquals("REQUEST_NOT_PENDING", ex.getCode());
 
         Long low = Math.min(a.getId(), b.getId());
         Long high = Math.max(a.getId(), b.getId());
@@ -147,7 +160,7 @@ class BlockEnforcementIntegrationTest {
         blockService.blockUser(b.getId(), a.getId());
 
         ApiException ex = assertThrows(ApiException.class, () -> connectionService.acceptRequest(b.getId(), request.getId()));
-        assertEquals("BLOCKED", ex.getCode());
+        assertEquals("REQUEST_NOT_PENDING", ex.getCode());
     }
 
     // 14, 16. an existing DIRECT conversation and its member rows must remain completely intact
@@ -219,9 +232,12 @@ class BlockEnforcementIntegrationTest {
         assertEquals("BLOCKED", exB.getCode());
     }
 
-    // 19. an existing connection does not let a blocked pair bypass the block: a NEW conversation
-    // still cannot be created, and a new connection request still cannot be sent, despite the
-    // connections row existing.
+    // 19. a pre-existing connection does not let a blocked pair bypass the block: a NEW
+    // conversation still cannot be created, and a new connection request still cannot be sent.
+    //
+    // Updated for the "block terminates the connection" mini-stage: a connection is now an
+    // explicit mutual relationship that a block explicitly terminates, so blocking removes the
+    // connections row itself (previously it was left untouched, only gated on top of).
     @Test
     void connectedUsers_cannotBypassBlock() {
         User a = newUser("bypass_a");
@@ -233,23 +249,24 @@ class BlockEnforcementIntegrationTest {
 
         blockService.blockUser(a.getId(), b.getId());
 
+        assertFalse(userConnectionRepository.existsByUserLowIdAndUserHighId(low, high),
+                "blocking must terminate the existing connection, not just gate on top of it");
+
         ApiException dmEx = assertThrows(ApiException.class,
                 () -> conversationService.createOrGetDirectConversation(b.getId(), new CreateDirectConversationDto(a.getId())));
-        assertEquals("BLOCKED", dmEx.getCode(), "an existing connection must not let a blocked pair start a new conversation");
+        assertEquals("BLOCKED", dmEx.getCode(), "a new conversation still cannot be created while blocked");
 
         ApiException reqEx = assertThrows(ApiException.class,
                 () -> connectionService.sendRequest(b.getId(), new SendConnectionRequestDto(a.getId())));
         assertEquals("BLOCKED", reqEx.getCode());
-
-        // The connection itself is untouched -- Stage 2 does not delete it, only gates new
-        // relationship formation on top of it.
-        assertTrue(userConnectionRepository.existsByUserLowIdAndUserHighId(low, high));
     }
 
-    // Unblocking restores exactly the prior authorization state: a connected pair can message
-    // again, and an unconnected pair returns to needing a connection (not silently authorized).
+    // Unblocking removes only the block -- it must NOT resurrect the connection that existed
+    // before the block, and must NOT silently re-authorize messaging. The pair returns to
+    // NOT_CONNECTED and must go through a brand-new send-request/accept cycle before a new
+    // conversation (or, for a legacy pair, new messages in an existing one) becomes possible again.
     @Test
-    void unblock_restoresPriorAuthorizationState() {
+    void unblock_doesNotRestorePriorConnection_requiresFreshRequest() {
         User a = newUser("restore_a");
         User b = newUser("restore_b");
         connect(a, b);
@@ -259,8 +276,105 @@ class BlockEnforcementIntegrationTest {
 
         blockService.unblockUser(a.getId(), b.getId());
 
+        Long low = Math.min(a.getId(), b.getId());
+        Long high = Math.max(a.getId(), b.getId());
+        assertFalse(userConnectionRepository.existsByUserLowIdAndUserHighId(low, high),
+                "unblocking must not resurrect the prior connection");
+
+        // No prior conversation existed for this pair, and the connection was not restored, so a
+        // brand-new conversation still cannot be created -- NOT_CONNECTED, not silently allowed.
+        ApiException ex = assertThrows(ApiException.class,
+                () -> conversationService.createOrGetDirectConversation(a.getId(), new CreateDirectConversationDto(b.getId())));
+        assertEquals("NOT_CONNECTED", ex.getCode());
+
+        // A fresh request + accept works normally and messaging becomes available again.
+        ConnectionRequestDto freshRequest = connectionService.sendRequest(a.getId(), new SendConnectionRequestDto(b.getId()));
+        assertEquals("PENDING", freshRequest.getStatus());
+        connectionService.acceptRequest(b.getId(), freshRequest.getId());
+        assertTrue(userConnectionRepository.existsByUserLowIdAndUserHighId(low, high));
+
         ConversationDto dto = conversationService.createOrGetDirectConversation(a.getId(), new CreateDirectConversationDto(b.getId()));
         assertEquals("DIRECT", dto.getType());
+    }
+
+    // ── Block terminates connection/pending-request (this mini-stage) ───────────────────────
+
+    // 1. a connected pair: blocking creates the block row AND removes the connection.
+    @Test
+    void blockUser_terminatesExistingConnection() {
+        User a = newUser("terminate_a");
+        User b = newUser("terminate_b");
+        connect(a, b);
+        Long low = Math.min(a.getId(), b.getId());
+        Long high = Math.max(a.getId(), b.getId());
+        assertTrue(userConnectionRepository.existsByUserLowIdAndUserHighId(low, high));
+
+        blockService.blockUser(a.getId(), b.getId());
+
+        assertFalse(userConnectionRepository.existsByUserLowIdAndUserHighId(low, high));
+        assertTrue(blockService.getMyBlocks(a.getId()).stream().anyMatch(bl -> bl.getBlockedUserId().equals(b.getId())));
+    }
+
+    // 2. A -> B pending request, then A blocks B: the request is cancelled, not left PENDING.
+    @Test
+    void blockUser_cancelsPendingRequest_blockerWasRequester() {
+        User a = newUser("blockpend1_a");
+        User b = newUser("blockpend1_b");
+        ConnectionRequestDto request = connectionService.sendRequest(a.getId(), new SendConnectionRequestDto(b.getId()));
+
+        blockService.blockUser(a.getId(), b.getId());
+
+        ConnectionRequest reloaded = connectionRequestRepository.findById(request.getId()).orElseThrow();
+        assertEquals(ConnectionRequestStatus.CANCELLED, reloaded.getStatus());
+        assertNotNull(reloaded.getRespondedAt());
+    }
+
+    // 3. B -> A pending request, then A blocks B: the request is cancelled regardless of which
+    // side of "requester/recipient" the blocker was on.
+    @Test
+    void blockUser_cancelsPendingRequest_blockerWasRecipient() {
+        User a = newUser("blockpend2_a");
+        User b = newUser("blockpend2_b");
+        ConnectionRequestDto request = connectionService.sendRequest(b.getId(), new SendConnectionRequestDto(a.getId()));
+
+        blockService.blockUser(a.getId(), b.getId());
+
+        ConnectionRequest reloaded = connectionRequestRepository.findById(request.getId()).orElseThrow();
+        assertEquals(ConnectionRequestStatus.CANCELLED, reloaded.getStatus());
+    }
+
+    // 6, 7. a full block -> unblock cycle on a connected, already-messaging pair must leave the
+    // conversation, its membership, and existing message ciphertext/nonce/algorithm completely
+    // untouched -- only the relationship rows (connections/connection_requests/user_blocks) change.
+    @Test
+    void blockThenUnblock_preservesExistingConversationAndCiphertext() {
+        User a = newUser("blockconv_a");
+        User b = newUser("blockconv_b");
+        connect(a, b);
+
+        Conversation direct = conversationRepository.save(new Conversation(ConversationType.DIRECT));
+        conversationMemberRepository.save(new ConversationMember(direct, a));
+        conversationMemberRepository.save(new ConversationMember(direct, b));
+        Message message = messageRepository.save(new Message(
+                direct, a, null, null, "ECDH-P256+AES-256-GCM", "unchanged-ciphertext", "unchanged-nonce"));
+
+        blockService.blockUser(a.getId(), b.getId());
+        blockService.unblockUser(a.getId(), b.getId());
+
+        Optional<Message> reloaded = messageRepository.findById(message.getId());
+        assertTrue(reloaded.isPresent(), "existing message must survive a block/unblock cycle");
+        assertEquals("unchanged-ciphertext", reloaded.get().getCiphertext());
+        assertEquals("unchanged-nonce", reloaded.get().getNonce());
+        assertEquals("ECDH-P256+AES-256-GCM", reloaded.get().getEncryptionAlgorithm());
+
+        ConversationDto conversationDto = conversationService.getConversationById(a.getId(), direct.getId());
+        assertEquals(direct.getId(), conversationDto.getId());
+        assertEquals("DIRECT", conversationDto.getType());
+        assertEquals(2, conversationDto.getMembers().size());
+
+        // But the existing conversation does NOT imply messaging is allowed again -- MessageService
+        // only re-checks BLOCKED (no active block remains here), not "currently connected"; this
+        // pre-existing gap is documented separately and intentionally not touched by this stage.
     }
 
     // ── Search privacy (blocked-users management mini-stage) ────────────────────────────────
