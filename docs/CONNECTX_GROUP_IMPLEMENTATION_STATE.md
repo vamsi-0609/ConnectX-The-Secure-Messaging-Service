@@ -32,8 +32,24 @@ stage list above; revisit only if explicitly requested later.
 
 ## Current status
 
-**Current stage: 1 — Connection backend — COMPLETE**
-**Next stage: 1.5 — Connection frontend**
+**Current stage: control-prompt Stage 4 (Blocking) — BACKEND ONLY, COMPLETE. Frontend NOT started.**
+**Next stage: 1.5 — Connection frontend (still not started — see checkpoint below for why this is
+out of stage order)**
+
+**Checkpoint note (2026-08-17):** a later conversation referred to the current point as "Stage 3"
+and requested a frontend audit (connection-request UI, pending/sent UI, accept/reject UI, blocking
+UI, etc.). That frontend does not exist yet in this repo — zero files under `connectx-frontend`
+reference connections or blocking, and no frontend file has changed since commit `7ae17f3` (Stage 1
+backend). What has actually been built past Stage 1, in commit order, is:
+- `02c3444` — DM creation enforcement (control-prompt Stage 3 per the mapping table above: "Stage 2
+  enforcement half") — **backend only**.
+- `00fb852` — Blocking backend foundation (control-prompt Stage 4 per the mapping table: PDF
+  "Stage 3 = Blocking") — **backend only**.
+
+Neither of these two commits was reflected in this document before now (this checkpoint adds them
+retroactively from direct commit inspection, not from memory). Stage 1.5 (connection frontend) and
+the frontend half of Stage 4 (blocking UI) remain **not started**. See "Checkpoint — 2026-08-17"
+near the end of this document for the full verification this entry is based on.
 
 ---
 
@@ -482,10 +498,10 @@ stage (control-prompt Stage 3), not bundled into the frontend work.
 | 0A | Complete | `6afa0be` |
 | 0B | Complete | `3996197` |
 | 1 | Complete | `7ae17f3` |
-| 1.5 | Not started | — |
-| 2 | Not started | — |
-| 3 | Not started | — |
-| 4 | Not started | — |
+| 1.5 | Not started (frontend) | — |
+| 2 | Not started — no backfill script exists (`grep -r backfill` across the repo returns nothing). `02c3444` did not backfill `connections` rows for pre-existing DIRECT pairs; instead it exempts any conversation that already exists from the new connection check, which is a different mechanism than the PDF's Stage 2 backfill. Flag for a later stage to confirm this substitution is intentional and permanent rather than a gap. | — |
+| 3 | Complete — backend only (DM creation now requires an accepted connection for *new* pairs; pre-existing pairs exempted per above) | `02c3444` |
+| 4 | Backend only, complete (blocking foundation + enforcement at DM-create, connection-request, and message-send boundaries). Frontend not started. | `00fb852` |
 | 5 | Not started | — |
 | 6 | Not started | — |
 | 7 | Not started | — |
@@ -493,3 +509,95 @@ stage (control-prompt Stage 3), not bundled into the frontend work.
 | 9 | Not started | — |
 | 10 | Not started | — |
 | 11 | Not started | — |
+
+---
+
+## Checkpoint — 2026-08-17
+
+Requested as a pause-and-audit before continuing further work. No implementation performed this
+checkpoint — verification only, and this document update.
+
+**Git state:** branch `feature/pwa-notifications`, HEAD `00fb852`, working tree clean, 8 commits
+ahead of `origin/feature/pwa-notifications` (not pushed). All Connections/Blocking work to date is
+already committed — nothing was uncommitted at checkpoint time, so no new commit was made.
+
+**Frontend for connections/blocking: does not exist.** `git ls-files -- connectx-frontend | grep -iE
+"(ConnectionRequest|Relationship|BlockUser|blockApi|connectionApi|PendingRequest)"` returns nothing,
+and `git diff 7ae17f3..HEAD --stat -- connectx-frontend` is empty. Every item in a "Stage 3 frontend"
+checklist (connection-request UI, pending/sent-request UI, accept/reject UI, blocking/unblock UI,
+relationship-state handling, search gating, loading/error states, duplicate-click protection) is
+**not implemented** — there is no frontend code to audit. `UserSearchModal.tsx`'s "Start Chat" action
+still calls `POST /api/v1/conversations/direct` unconditionally; a `403 NOT_CONNECTED` or `403
+BLOCKED` from the backend would currently surface as whatever this app's generic API-error handling
+does, not a purpose-built UI state (not verified further since building/wiring that is exactly the
+still-pending Stage 1.5 work).
+
+**Build verification:**
+- `npx tsc --noEmit` (connectx-frontend) — clean, 0 errors.
+- `npm run build` (connectx-frontend) — succeeded, 1653 modules, same profile as prior checkpoints.
+- `mvn test` (connectx-backend) — **BUILD SUCCESS, 77/77 tests passed, 0 failures, 0 errors.** The
+  `SqlExceptionHelper` "Duplicate entry" ERROR-level log lines during `ReactionRaceIntegrationTest`
+  and `StarRaceIntegrationTest` are expected, caught-and-handled race-test noise (same pre-existing
+  pattern noted in Stage 0A), not failures.
+
+**Protected systems — verified untouched by both post-Stage-1 commits (`02c3444`, `00fb852`), by
+direct diff inspection, not assumption:**
+`WebPushService.java`, `WebPushPayloadEncryptor.java`, VAPID/push-subscription code,
+`PresenceService.java`, `WebSocketMessageController.java`, `PushNotificationController.java`, every
+`sw.js`/`browserNotifications.ts`/`serviceWorker.ts`-equivalent, E2EE encryption/decryption,
+identity-key handling, message ciphertext/persistence, database schema/Flyway, and every
+`chat_groups`/`group_invitations`/Groups file are all untouched. The two commits touched exactly:
+`ConversationService.java`, `MessageService.java` (only an early authorization check inserted before
+the existing persistence/broadcast logic — the encryption, persistence, and WebSocket-broadcast code
+paths themselves are unmodified), `UserRepository.java`, `ConversationMemberRepository.java`,
+`ConnectionService.java`, and the new `block/` package plus tests.
+
+**API contract:** `BlockController` (`POST/DELETE /api/v1/blocks/{userId}`, `GET /api/v1/blocks`) and
+the Stage 1 `ConnectionController` endpoints match the expected contract exactly. Blocker/requester
+identity is always `@AuthenticationPrincipal UserPrincipal currentUser`, never a client-supplied
+`blockerId`/`requesterId` — confirmed by reading both controllers directly.
+
+**Performance / N+1:** not assessable — there is no frontend caller yet, so the relationship-API
+call counts requested (per search result, per send/accept/reject/block/unblock) are currently zero
+by construction. Revisit this once Stage 1.5 wires the frontend up.
+
+**Existing DIRECT compatibility:** confirmed by direct code reading of `02c3444`'s diff — the
+existing-conversation branch of `createOrGetDirectConversation` returns before both the block check
+and the `NOT_CONNECTED` check are reached, so a pre-existing DIRECT conversation with no `connections`
+row keeps working unconditionally, exactly as `DirectConversationAuthorizationTest` (added in that
+commit) asserts.
+
+**Manual test checklist (pending — none of these are testable yet without the Stage 1.5/Stage-4-
+frontend work; listed for later use):**
+- A. Search unconnected user
+- B. Send request
+- C. Cancel request
+- D. Receive request
+- E. Accept
+- F. Reject
+- G. Connected → message
+- H. Existing legacy DIRECT chat still opens
+- I. Block
+- J. Unblock
+- K. Reload persistence
+- L. Backend `403 BLOCKED` surfaces without an app crash
+- M. Backend `403 NOT_CONNECTED` surfaces without an app crash
+
+**Known risks / follow-ups:**
+1. Stage numbering drift: this repo's own control-prompt mapping (top of this document) puts DM
+   enforcement at Stage 3 and blocking at Stage 4 — both already done, backend-only. Frontend for
+   connections (Stage 1.5) has not been started at all. Whoever resumes this work should treat the
+   next stage as **Stage 1.5 (connection frontend)**, not "Stage 3.5" or "Stage 4" frontend, and
+   should decide whether blocking frontend gets bundled into that same pass or its own stage.
+2. Control-prompt Stage 2 (DIRECT-conversation backfill into `connections`) was never done as
+   specified — see the Stage log row above. The enforcement commit substituted an exemption
+   mechanism instead. This works today but means `connections` will never contain rows for
+   pre-Stage-1 DIRECT pairs; flag if any future feature (e.g., "show mutual connections",
+   connection-list completeness) assumes `connections` is authoritative for all DIRECT
+   relationships.
+3. This document had silently fallen behind two real commits (`02c3444`, `00fb852`) before this
+   checkpoint — neither had a corresponding state-doc entry or Stage-log row. Backfilled from direct
+   `git show`/`git diff` inspection this checkpoint, not from memory of having done the work.
+
+**No code was changed this checkpoint.** Working tree was clean before and after; this document edit
+is the only change made.
