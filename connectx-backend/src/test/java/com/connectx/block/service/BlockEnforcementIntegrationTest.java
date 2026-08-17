@@ -17,12 +17,16 @@ import com.connectx.message.dto.SendMessageRequestDto;
 import com.connectx.message.entity.Message;
 import com.connectx.message.repository.MessageRepository;
 import com.connectx.message.service.MessageService;
+import com.connectx.user.dto.UserDto;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
+import com.connectx.user.service.UserService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -55,6 +59,8 @@ class BlockEnforcementIntegrationTest {
     private MessageService messageService;
     @Autowired
     private UserRepository userRepository;
+    @Autowired
+    private UserService userService;
 
     private User newUser(String label) {
         long n = System.nanoTime();
@@ -255,5 +261,61 @@ class BlockEnforcementIntegrationTest {
 
         ConversationDto dto = conversationService.createOrGetDirectConversation(a.getId(), new CreateDirectConversationDto(b.getId()));
         assertEquals("DIRECT", dto.getType());
+    }
+
+    // ── Search privacy (blocked-users management mini-stage) ────────────────────────────────
+
+    // 1. a user blocked by the searcher must not appear in that searcher's results
+    @Test
+    void searchUsers_excludesUserBlockedByCurrentUser() {
+        User a = newUser("searchblock_a");
+        User b = newUser("searchblock_bxyz");
+        blockService.blockUser(a.getId(), b.getId());
+
+        List<UserDto> results = userService.searchUsersByUsername("searchblock_bxyz", a.getId());
+        assertTrue(results.stream().noneMatch(u -> u.getId().equals(b.getId())),
+                "a user the searcher blocked must not appear in search results");
+    }
+
+    // 2. reverse direction: a user who blocked the searcher must also not appear -- blocking is
+    // symmetric for discovery purposes even though the underlying row is directional.
+    @Test
+    void searchUsers_excludesUserWhoBlockedCurrentUser() {
+        User a = newUser("searchblock2_a");
+        User b = newUser("searchblock2_bxyz");
+        blockService.blockUser(b.getId(), a.getId());
+
+        List<UserDto> results = userService.searchUsersByUsername("searchblock2_bxyz", a.getId());
+        assertTrue(results.stream().noneMatch(u -> u.getId().equals(b.getId())),
+                "a user who blocked the searcher must not appear in that searcher's results either");
+    }
+
+    // 3. blocking is pair-specific: an unrelated third user's search is completely unaffected
+    @Test
+    void searchUsers_unrelatedUserStillSeesNormalResults() {
+        User a = newUser("searchblock3_a");
+        User b = newUser("searchblock3_bxyz");
+        User c = newUser("searchblock3_c");
+        blockService.blockUser(a.getId(), b.getId());
+
+        List<UserDto> results = userService.searchUsersByUsername("searchblock3_bxyz", c.getId());
+        assertTrue(results.stream().anyMatch(u -> u.getId().equals(b.getId())),
+                "an unrelated user's search must be unaffected by someone else's block");
+    }
+
+    // 4. unblocking restores discoverability -- this is purely a search-visibility check;
+    // relationship state after unblock (NOT_CONNECTED etc.) is covered by ConnectionServiceTest.
+    @Test
+    void searchUsers_unblockRestoresDiscoverability() {
+        User a = newUser("searchblock4_a");
+        User b = newUser("searchblock4_bxyz");
+        blockService.blockUser(a.getId(), b.getId());
+        assertTrue(userService.searchUsersByUsername("searchblock4_bxyz", a.getId()).isEmpty());
+
+        blockService.unblockUser(a.getId(), b.getId());
+
+        List<UserDto> results = userService.searchUsersByUsername("searchblock4_bxyz", a.getId());
+        assertTrue(results.stream().anyMatch(u -> u.getId().equals(b.getId())),
+                "unblocking must restore discoverability in search");
     }
 }

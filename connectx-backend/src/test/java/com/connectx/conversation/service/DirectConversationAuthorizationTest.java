@@ -170,7 +170,7 @@ class DirectConversationAuthorizationTest {
         User a = newUser("search_a");
         User b = newUser("search_bxyz");
 
-        List<UserDto> results = userService.searchUsersByUsername("search_bxyz");
+        List<UserDto> results = userService.searchUsersByUsername("search_bxyz", a.getId());
         assertTrue(results.stream().anyMatch(u -> u.getId().equals(b.getId())), "search must still find the unconnected user");
 
         assertFalse(conversationRepository.findDirectConversationBetweenUsers(a.getId(), b.getId()).isPresent(),

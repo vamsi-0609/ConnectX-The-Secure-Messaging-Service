@@ -20,6 +20,9 @@ const DeviceManagerModal = React.lazy(() =>
 const ProfileModal = React.lazy(() =>
   import('./components/profile/ProfileModal').then((m) => ({ default: m.ProfileModal }))
 );
+const BlockedUsersModal = React.lazy(() =>
+  import('./components/profile/BlockedUsersModal').then((m) => ({ default: m.BlockedUsersModal }))
+);
 import { useWebSocket } from './websocket/WebSocketContext';
 import { wsClient } from './websocket/WebSocketClient';
 import { conversationApi } from './api/conversationApi';
@@ -246,6 +249,7 @@ export const App: React.FC = () => {
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showDeviceModal, setShowDeviceModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [showBlockedUsersModal, setShowBlockedUsersModal] = useState(false);
   const [showRequestsModal, setShowRequestsModal] = useState(false);
 
   // Connection/blocking relationship data -- loaded in bulk once on startup (see
@@ -796,7 +800,11 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     const isSubScreen =
-      activeConversation !== null || showProfileModal || showSearchModal || showDeviceModal;
+      activeConversation !== null ||
+      showProfileModal ||
+      showSearchModal ||
+      showDeviceModal ||
+      showBlockedUsersModal;
 
     if (isSubScreen) {
       // Push a synthetic history entry so there is something to pop back to
@@ -804,7 +812,7 @@ export const App: React.FC = () => {
         window.history.pushState({ connectxNav: true }, '');
       }
     }
-  }, [activeConversation, showProfileModal, showSearchModal, showDeviceModal]);
+  }, [activeConversation, showProfileModal, showSearchModal, showDeviceModal, showBlockedUsersModal]);
 
   useEffect(() => {
     const handlePopState = () => {
@@ -812,7 +820,9 @@ export const App: React.FC = () => {
       isHandlingPopRef.current = true;
 
       // Close the topmost screen in priority order
-      if (showDeviceModal) {
+      if (showBlockedUsersModal) {
+        setShowBlockedUsersModal(false);
+      } else if (showDeviceModal) {
         setShowDeviceModal(false);
       } else if (showSearchModal) {
         setShowSearchModal(false);
@@ -823,7 +833,11 @@ export const App: React.FC = () => {
       }
       // Re-push so a second back still works if multiple layers are open
       const stillSubScreen =
-        showDeviceModal || showSearchModal || showProfileModal || activeConversation !== null;
+        showBlockedUsersModal ||
+        showDeviceModal ||
+        showSearchModal ||
+        showProfileModal ||
+        activeConversation !== null;
       if (stillSubScreen) {
         window.history.pushState({ connectxNav: true }, '');
       }
@@ -833,7 +847,7 @@ export const App: React.FC = () => {
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [activeConversation, showProfileModal, showSearchModal, showDeviceModal]);
+  }, [activeConversation, showProfileModal, showSearchModal, showDeviceModal, showBlockedUsersModal]);
 
   const decryptSingleMessage = useCallback(
     async (msg: Message, userId: number, peerUserId?: number | null): Promise<Message> => {
@@ -2649,6 +2663,7 @@ export const App: React.FC = () => {
             isDarkMode={isDarkMode}
             onToggleTheme={() => setIsDarkMode(!isDarkMode)}
             onOpenDevices={() => setShowDeviceModal(true)}
+            onOpenBlockedUsers={() => setShowBlockedUsersModal(true)}
             onClose={() => setShowProfileModal(false)}
             onLogout={handleLogout}
             onUserUpdated={handleUserUpdated}
@@ -2695,6 +2710,12 @@ export const App: React.FC = () => {
       {showDeviceModal && (
         <React.Suspense fallback={null}>
           <DeviceManagerModal currentUser={currentUser} onClose={() => setShowDeviceModal(false)} />
+        </React.Suspense>
+      )}
+
+      {showBlockedUsersModal && (
+        <React.Suspense fallback={null}>
+          <BlockedUsersModal onClose={() => setShowBlockedUsersModal(false)} onUnblock={handleUnblockUser} />
         </React.Suspense>
       )}
 

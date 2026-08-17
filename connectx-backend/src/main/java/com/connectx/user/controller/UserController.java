@@ -24,8 +24,10 @@ public class UserController {
     }
 
     @GetMapping("/search")
-    public ResponseEntity<ApiResponse<List<UserDto>>> searchUsers(@RequestParam("username") String username) {
-        List<UserDto> users = userService.searchUsersByUsername(username);
+    public ResponseEntity<ApiResponse<List<UserDto>>> searchUsers(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @RequestParam("username") String username) {
+        List<UserDto> users = userService.searchUsersByUsername(username, currentUser.getId());
         return ResponseEntity.ok(ApiResponse.success("User search results", users));
     }
 

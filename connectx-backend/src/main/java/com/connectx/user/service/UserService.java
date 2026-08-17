@@ -53,12 +53,15 @@ public class UserService {
 
     private static final int USER_SEARCH_LIMIT = 20;
 
-    public List<UserDto> searchUsersByUsername(String username) {
+    // currentUserId excludes any user blocked in either direction from the results (search
+    // privacy) -- enforced in the database query itself, not filtered afterward, so a blocked
+    // pair's data never reaches this method's caller in the first place.
+    public List<UserDto> searchUsersByUsername(String username, Long currentUserId) {
         if (username == null || username.trim().isEmpty()) {
             return List.of();
         }
-        return userRepository.findByUsernameContainingIgnoreCase(
-                        username.trim(), org.springframework.data.domain.PageRequest.of(0, USER_SEARCH_LIMIT))
+        return userRepository.searchByUsernameExcludingBlockedPairs(
+                        username.trim(), currentUserId, org.springframework.data.domain.PageRequest.of(0, USER_SEARCH_LIMIT))
                 .stream()
                 .map(UserDto::fromEntity)
                 .collect(Collectors.toList());

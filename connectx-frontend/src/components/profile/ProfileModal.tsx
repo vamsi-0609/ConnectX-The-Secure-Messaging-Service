@@ -15,6 +15,7 @@ import {
   Check,
   KeyRound,
   CheckCircle2,
+  ShieldOff,
 } from 'lucide-react';
 import { User } from '../../types';
 import { userApi } from '../../api/userApi';
@@ -30,6 +31,7 @@ interface ProfileModalProps {
   isDarkMode: boolean;
   onToggleTheme: () => void;
   onOpenDevices: () => void;
+  onOpenBlockedUsers: () => void;
   onClose: () => void;
   onLogout: () => void;
   onUserUpdated: (user: User) => void;
@@ -106,6 +108,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   isDarkMode,
   onToggleTheme,
   onOpenDevices,
+  onOpenBlockedUsers,
   onClose,
   onLogout,
   onUserUpdated,
@@ -489,6 +492,20 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
             <span className="flex items-center gap-3 text-xs font-medium text-slate-700 dark:text-slate-200">
               <Smartphone className="w-4 h-4 text-violet-400" />
               Devices
+            </span>
+            <span className="text-[11px] text-indigo-500 font-medium">Manage</span>
+          </button>
+
+          <button
+            onClick={() => {
+              onClose();
+              onOpenBlockedUsers();
+            }}
+            className="w-full px-3 py-2.5 flex items-center justify-between hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors rounded-xl text-left"
+          >
+            <span className="flex items-center gap-3 text-xs font-medium text-slate-700 dark:text-slate-200">
+              <ShieldOff className="w-4 h-4 text-red-400" />
+              Blocked Users
             </span>
             <span className="text-[11px] text-indigo-500 font-medium">Manage</span>
           </button>
