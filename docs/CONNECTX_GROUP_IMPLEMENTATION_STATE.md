@@ -75,10 +75,16 @@ describe:**
   "Checkpoint — Groups Stage 6B group E2EE key model (2026-08-18)" at the end of this document.
   `V5__group_e2ee_key_model.sql` applied to `connectx_db`. No crypto, no key generation/wrapping/
   rotation, no frontend, no `MessageService`/WebSocket/Web Push change.
+- **Groups Stage 6C** (opaque wrapped-group-key distribution API: `POST/GET
+  /api/v1/groups/{groupId}/keys[/me]`, new `GroupKeyService`/`GroupKeyController`, server-side
+  key-version enforcement) — see "Checkpoint — Groups Stage 6C wrapped-key API (2026-08-18)" at
+  the end of this document. No schema change, no cryptography of any kind (still purely opaque
+  string handling), no frontend, no key generation/wrapping/rotation.
 
-**Next stage: Groups Stage 6C (per PART 16's instruction, Stage 6B stops here — key
-generation/wrapping endpoints and any further Group E2EE work need explicit approval before
-proceeding).** The stale "not started" framing directly below (written
+**Next stage: Groups Stage 6D (per this stage's own STOP instruction — frontend crypto, key
+generation/wrapping, group message encryption, key rotation, member-removal crypto, and group
+calls/WebRTC all need separate, explicit approval before proceeding).** The stale "not started"
+framing directly below (written
 before any Groups code existed) is superseded by the above; kept as-is for historical accuracy of
 what was true when written.
 
@@ -1734,3 +1740,168 @@ table, row, or column needs to change either way.
 ### Next stage
 Groups Stage 6C (key generation/wrapping endpoints and further Group E2EE work) — **not started,
 awaiting explicit instruction**, per this stage's own STOP-after-6B mandate.
+
+---
+
+## Checkpoint — Groups Stage 6C wrapped-key API (2026-08-18)
+
+Opaque wrapped-group-key distribution API only. The backend generates nothing, receives no
+plaintext, decrypts/unwraps/derives nothing, stores no plaintext, logs no key material, and
+returns no plaintext GROUP_KEY at any point in this stage's code — `wrappedKey`/`wrapNonce` are
+handled as completely opaque strings from request DTO to entity to response DTO. Frontend AES
+group-key generation and ECDH wrapping/unwrapping remain entirely out of scope (Stage 6D+).
+
+**Git state before starting:** branch `feature/pwa-notifications`, HEAD `a75e74e` (Stage 6B),
+working tree clean.
+
+**Inspection performed before writing anything:** `GroupMemberKey`/`GroupMemberKeyRepository`
+(Stage 6B), `ChatGroup`, `GroupAuthorizationService` (every existing gate:
+`requireActiveMember`, `resolveMembershipState`, the `MembershipState` enum), `GroupService`,
+`GroupInvitationService` (its `self`-proxy `REQUIRES_NEW` insert-race pattern), `GroupController`/
+`GroupMembershipController` (routing/DTO/`@AuthenticationPrincipal` conventions),
+`CreateGroupRequestDto`/`UpdateMemberRoleRequestDto` (validation-annotation conventions),
+`ConnectionControllerSecurityTest` (the one existing MockMvc/unauthenticated-request test
+pattern in this codebase), `GroupMembershipRaceIntegrationTest` (the `CountDownLatch`
+race-test style). No parallel authorization architecture was invented — every authorization
+decision in this stage's code goes through `GroupAuthorizationService.requireActiveMember` and
+`.resolveMembershipState`; nothing re-derives membership state independently.
+
+### Endpoints added
+Both under `/api/v1/groups` (new `GroupKeyController`), both authenticated via the existing
+`anyRequest().authenticated()` rule (zero `SecurityConfig` change needed):
+- `POST /{groupId}/keys` — an active member submits an opaque wrapped copy of the group's
+  *current* key for another active member (or themselves). Body: `SubmitGroupMemberKeyRequestDto`
+  (`memberUserId`, `wrappedKey`, `wrapNonce`, `keyVersion`). Returns the stored
+  `GroupMemberKeyDto`.
+- `GET /{groupId}/keys/me` — returns the authenticated caller's own current wrapped key
+  (`GroupMemberKeyDto`: `groupId`, `keyVersion`, `wrappedKey`, `wrapNonce`). No parameter can name
+  a different target — the lookup key is always `(groupId, currentUserId)` from the security
+  principal.
+
+### DTOs added
+- `SubmitGroupMemberKeyRequestDto` — `memberUserId` (`@NotNull`), `wrappedKey`/`wrapNonce`
+  (`@NotBlank`), `keyVersion` (`@NotNull @Positive`). Structurally carries no `actorUserId`, no
+  `role`, and no `groupKey`/`plaintextKey`/`privateKey`/`secretKey` field — nothing to forge any
+  of those with even before authorization runs.
+- `GroupMemberKeyDto` — `groupId`, `keyVersion`, `wrappedKey`, `wrapNonce` only. No internal
+  database id, no `memberUserId` (the response is always "yours"), no `updatedAt`. The
+  `GroupMemberKey` entity itself is never returned from the controller (see test 30 below).
+
+### Authorization checks
+Every check reuses `GroupAuthorizationService` — nothing here re-implements a membership check:
+- **Actor:** `requireActiveMember(actorUserId, groupId)` — group exists, is actually type GROUP
+  (so a DIRECT conversation id 404s exactly like every other group endpoint), actor is a
+  currently-active member. Applies to both endpoints.
+- **Target (POST only):** `resolveMembershipState(groupId, targetUserId) == ACTIVE_MEMBER`,
+  else `404 NOT_GROUP_MEMBER` — the same generic error `requireCanRemoveMember`/
+  `requireCanChangeRole` already use for an invalid target, reused rather than inventing a new
+  code. Uniformly rejects a never-a-member id (including one with no corresponding `users` row —
+  the membership table lookup alone decides this, so a nonexistent user id needs no separate
+  existence check), a removed/left member (INACTIVE), and a member of a *different* group (whose
+  `(groupId, targetUserId)` pair simply has no row).
+- **Not OWNER-only:** per Part 5's explicit instruction, any active member may submit a key for
+  any other active member — membership itself is the only gate; adding/inviting members remains
+  exclusively `GroupAuthorizationService`/`GroupInvitationService`'s domain, untouched by this
+  stage.
+- **Blocking is deliberately NOT consulted** by this endpoint — a block between two already-active
+  members neither blocks nor bypasses key exchange (test `blockedActiveMembers_...`), matching
+  Part 5's design: this endpoint only distributes key material *after* membership authorization
+  already exists elsewhere.
+
+### Version validation
+`GroupKeyService.submitWrappedKey` rejects any `keyVersion` other than `ChatGroup.keyVersion` read
+fresh in the same transaction (`409 KEY_VERSION_MISMATCH`) — both older and newer are rejected
+identically; the server never rewrites the client's submitted version and never auto-increments
+`ChatGroup.keyVersion` (no rotation exists in this stage, confirmed no code path writes it).
+
+### IDOR protections
+`GET /{groupId}/keys/me` takes no target-identity input of any kind (no path/query/body field) —
+the lookup key is exclusively `(groupId, currentUserId)` from `@AuthenticationPrincipal`. A
+non-member gets the exact same `403 NOT_GROUP_MEMBER` from `requireActiveMember` that every other
+group endpoint throws for a non-member, so the response shape leaks nothing about whether the
+group exists, was previously joined, or has any key rows — same generic-failure convention as
+`ConnectionController`'s deliberately-absent single-request lookup endpoint.
+
+### Historical-key behavior
+No history is ever exposed: the version check means a member's stored row can only ever hold the
+group's current version at the moment it was written, and once membership authorization fails
+(removal/leave), `GET .../keys/me` is blocked entirely regardless of whether the row still
+physically exists (it does — Stage 6C implements no cleanup-on-removal; that belongs to a future
+rotation stage). Verified directly: `removedMember_cannotGet` confirms the row survives removal in
+the DB but is unreachable via the API; `newlyJoinedMember_getsOnlyCurrentVersion` confirms a
+member added after a (test-simulated) version bump cannot have an older version submitted for
+them.
+
+### Duplicate/race handling
+`GroupMemberKeyRepository.findByConversationIdAndMemberUserId` decides insert-vs-update up front;
+a genuine concurrent double-insert for the same never-before-seen `(conversationId,
+memberUserId)` pair is caught via the same `self`-proxied `REQUIRES_NEW` +
+`DataIntegrityViolationException`-catch pattern `GroupInvitationService`/`ConnectionService`
+already established, then falls back to an `UPDATE` of the winning row rather than surfacing an
+error — this endpoint's contract is "the current wrapped key for this member ends up as
+submitted", not "first submission wins", so a race never produces a duplicate row and never fails
+either caller. No pessimistic locking introduced (none needed — Stage 6B's unique constraint is
+the actual backstop). Verified empirically under real concurrent load
+(`concurrentUploadsForSameMember_neverDuplicateRows`), not just asserted.
+
+### Tests added — 21 total, all passing
+`GroupKeyServiceTest` (19, `com.connectx.group.service`) covering every PART 15 item 1–20 and
+27–31 (auth, target validation, version, duplicates, history, blocking-is-irrelevant, exact-opaque
+persistence, structural no-plaintext-key/no-forgeable-actor-field checks via reflection, entity
+never exposed through the controller via reflection, and the concurrency race).
+`GroupKeyControllerSecurityTest` (2, `com.connectx.group.controller`) covering item 21 —
+unauthenticated `POST .../keys` and `GET .../keys/me` both rejected (401/403) — the strongest
+possible proof the actor can never be forged, since there is no reachable code path without a
+real, server-validated JWT principal. Items 22–24 are covered behaviorally within
+`GroupKeyServiceTest`'s target-validation and non-member tests rather than as separately-labeled
+tests (a forged target/group id is exactly what those tests already submit).
+
+### Full regression
+`mvn test`: **BUILD SUCCESS, 290/290 tests passed, 0 failures, 0 errors** (269 from before this
+stage + 21 new). Same expected `SqlExceptionHelper`/`UnrecognizedPropertyException` test-noise log
+lines as every prior checkpoint — not failures. DIRECT messaging, DIRECT E2EE, connections,
+blocking, WebSocket SUBSCRIBE authorization, group creation, group invitations, group membership,
+group settings, group messaging, and push notification suites all passed unchanged.
+
+### Crypto untouched confirmation
+No file under `crypto/` (frontend) was read for editing or modified. No backend code generates,
+receives, decrypts, unwraps, or derives any key — `GroupKeyService` only moves opaque strings
+between a request DTO, the `GroupMemberKey` entity, and a response DTO. `MessageService`,
+WebSocket handling, and Web Push are all untouched (confirmed via `git diff --name-only` below).
+
+### Frontend untouched confirmation
+Untouched. No `.tsx`/`.ts` file was read for editing or modified — confirmed by `git status`/
+`git diff --name-only` showing only the 6 new backend files listed below.
+
+### Plaintext GROUP_KEY server-side confirmation
+**Confirmed: no plaintext GROUP_KEY exists server-side.** Repo-wide search for `GroupMemberKey`,
+`wrappedKey`, `wrapNonce`, `groupKey`, `plaintextGroupKey` after implementation: the only matches
+are this stage's own DTO/entity/service/controller/test files (opaque field names and their own
+doc comments explicitly *disclaiming* a plaintext field) plus Stage 6B's pre-existing hits (all
+already accounted for in that checkpoint). No endpoint returns another user's wrapped key (GET is
+exclusively self-scoped). No endpoint accepts actor identity from a request body (both DTOs have
+no such field; the controller only ever reads `@AuthenticationPrincipal`). No endpoint bypasses
+`GroupAuthorizationService`. No existing DIRECT behavior changed (confirmed by the full regression
+run and by `git diff --name-only` showing zero modified — only new — files).
+
+### Files changed
+**Main (all new):** `GroupKeyController.java`, `GroupKeyService.java`,
+`SubmitGroupMemberKeyRequestDto.java`, `GroupMemberKeyDto.java`. **Test (all new):**
+`GroupKeyServiceTest.java`, `GroupKeyControllerSecurityTest.java`. **Docs:** this file (modified).
+Zero existing file modified — confirmed via `git status`/`git diff --name-only` (empty diff,
+6 untracked files).
+
+### Database
+No schema change this stage — Stage 6B's `group_member_keys` table/columns are used exactly as
+created.
+
+### Rollback procedure
+Delete `GroupKeyController.java`, `GroupKeyService.java`, `SubmitGroupMemberKeyRequestDto.java`,
+`GroupMemberKeyDto.java`, `GroupKeyServiceTest.java`, `GroupKeyControllerSecurityTest.java`; revert
+the Stage 6C commit. No schema, existing entity, existing endpoint, or existing test was modified,
+so no other cleanup is needed.
+
+### Next stage
+Groups Stage 6D (frontend crypto, key generation/wrapping, group message encryption, key
+rotation, member-removal crypto, group calls/WebRTC) — **not started, awaiting explicit
+instruction**, per this stage's own STOP-after-6C mandate.
