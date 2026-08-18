@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowLeft, X, Users, Image, Pin, Settings, ShieldCheck, LogOut, ChevronRight, Loader2 } from 'lucide-react';
+import { ArrowLeft, X, Users, Image, FileText, Link2, Pin, Bell, Settings, ShieldCheck, LogOut, ChevronRight, Loader2 } from 'lucide-react';
 import { groupApi } from '../../api/groupApi';
 import { ConversationMember, Group, User } from '../../types';
 import { GroupAvatar } from './GroupAvatar';
@@ -9,13 +9,13 @@ import { GroupMembersScreen } from './GroupMembersScreen';
 import { GroupSettingsScreen } from './GroupSettingsScreen';
 import { AddMembersModal } from './AddMembersModal';
 import { LeaveGroupConfirmDialog } from './LeaveGroupConfirmDialog';
+import { SettingsRow, SettingsSectionLabel } from '../common/SettingsPrimitives';
 
 interface GroupContactInfoDrawerProps {
   group: Group | null;
   currentUser: User;
   onClose: () => void;
   onGroupUpdated: (group: Group) => void;
-  onUserUpdated: (user: User) => void;
   onLeaveGroup: () => Promise<void>;
   onOpenInvitations: (groupId: number) => void;
 }
@@ -24,15 +24,18 @@ type DrawerView = 'main' | 'members' | 'settings';
 
 // Deliberately a separate component from ContactInfoDrawer (P2P), not a retrofit -- group info is
 // structurally different (member roster/roles, settings, invitations) from a 1:1 relationship
-// panel. Internal drill-down (main -> members / settings) instead of stacking further modals, per
-// this stage's "avoid nested modal stacking" guidance -- each sub-view replaces the drawer's
-// content and has its own back arrow, mirroring ContactInfoDrawer's own mobile back-arrow pattern.
+// panel. Same visual language (shell, header, section labels), different information
+// architecture: identity -> members -> media -> notifications -> settings entry -> security ->
+// leave, vs. ContactInfoDrawer's identity -> encryption -> devices -> relationship -> block.
+//
+// Internal drill-down (main -> members / settings) instead of stacking further modals, per this
+// stage's "avoid nested modal stacking" guidance -- each sub-view replaces the drawer's content and
+// has its own back arrow, mirroring ContactInfoDrawer's own mobile back-arrow pattern.
 export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
   group,
   currentUser,
   onClose,
   onGroupUpdated,
-  onUserUpdated,
   onLeaveGroup,
   onOpenInvitations,
 }) => {
@@ -109,13 +112,10 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
     return (
       <GroupSettingsScreen
         group={group}
-        currentUser={currentUser}
         onBack={() => setView('main')}
         onGroupUpdated={onGroupUpdated}
-        onUserUpdated={onUserUpdated}
         onOpenMembers={() => setView('members')}
         onOpenInvitations={() => onOpenInvitations(group.id)}
-        onLeaveGroup={() => setShowLeaveConfirm(true)}
       />
     );
   }
@@ -161,7 +161,7 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
 
       <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 space-y-2.5">
         <div className="flex items-center justify-between">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">Members</p>
+          <SettingsSectionLabel>Members</SettingsSectionLabel>
           {canAddMembers && (
             <button
               onClick={() => setShowAddMembers(true)}
@@ -204,36 +204,29 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
         </button>
       </div>
 
-      <div className="border-b border-slate-200 dark:border-slate-800/80">
-        {/* Media/files and pinned messages are placeholders for now -- no group-scoped media
-            gallery or pinned-message list exists yet; these are integration points for a future
-            stage, not functional screens. */}
-        <button
-          disabled
-          className="w-full flex items-center gap-3 px-4 py-3 text-sm text-slate-400 cursor-not-allowed"
-        >
-          <Image className="w-4 h-4 flex-shrink-0" />
-          <span className="flex-1 text-left">Media &amp; files</span>
-          <span className="text-[10px] uppercase tracking-wide">Soon</span>
-        </button>
-        <button
-          disabled
-          className="w-full flex items-center gap-3 px-4 py-3 text-sm text-slate-400 cursor-not-allowed"
-        >
-          <Pin className="w-4 h-4 flex-shrink-0" />
-          <span className="flex-1 text-left">Pinned messages</span>
-          <span className="text-[10px] uppercase tracking-wide">Soon</span>
-        </button>
+      {/* Media/files/links and pinned messages are placeholders -- no group-scoped media gallery
+          or pinned-message list exists yet; these are integration points for a future stage, not
+          functional screens. */}
+      <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 space-y-1">
+        <SettingsSectionLabel>Media</SettingsSectionLabel>
+        <SettingsRow icon={<Image className="w-4 h-4" />} label="Media" badge="Soon" disabled />
+        <SettingsRow icon={<FileText className="w-4 h-4" />} label="Files" badge="Soon" disabled />
+        <SettingsRow icon={<Link2 className="w-4 h-4" />} label="Links" badge="Soon" disabled />
+        <SettingsRow icon={<Pin className="w-4 h-4" />} label="Pinned messages" badge="Soon" disabled />
       </div>
 
-      <button
-        onClick={() => setView('settings')}
-        className="w-full flex items-center gap-3 px-4 py-3.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors border-b border-slate-200 dark:border-slate-800/80"
-      >
-        <Settings className="w-4 h-4 text-indigo-400 flex-shrink-0" />
-        <span className="flex-1 text-left">Group Settings</span>
-        <ChevronRight className="w-4 h-4 text-slate-400" />
-      </button>
+      <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 space-y-1">
+        <SettingsSectionLabel>Notifications</SettingsSectionLabel>
+        <SettingsRow icon={<Bell className="w-4 h-4" />} label="Group notifications" badge="Soon" disabled />
+      </div>
+
+      <div className="p-4 border-b border-slate-200 dark:border-slate-800/80">
+        <SettingsRow
+          icon={<Settings className="w-4 h-4" />}
+          label="Group Settings"
+          onClick={() => setView('settings')}
+        />
+      </div>
 
       <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 space-y-1.5">
         <div className="flex items-center gap-2 text-xs font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">
@@ -246,14 +239,14 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
       </div>
 
       {group.currentUserRole !== 'OWNER' && (
-        <div className="p-4">
-          <button
+        <div className="p-4 space-y-2">
+          <SettingsSectionLabel>Danger zone</SettingsSectionLabel>
+          <SettingsRow
+            icon={<LogOut className="w-4 h-4" />}
+            label="Leave group"
+            danger
             onClick={() => setShowLeaveConfirm(true)}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-red-600 dark:text-red-400 border border-red-200 dark:border-red-900/50 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
-          >
-            <LogOut className="w-4 h-4" />
-            Leave Group
-          </button>
+          />
         </div>
       )}
 

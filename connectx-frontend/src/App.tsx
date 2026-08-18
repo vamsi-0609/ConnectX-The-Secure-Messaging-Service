@@ -2652,6 +2652,18 @@ export const App: React.FC = () => {
     setActiveConversation((prev) => (prev ? updateMembers(prev) : null));
   }, []);
 
+  // Shared by ChatListSidebar's avatar button and SettingsModal's "Profile" row -- both open the
+  // same account menu, refreshing the user first so it never shows stale data.
+  const handleOpenProfileMenu = useCallback(async () => {
+    try {
+      const freshUser = await userApi.getCurrentUser();
+      handleUserUpdated(freshUser);
+    } catch (err) {
+      console.warn('[ConnectX] Failed to refresh profile before opening menu:', err);
+    }
+    setShowProfileModal(true);
+  }, [handleUserUpdated]);
+
   const handlePinConversation = async (conversationId: number) => {
     try {
       const updated = await conversationApi.pinConversation(conversationId);
@@ -2836,15 +2848,7 @@ export const App: React.FC = () => {
             setShowGroupInvitationsModal(true);
           }}
           pendingGroupInvitationCount={receivedGroupInvitations.length}
-          onOpenProfile={async () => {
-            try {
-              const freshUser = await userApi.getCurrentUser();
-              handleUserUpdated(freshUser);
-            } catch (err) {
-              console.warn('[ConnectX] Failed to refresh profile before opening menu:', err);
-            }
-            setShowProfileModal(true);
-          }}
+          onOpenProfile={handleOpenProfileMenu}
           onDeleteConversation={handleDeleteConversation}
           onPinConversation={handlePinConversation}
           onUnpinConversation={handleUnpinConversation}
@@ -2935,7 +2939,6 @@ export const App: React.FC = () => {
                   currentUser={currentUser}
                   onClose={() => setShowInfoDrawer(false)}
                   onGroupUpdated={handleGroupUpdated}
-                  onUserUpdated={handleUserUpdated}
                   onLeaveGroup={() => handleLeaveGroup(activeConversation.id)}
                   onOpenInvitations={(groupId) => {
                     setGroupInvitationsScopeId(groupId);
@@ -3069,6 +3072,9 @@ export const App: React.FC = () => {
                 ? getRecipientUser(activeConversation)?.displayName || getRecipientUser(activeConversation)?.username || null
                 : null
             }
+            onOpenProfile={handleOpenProfileMenu}
+            onOpenDevices={() => setShowDeviceModal(true)}
+            onOpenBlockedUsers={() => setShowBlockedUsersModal(true)}
           />
         </React.Suspense>
       )}
