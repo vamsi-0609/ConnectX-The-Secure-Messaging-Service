@@ -263,6 +263,19 @@ export const App: React.FC = () => {
   const [showRawCiphertext, setShowRawCiphertext] = useState(false);
   const [showInfoDrawer, setShowInfoDrawer] = useState(false);
 
+  // Concise, self-dismissing confirmation for actions that don't warrant a full push-style
+  // notification (e.g. "Group deleted.") -- deliberately separate from NotificationToast, which is
+  // purpose-built for incoming-message push notifications.
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const actionMessageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showActionMessage = useCallback((message: string) => {
+    if (actionMessageTimerRef.current) {
+      clearTimeout(actionMessageTimerRef.current);
+    }
+    setActionMessage(message);
+    actionMessageTimerRef.current = setTimeout(() => setActionMessage(null), 2500);
+  }, []);
+
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showDeviceModal, setShowDeviceModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
@@ -835,6 +848,28 @@ export const App: React.FC = () => {
       await loadConversations();
     },
     [loadConversations]
+  );
+
+  // Owner-only. Every other member's client updates itself independently via the
+  // CONVERSATION_DELETED WebSocket event GroupService#deleteGroup broadcasts on delete -- this
+  // handler only needs to update the deleting owner's own view (same shape as handleLeaveGroup
+  // above), since the backend's own success response is this client's confirmation.
+  const handleDeleteGroup = useCallback(
+    async (groupId: number) => {
+      await groupApi.deleteGroup(groupId);
+      setShowInfoDrawer(false);
+      if (activeConversationRef.current?.id === groupId) {
+        setActiveConversation(null);
+      }
+      setGroupInfoById((prev) => {
+        const next = { ...prev };
+        delete next[groupId];
+        return next;
+      });
+      await loadConversations();
+      showActionMessage('Group deleted.');
+    },
+    [loadConversations, showActionMessage]
   );
 
   const handleSendConnectionRequest = useCallback(async (userId: number) => {
@@ -2940,6 +2975,7 @@ export const App: React.FC = () => {
                   onClose={() => setShowInfoDrawer(false)}
                   onGroupUpdated={handleGroupUpdated}
                   onLeaveGroup={() => handleLeaveGroup(activeConversation.id)}
+                  onDeleteGroup={() => handleDeleteGroup(activeConversation.id)}
                   onOpenInvitations={(groupId) => {
                     setGroupInvitationsScopeId(groupId);
                     setShowGroupInvitationsModal(true);
@@ -3108,6 +3144,15 @@ export const App: React.FC = () => {
         onDismiss={() => setCurrentToast(null)}
         onClickToast={handleSelectToastConversation}
       />
+
+      {actionMessage && (
+        <div
+          role="status"
+          className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 rounded-full bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-sm font-medium shadow-2xl animate-pop-in select-none"
+        >
+          {actionMessage}
+        </div>
+      )}
 
       <PWAInstallBanner />
     </div>

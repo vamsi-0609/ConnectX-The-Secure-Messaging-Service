@@ -34,4 +34,12 @@ public interface GroupInvitationRepository extends JpaRepository<GroupInvitation
     @Query("UPDATE GroupInvitation gi SET gi.status = com.connectx.group.entity.GroupInvitationStatus.CANCELLED, gi.respondedAt = :respondedAt " +
            "WHERE gi.group.id = :groupId AND gi.invitee.id = :inviteeId AND gi.status = com.connectx.group.entity.GroupInvitationStatus.PENDING")
     int cancelAllPendingForGroupAndInvitee(@Param("groupId") Long groupId, @Param("inviteeId") Long inviteeId, @Param("respondedAt") Instant respondedAt);
+
+    // Group deletion (Stage 7): every PENDING invitation for the group, regardless of invitee --
+    // once a group is deleted no old invitation may be accepted/rejected/cancelled to resurrect or
+    // otherwise touch it. Same single-bulk-UPDATE shape as cancelAllPendingForGroupAndInvitee above.
+    @Modifying
+    @Query("UPDATE GroupInvitation gi SET gi.status = com.connectx.group.entity.GroupInvitationStatus.CANCELLED, gi.respondedAt = :respondedAt " +
+           "WHERE gi.group.id = :groupId AND gi.status = com.connectx.group.entity.GroupInvitationStatus.PENDING")
+    int cancelAllPendingForGroup(@Param("groupId") Long groupId, @Param("respondedAt") Instant respondedAt);
 }

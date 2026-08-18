@@ -1,14 +1,16 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowLeft, X, Users, Image, FileText, Link2, Pin, Bell, Settings, ShieldCheck, LogOut, ChevronRight, Loader2 } from 'lucide-react';
+import { ArrowLeft, X, Users, Image, FileText, Link2, Pin, Bell, Settings, ShieldCheck, LogOut, Trash2, ChevronRight, Loader2 } from 'lucide-react';
 import { groupApi } from '../../api/groupApi';
 import { ConversationMember, Group, User } from '../../types';
 import { GroupAvatar } from './GroupAvatar';
 import { UserAvatar } from '../common/UserAvatar';
 import { ROLE_LABEL } from '../../utils/groupLabels';
+import { groupErrorMessage } from '../../utils/groupErrorMessages';
 import { GroupMembersScreen } from './GroupMembersScreen';
 import { GroupSettingsScreen } from './GroupSettingsScreen';
 import { AddMembersModal } from './AddMembersModal';
 import { LeaveGroupConfirmDialog } from './LeaveGroupConfirmDialog';
+import { DeleteGroupConfirmDialog } from './DeleteGroupConfirmDialog';
 import { SettingsRow, SettingsSectionLabel } from '../common/SettingsPrimitives';
 
 interface GroupContactInfoDrawerProps {
@@ -17,6 +19,7 @@ interface GroupContactInfoDrawerProps {
   onClose: () => void;
   onGroupUpdated: (group: Group) => void;
   onLeaveGroup: () => Promise<void>;
+  onDeleteGroup: () => Promise<void>;
   onOpenInvitations: (groupId: number) => void;
 }
 
@@ -37,6 +40,7 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
   onClose,
   onGroupUpdated,
   onLeaveGroup,
+  onDeleteGroup,
   onOpenInvitations,
 }) => {
   const [view, setView] = useState<DrawerView>('main');
@@ -45,6 +49,8 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
   const [showAddMembers, setShowAddMembers] = useState(false);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [leaving, setLeaving] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const refreshMembers = async (groupId: number) => {
     setLoadingMembers(true);
@@ -93,6 +99,18 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
       alert(err instanceof Error ? err.message : "Couldn't leave the group.");
     } finally {
       setLeaving(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    setDeleting(true);
+    try {
+      await onDeleteGroup();
+      setShowDeleteConfirm(false);
+    } catch (err) {
+      alert(groupErrorMessage(err, "Couldn't delete the group."));
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -238,17 +256,27 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
         </p>
       </div>
 
-      {group.currentUserRole !== 'OWNER' && (
-        <div className="p-4 space-y-2">
-          <SettingsSectionLabel>Danger zone</SettingsSectionLabel>
+      <div className="p-4 space-y-2">
+        <SettingsSectionLabel>Danger zone</SettingsSectionLabel>
+        {group.currentUserRole === 'OWNER' ? (
+          // The owner's only exit is deleting the group -- ownership transfer doesn't exist yet,
+          // so "Leave group" is never shown to an owner (see LeaveGroupConfirmDialog usage below,
+          // which an owner can never reach).
+          <SettingsRow
+            icon={<Trash2 className="w-4 h-4" />}
+            label="Delete group"
+            danger
+            onClick={() => setShowDeleteConfirm(true)}
+          />
+        ) : (
           <SettingsRow
             icon={<LogOut className="w-4 h-4" />}
             label="Leave group"
             danger
             onClick={() => setShowLeaveConfirm(true)}
           />
-        </div>
-      )}
+        )}
+      </div>
 
       {showAddMembers && (
         <AddMembersModal
@@ -266,6 +294,15 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
           leaving={leaving}
           onCancel={() => setShowLeaveConfirm(false)}
           onConfirm={handleConfirmLeave}
+        />
+      )}
+
+      {showDeleteConfirm && (
+        <DeleteGroupConfirmDialog
+          groupName={group.name}
+          deleting={deleting}
+          onCancel={() => setShowDeleteConfirm(false)}
+          onConfirm={handleConfirmDelete}
         />
       )}
     </div>

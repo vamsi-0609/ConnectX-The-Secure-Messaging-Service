@@ -20,8 +20,10 @@ import com.connectx.group.repository.GroupInvitationRepository;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
 import com.connectx.user.service.ProfileVisibilityService;
+import com.connectx.websocket.dto.WsEvent;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
@@ -51,6 +53,7 @@ public class GroupService {
     private final UserRepository userRepository;
     private final ProfileVisibilityService profileVisibilityService;
     private final GroupAuthorizationService groupAuthorizationService;
+    private final SimpMessagingTemplate messagingTemplate;
 
     public GroupService(ConversationRepository conversationRepository,
                          ConversationMemberRepository conversationMemberRepository,
@@ -58,7 +61,8 @@ public class GroupService {
                          GroupInvitationRepository groupInvitationRepository,
                          UserRepository userRepository,
                          ProfileVisibilityService profileVisibilityService,
-                         GroupAuthorizationService groupAuthorizationService) {
+                         GroupAuthorizationService groupAuthorizationService,
+                         SimpMessagingTemplate messagingTemplate) {
         this.conversationRepository = conversationRepository;
         this.conversationMemberRepository = conversationMemberRepository;
         this.chatGroupRepository = chatGroupRepository;
@@ -66,6 +70,7 @@ public class GroupService {
         this.userRepository = userRepository;
         this.profileVisibilityService = profileVisibilityService;
         this.groupAuthorizationService = groupAuthorizationService;
+        this.messagingTemplate = messagingTemplate;
     }
 
     @Transactional
@@ -218,6 +223,59 @@ public class GroupService {
     public void leaveGroup(Long actorUserId, Long groupId) {
         groupAuthorizationService.requireCanLeave(actorUserId, groupId);
         endMembership(groupId, actorUserId);
+    }
+
+    /**
+     * Groups Stage 7: owner-only, immediate group deletion. Deliberately does NOT reuse
+     * ConversationService#deleteConversationForUser's per-user-hide-until-unanimous model, and does
+     * NOT hard-delete the conversation, messages, or chat_groups row -- history is preserved, per
+     * this stage's instruction to prefer the safest lifecycle consistent with the existing
+     * architecture over inventing a new deletion strategy. Instead this soft-deletes every currently
+     * active membership row, including the OWNER's own -- something no other path in this codebase
+     * ever does (the owner can neither leave, see
+     * {@link GroupAuthorizationService#requireCanLeave}, nor be removed, see
+     * {@link GroupAuthorizationService#requireCanRemoveMember}). That makes "the owner's own row has
+     * deletedAt set" an unambiguous, schema-free signal that this exact group was deleted, reusing
+     * the existing deletedAt convention rather than adding a new column. Every enforcement point
+     * that matters already gates on deletedAt IS NULL -- group view/read
+     * ({@link GroupAuthorizationService#requireActiveMember}), sending
+     * ({@link GroupAuthorizationService#requireCanSendMessage}), inviting
+     * ({@link GroupAuthorizationService#evaluateAddMember}), and WebSocket SUBSCRIBE
+     * (WebSocketAuthChannelInterceptor's existing Stage 0 check) -- so this one bulk write is
+     * sufficient; no second authorization mechanism is introduced anywhere. A repeat delete attempt
+     * on an already-deleted group fails at {@code requireOwner} itself, since the actor is no longer
+     * an ACTIVE_MEMBER.
+     * <p>
+     * Also bulk-cancels every PENDING invitation for the group (not just the acting owner's own),
+     * mirroring {@link #endMembership}'s existing stale-invitation cleanup, so no old invitation can
+     * later be accepted/rejected/cancelled against a group that no longer has anyone active in it.
+     * Group E2EE key rows ({@code group_member_keys}) and the Stage 6C key API are untouched, per
+     * this stage's explicit instruction not to touch key material.
+     * <p>
+     * Broadcasts the same {@code CONVERSATION_DELETED} event
+     * {@code ConversationService#deleteConversationForUser} already sends for a DIRECT chat, both to
+     * the group's topic (for anyone with it open right now) and to every formerly-active member's
+     * private queue (so their conversation list updates even if they aren't currently subscribed) --
+     * the frontend's existing CONVERSATION_DELETED handler requires no changes to pick this up for a
+     * group.
+     */
+    @Transactional
+    public void deleteGroup(Long actorUserId, Long groupId) {
+        groupAuthorizationService.requireOwner(actorUserId, groupId);
+
+        List<ConversationMember> activeMembers = conversationMemberRepository
+                .findByConversationIdAndDeletedAtIsNullWithUsers(groupId);
+
+        Instant now = Instant.now();
+        conversationMemberRepository.markAllActiveAsDeleted(groupId, now);
+        groupInvitationRepository.cancelAllPendingForGroup(groupId, now);
+
+        WsEvent deleteEvent = WsEvent.of("CONVERSATION_DELETED",
+                Map.of("conversationId", groupId, "deletedByUserId", actorUserId));
+        messagingTemplate.convertAndSend("/topic/conversation/" + groupId, deleteEvent);
+        for (ConversationMember member : activeMembers) {
+            messagingTemplate.convertAndSendToUser(member.getUser().getUsername(), "/queue/messages", deleteEvent);
+        }
     }
 
     private void endMembership(Long groupId, Long userId) {

@@ -56,4 +56,14 @@ public class GroupController {
         GroupDto group = groupService.updateSettings(currentUser.getId(), groupId, dto);
         return ResponseEntity.ok(ApiResponse.success("Group settings updated", group));
     }
+
+    // Groups Stage 7: owner-only. Authorization is entirely GroupService#deleteGroup ->
+    // GroupAuthorizationService#requireOwner -- nothing here decides or duplicates that check.
+    @DeleteMapping("/{groupId}")
+    public ResponseEntity<ApiResponse<String>> deleteGroup(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long groupId) {
+        groupService.deleteGroup(currentUser.getId(), groupId);
+        return ResponseEntity.ok(ApiResponse.success("Group deleted", "Deleted"));
+    }
 }

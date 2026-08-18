@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
@@ -52,4 +53,14 @@ public interface ConversationMemberRepository extends JpaRepository<Conversation
     @org.springframework.data.jpa.repository.Modifying
     @org.springframework.data.jpa.repository.Query("DELETE FROM ConversationMember cm WHERE cm.conversation.id = :conversationId")
     void deleteByConversationId(@org.springframework.data.repository.query.Param("conversationId") Long conversationId);
+
+    // Group deletion (Stage 7): soft-deletes every currently-active row for the conversation in one
+    // bulk statement, including the OWNER's own row -- no other code path ever does that (OWNER can
+    // neither leave nor be removed), which is exactly what makes "owner's row has deletedAt set" an
+    // unambiguous "this group was deleted" signal without adding a new column. See
+    // GroupService#deleteGroup.
+    @org.springframework.data.jpa.repository.Modifying
+    @org.springframework.data.jpa.repository.Query("UPDATE ConversationMember cm SET cm.deletedAt = :deletedAt WHERE cm.conversation.id = :conversationId AND cm.deletedAt IS NULL")
+    int markAllActiveAsDeleted(@org.springframework.data.repository.query.Param("conversationId") Long conversationId,
+                                @org.springframework.data.repository.query.Param("deletedAt") Instant deletedAt);
 }

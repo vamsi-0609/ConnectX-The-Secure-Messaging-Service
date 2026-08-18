@@ -37,6 +37,11 @@ export const groupApi = {
       method: 'POST',
     }),
 
+  deleteGroup: (groupId: number) =>
+    apiRequest<string>(`/groups/${groupId}`, {
+      method: 'DELETE',
+    }),
+
   createInvitation: (groupId: number, targetUserId: number) =>
     apiRequest<CreateGroupInvitationResult>(`/groups/${groupId}/invitations`, {
       method: 'POST',
