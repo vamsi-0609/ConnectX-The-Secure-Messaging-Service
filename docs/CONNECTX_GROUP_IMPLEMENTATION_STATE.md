@@ -52,11 +52,15 @@ describe:**
   "Checkpoint — Groups Stage 1.5 authorization foundation (2026-08-18)" at the end of this document
   for full detail, including the corrected V1 member limit (50, not 100) and the LEFT/REMOVED
   membership-state limitation.
+- **Groups Stage 2** (invitation/accept/reject/cancel workflow, race-safe membership creation) —
+  see "Checkpoint — Groups Stage 2 invitation workflow (2026-08-18)" at the end of this document.
+  First additive schema change of the Groups initiative since Stage 0B
+  (`V3__group_membership_unique_constraint.sql`, applied to `connectx_db`).
 
-**Next stage: Groups Stage 2 (invitations/member-management) — not started, awaiting explicit
-instruction.** The stale "not started" framing directly below (written before any Groups code
-existed) is superseded by the above; kept as-is for historical accuracy of what was true when
-written.
+**Next stage: Groups Stage 3 (role management / member removal, or group frontend) — not started,
+awaiting explicit instruction.** The stale "not started" framing directly below (written before any
+Groups code existed) is superseded by the above; kept as-is for historical accuracy of what was
+true when written.
 
 Everything below this point through "Checkpoint — Legacy DIRECT connection backfill (2026-08-18)" is
 the original per-stage record and is left as-is (historical, not rewritten). The **"Current status"
@@ -993,3 +997,124 @@ explicit instruction. Unresolved items Stage 2 must pick up: actual invitation p
 add/invite endpoint, the race-safety upgrade to `addMember` flagged above, and — separately, still
 open from the original architecture review — the group-messaging E2EE scheme decision (PDF Stage 8,
 untouched by this stage).
+
+---
+
+## Checkpoint — Groups Stage 2 invitation workflow (2026-08-18)
+
+Follows Groups Stage 1.5 (`d40f180`, `GroupAuthorizationService`). Implements invitation creation
+(direct-add vs. explicit invitation, per Stage 1.5's `evaluateAddMember`), accept/reject/cancel, and
+listing -- wiring `evaluateAddMember`'s decision model to a real endpoint for the first time, and
+making `GroupService#addMember` race-safe as Stage 1.5 flagged would be required.
+
+**Schema change (the first since Stage 0B):**
+`V3__group_membership_unique_constraint.sql` adds `UNIQUE KEY
+uk_convmember_conversation_user (conversation_id, user_id)` to `conversation_members`. Verified
+empirically before writing it that zero duplicate pairs exist in `connectx_db` (this invariant
+already held for every existing row -- DIRECT creation always restores an existing row rather than
+inserting a second one for the same pair); applied to `connectx_db` and confirmed via `SHOW INDEX`.
+`ConversationMember`'s `@Table` now declares the matching `@UniqueConstraint` so
+`ddl-auto=create-drop` generates the same protection for `connectx_test_db` automatically (same
+`uk_connections_pair`/`uk_user_blocks_pair` precedent as Stage 0B). `group_invitations` needed no
+schema change at all -- its `PENDING`/`ACCEPTED`/`REJECTED`/`CANCELLED` status enum and
+`pending_invite_key` partial-unique-on-PENDING constraint (same VIRTUAL-generated-column technique
+as `connection_requests`) already existed from Stage 0B and cover exactly what this stage needed.
+
+**Invitation state model:** `GroupInvitation` (new entity, `group_invitations`) maps `group`
+(→ `conversations.id`, matching the migration's own FK target, not `chat_groups.conversation_id`),
+`invitee`, `invitedBy`, `status` (new `GroupInvitationStatus` enum, mirrors
+`ConnectionRequestStatus`), `createdAt`, `respondedAt`. The generated `pending_invite_key` column
+is deliberately unmapped (same reasoning as `ConnectionRequest`'s javadoc) --
+`GroupInvitationRaceIntegrationTest` adds the equivalent DDL to `connectx_test_db` directly, exactly
+mirroring `ConnectionRequestRaceIntegrationTest`'s established pattern for the identical situation.
+
+**Direct-add vs. invitation:** `GroupInvitationService#createInvitation` calls
+`GroupAuthorizationService#evaluateAddMember` (Stage 1.5, unchanged) and acts purely on its result --
+DENIED maps to a typed `ApiException` (reason code → HTTP status/code), DIRECT_ADD calls
+`GroupService#addMember` immediately (no invitation row), INVITATION_REQUIRED inserts a PENDING
+`GroupInvitation`. No new authorization logic was added in this service; every decision still comes
+from Stage 1.5's model.
+
+**Acceptance authorization:** target-only (`invitation.invitee.id == currentUserId`, generic
+FORBIDDEN otherwise -- mirrors `ConnectionService#acceptRequest`'s identical shape of check).
+Re-verifies PENDING (covers rejected/cancelled/already-accepted and duplicate-accept safety in one
+check), re-checks blocking (`GroupAuthorizationService#isBlockedEitherDirection`, new public
+wrapper) and capacity (inside `addMember`'s lock) fresh at accept time -- neither is assumed still
+valid from invitation-creation time.
+
+**Rejection authorization:** target-only, PENDING required, no membership/capacity/blocking
+re-checks needed (no membership is ever created).
+
+**Cancellation authorization:** original inviter only, AND still currently authorized to invite
+(`GroupAuthorizationService#canInvite`, re-checked -- not assumed from creation time, since the
+inviter's role or the group's `WHO_CAN_INVITE` setting could have changed since).
+
+**Inactive-member (LEFT/REMOVED) behavior, unchanged from Stage 1.5's rule, now actually
+reachable:** `evaluateAddMember` still never returns DIRECT_ADD for an INACTIVE target -- always
+INVITATION_REQUIRED. The new piece this stage adds is the *other* half: once that invitation is
+explicitly accepted, `GroupService#addMember`'s new 5th parameter (`allowRestoreInactive`, `true`
+only from `acceptInvitation`) reuses the existing soft-deleted row (`deletedAt` → null) rather than
+inserting a duplicate -- explicit accept is the one place Stage 1.5 always intended this consent
+gate to open.
+
+**Blocking:** re-checked at invitation-creation time (via `evaluateAddMember`, unchanged) and again
+at acceptance time (new, explicit). Existing shared-group membership is never touched by a block,
+per the already-approved separate decision -- this stage doesn't change that.
+
+**50-member race safety:** `GroupService#addMember` (now the sole membership-insertion primitive,
+used by group creation, direct-add, and accept) takes a `PESSIMISTIC_WRITE` lock on the group's
+`chat_groups` row (new `ChatGroupRepository#findByIdForUpdate`, same `SELECT ... FOR UPDATE`
+technique as `UserRepository#findByIdForUpdate`) *before* re-reading the active-member count, and
+holds it for the rest of the caller's transaction -- serializing every concurrent membership-adding
+call for the same group. Deliberately does **not** use the `REQUIRES_NEW` + self-proxy +
+`DataIntegrityViolationException` pattern for this: that pattern fits when the caller only needs
+the *end state* to be correct regardless of which transaction produced it (e.g.
+`ConnectionService`'s connection-row insert); here the insert must be atomic with the invitation's
+own "mark ACCEPTED" write in the same transaction, which `REQUIRES_NEW` would break. The
+`DataIntegrityViolationException` catch that remains is a defense-in-depth backstop against the new
+DB constraint, not the primary guard. `GroupInvitationRaceIntegrationTest` proves this against real
+concurrent threads (not just sequential idempotency): same-invitation double-accept, two different
+invitations racing for one remaining slot, a direct-add racing an accept for one remaining slot --
+all four re-run three additional times during this stage with no flakiness observed.
+
+**Duplicate-invitation race safety:** `group_invitations.pending_invite_key`'s existing partial
+unique index (Stage 0B) is the actual guard; `createInvitation` uses the `REQUIRES_NEW` self-proxy
+pattern here specifically (`insertPendingInvitationInNewTransaction`) since this *is* exactly
+`ConnectionService`'s original use case -- recovering cleanly from a lost race where "a PENDING
+invitation exists" is the correct end state regardless of which racing transaction's row survives.
+
+**Tests added:** `GroupInvitationServiceTest` (30 cases: all creation/acceptance/rejection/
+cancellation/listing items, plus two direct DIRECT-conversation regression checks),
+`GroupInvitationRaceIntegrationTest` (4 concurrent-thread cases covering all four race invariants).
+Two concurrent DIRECT_ADD attempts for the same target were not independently retested -- they run
+through the identical `addMember` lock/re-check code path already proven by the accept-side race
+tests, not a different one.
+
+**Test result:** full `mvn test` -- **186/186 pass** (152 before this stage + 34 new), 0 failures,
+0 errors. The 4 race tests were additionally re-run 3 more times in isolation with no flakiness.
+
+**DIRECT/regression result:** `DirectConversationAuthorizationTest`,
+`DirectConversationRaceIntegrationTest`, `MessageConnectionAuthorizationTest`,
+`ConnectionServiceTest` (including its dedicated `removeConnection_*` suite), `BlockServiceTest`,
+and `BlockEnforcementIntegrationTest` all still pass unchanged -- DIRECT creation, DIRECT messaging,
+legacy DIRECT conversations, connection removal, and blocking are all unaffected. E2EE
+(`connectx-frontend/src/crypto/`, `MessageService`'s ciphertext handling), Web Push/service worker,
+and Stage 0's WebSocket SUBSCRIBE authorization were not touched by this stage.
+
+**Files changed this stage:** `db/migrations/V3__group_membership_unique_constraint.sql` (new,
+applied to `connectx_db`), `ConversationMember.java` (modified: `@UniqueConstraint` added),
+`GroupInvitation.java` / `GroupInvitationStatus.java` (new), `ChatGroupRepository.java` (modified:
+`findByIdForUpdate` added), `GroupInvitationRepository.java` (new), `GroupService.java` (modified:
+`addMember` rewritten for locking + the `allowRestoreInactive` overload), `GroupInvitationService.java`
+/ `GroupInvitationController.java` (new), `CreateGroupInvitationRequestDto.java` /
+`GroupInvitationDto.java` / `CreateGroupInvitationResponseDto.java` (new), `GroupAuthorizationService.java`
+(modified: `isBlockedEitherDirection` added), `GroupInvitationServiceTest.java` /
+`GroupInvitationRaceIntegrationTest.java` (new), this document. Frontend untouched.
+
+**Next stage:** Groups Stage 3 (role management / member removal / group settings), or the group
+frontend -- not started, awaiting explicit instruction. Unresolved items: no endpoint yet exists to
+change a member's role (`GroupRole.ADMIN` is only ever assigned by direct test/DB manipulation so
+far, never through a real flow), no member-removal endpoint, no group-settings-update endpoint
+(name/description/avatar/`whoCanInvite` can only be set at creation time or via raw repository
+access), invitation expiry remains explicitly out of scope, and the group-add privacy setting
+(ANYONE/CONNECTIONS/NOBODY) remains structural-only with no persisted column or UI.

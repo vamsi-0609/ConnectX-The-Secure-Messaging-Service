@@ -210,6 +210,18 @@ public class GroupAuthorizationService {
         return conversationMemberRepository.countByConversationIdAndDeletedAtIsNull(groupId) >= MAX_ACTIVE_GROUP_MEMBERS;
     }
 
+    /**
+     * Exposed so callers orchestrating a multi-step flow (e.g. GroupInvitationService re-checking
+     * blocking at acceptance time, since either party could have blocked the other after the
+     * invitation was sent) go through this service rather than reaching into
+     * UserBlockRepository directly -- GroupAuthorizationService stays the single authority for
+     * every blocking-relevant decision in the group domain, per Stage 1.5/2's mandate.
+     */
+    @Transactional(readOnly = true)
+    public boolean isBlockedEitherDirection(Long userId1, Long userId2) {
+        return userBlockRepository.existsEitherDirection(userId1, userId2);
+    }
+
     private boolean hasActiveRole(Long userId, Long groupId, GroupRole... allowed) {
         GroupRole role = activeRoleOrNull(userId, groupId);
         if (role == null) {

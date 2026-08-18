@@ -11,6 +11,15 @@ import java.time.Instant;
     // filter by user_id without conversation_id -- e.g. the conversation list load (every
     // app open) and presence broadcast (every WS connect/disconnect) both do.
     @Index(name = "idx_convmember_user_deleted", columnList = "user_id, deleted_at")
+}, uniqueConstraints = {
+    // Groups Stage 2: at most one row per (conversation, user) pair, active or soft-deleted --
+    // see V3__group_membership_unique_constraint.sql for why this is needed starting this stage
+    // (concurrent invitation-accept is the first source of concurrent conversation_members
+    // inserts for the same pair) and confirmation it's safe against existing data. Declared here
+    // so ddl-auto=update finds it already present against connectx_db (added by that script) and
+    // ddl-auto=create-drop generates the same real protection from scratch against
+    // connectx_test_db, matching the uk_connections_pair / uk_user_blocks_pair precedent.
+    @UniqueConstraint(name = "uk_convmember_conversation_user", columnNames = {"conversation_id", "user_id"})
 })
 public class ConversationMember {
 
