@@ -38,7 +38,25 @@ working, verified UI. Several substantial features outside the PDF's numbered st
 in parallel (PWA WebSocket resume/recovery, a Settings screen with profile-photo visibility, and
 client-side chat export) — see "Checkpoint — Final Pre-Groups Stability Check (2026-08-18)" at the
 end of this document for the full audit this status is based on.**
-**Next stage: GROUPS ARCHITECTURE REVIEW (control-prompt Stage 5 / PDF Stage 4) — not started.**
+
+**Update (2026-08-18, same day, HEAD `d274065` then further commits): the GROUPS ARCHITECTURE
+REVIEW referenced below as "not started" has since completed (`30f5345`, docs-only), and Groups
+implementation itself has begun and progressed past the point this "Current status" block used to
+describe:**
+- **Groups Stage 0** (WebSocket SUBSCRIBE-time authorization prerequisite, control-prompt Stage 8's
+  prerequisite half, done early/out-of-order because it was a blocking security gap) — commit
+  `7318056`. Closes the "must be added — authorization" WS gap this document flagged below.
+- **Groups Stage 1** (backend foundation: `ChatGroup` entity, `GroupService`, `POST/GET
+  /api/v1/groups`) — commit `d274065`.
+- **Groups Stage 1.5** (central server-side authorization model: `GroupAuthorizationService`) — see
+  "Checkpoint — Groups Stage 1.5 authorization foundation (2026-08-18)" at the end of this document
+  for full detail, including the corrected V1 member limit (50, not 100) and the LEFT/REMOVED
+  membership-state limitation.
+
+**Next stage: Groups Stage 2 (invitations/member-management) — not started, awaiting explicit
+instruction.** The stale "not started" framing directly below (written before any Groups code
+existed) is superseded by the above; kept as-is for historical accuracy of what was true when
+written.
 
 Everything below this point through "Checkpoint — Legacy DIRECT connection backfill (2026-08-18)" is
 the original per-stage record and is left as-is (historical, not rewritten). The **"Current status"
@@ -870,3 +888,108 @@ document — status/stage-log corrections plus this section). No application sou
 
 **Next stage:** GROUPS ARCHITECTURE REVIEW. Do not begin implementation until that review explicitly
 starts.
+
+---
+
+## Checkpoint — Groups Stage 1.5 authorization foundation (2026-08-18)
+
+Follows Groups Stage 0 (`7318056`, WS SUBSCRIBE authorization) and Groups Stage 1 (`d274065`,
+backend group creation/retrieval foundation). This stage adds no new group *operations* — it
+establishes the one authoritative backend authorization layer every future group operation
+(invitations, member management, group messaging, settings) must go through, so the frontend never
+makes an authorization decision itself.
+
+**New: `GroupAuthorizationService`** (`com.connectx.group.service`). Reuses existing repositories
+throughout — `ConversationMemberRepository`, `UserBlockRepository.existsEitherDirection`,
+`UserConnectionRepository.existsByUserLowIdAndUserHighId` — no duplicated connection/block logic.
+Provides:
+- Hard gates (throw `ApiException`): `requireActiveMember`, `requireRole`, `requireOwner`,
+  `requireAdminOrOwner`.
+- Non-throwing checks: `canViewGroup`, `canSendMessages`, `canManageMembers`, `canInvite`,
+  `isGroupFull`.
+- `resolveMembershipState(conversationId, userId)` → `NEVER_MEMBER` / `ACTIVE_MEMBER` / `INACTIVE`.
+- `evaluateAddMember(actorUserId, groupId, targetUserId)` → `AddMemberEvaluation` (`DIRECT_ADD` /
+  `INVITATION_REQUIRED` / `DENIED` + a reason code), read-only, no persistence. Establishes the
+  decision model only — Stage 2 will implement the actual invitation workflow against it.
+
+**V1 member limit corrected: 100 → 50.** Now defined once,
+`GroupAuthorizationService.MAX_ACTIVE_GROUP_MEMBERS`, referenced everywhere a boundary matters
+(`GroupService#addMember`, `GroupAuthorizationService#isGroupFull`/`evaluateAddMember`, and both
+test suites) rather than hardcoded per call site. Counts OWNER + ADMINs + MEMBERs combined, only
+`deletedAt IS NULL`.
+
+**LEFT vs. REMOVED — investigated, not solved with schema.** `ConversationMember`'s only lifecycle
+signal is `deletedAt` (NULL = active, non-NULL = soft-deleted), inherited from the DIRECT
+"hide this conversation for myself" feature, which never needed to know *why* a row was
+soft-deleted. Groups need that distinction conceptually (a voluntary leave vs. an owner-initiated
+removal are different things), but the schema cannot currently tell them apart — no column records
+who ended a membership or why. Per explicit instruction not to add schema speculatively, this was
+**not** solved by adding a column/table this stage. Instead, `MembershipState` collapses both into
+a single `INACTIVE` state, and the one guarantee that actually matters is enforced identically for
+both: neither may be silently reactivated. `evaluateAddMember` always resolves an `INACTIVE` target
+to `INVITATION_REQUIRED`, never `DIRECT_ADD`, regardless of connection status or privacy setting.
+**Smallest safe future model** if a later stage needs to actually tell them apart: a nullable
+`removed_by_user_id` (or `left_at`) column on `conversation_members`, populated going forward only
+— existing/current soft-deleted rows would stay ambiguous, which is fine since this stage's
+enforcement already treats them the same either way.
+
+**Bug fix carried over from Stage 1:** `GroupService#addMember` previously restored a soft-deleted
+`ConversationMember` row silently (mirroring `ConversationService`'s DIRECT restore-on-reopen
+pattern) when re-adding an existing row. That is exactly the "silently re-added after leaving/being
+removed" behavior this stage's consent rule forbids for GROUP membership (DIRECT's soft-delete
+means "I hid this chat", not "I left the relationship" — the two are not equivalent). Fixed:
+`addMember` now throws `GROUP_REINVITATION_REQUIRED` (409) for an `INACTIVE` target instead of
+restoring. No endpoint currently calls `addMember` for a non-creator, so this had no live behavioral
+impact yet — flagged here so Stage 2 doesn't reintroduce the same mistake.
+
+**Connection vs. membership:** a `UserConnection` row is consulted only as one input to
+`evaluateAddMember`'s `DIRECT_ADD` vs. `INVITATION_REQUIRED` choice — exactly like
+`ConversationService#createOrGetDirectConversation`'s `NOT_CONNECTED` gate already treats it for
+DIRECT chats. It is never used to insert a `ConversationMember` row directly, and being connected to
+a group's owner/member confers no view access on its own (`canViewGroup`/`requireActiveMember` still
+gate on actual membership).
+
+**User group-add privacy (ANYONE/CONNECTIONS/NOBODY):** structural only this stage, per explicit
+instruction not to build a settings UI yet. `GroupAuthorizationService.GroupAddPrivacy` enum exists
+and `evaluateAddMember` has a real call site (`resolveGroupAddPrivacy`) for it, but that method
+currently returns the default (`ANYONE`) unconditionally — no DB column backs it yet. Wiring a real
+column/setting is future work; the decision model does not need to change shape when that happens.
+
+**Race safety — explicitly deferred, not overengineered.** `addMember`'s member-count check and
+insert are not atomic against a concurrent second caller (no `REQUIRES_NEW` self-proxy +
+`DataIntegrityViolationException` pattern, unlike `ConnectionService`/`MessageService`). This is
+intentional: there is no DB-level uniqueness constraint on `conversation_members(conversation_id,
+user_id)` to race against yet, and Stage 1.5 still has no concurrent caller of `addMember` (only
+single-actor group creation calls it). **Explicitly required for Stage 2:** when an invite-accept
+endpoint introduces concurrent member-adding, add the unique constraint and the `REQUIRES_NEW`
+guard together, in the same change — do not ship one without the other.
+
+**WebSocket compatibility verified, not modified.** `WebSocketAuthChannelInterceptor`'s SUBSCRIBE
+check (`existsByConversationIdAndUserIdAndDeletedAtIsNull`, from Stage 0) is conversation-type-
+agnostic — it already works correctly for GROUP conversations, and a soft-deleted/removed member
+already fails it exactly as required. No defect found; no WebSocket code touched this stage.
+
+**Tests added:** `GroupAuthorizationServiceTest` (11 cases) covering role recognition
+(OWNER/ADMIN/MEMBER), non-member and soft-deleted-member rejection, group-must-exist and
+must-be-GROUP-type, the 50-member cap with soft-deleted exclusion, the LEFT/REMOVED consent rule
+(never `DIRECT_ADD` for an `INACTIVE` target, at both the `evaluateAddMember` and `addMember`
+levels), connection-does-not-imply-membership, blocking overriding an otherwise-valid add
+evaluation, forged-actor-id and forged-role resistance, and DIRECT-conversation non-regression.
+`GroupServiceTest`'s member-limit test was updated to derive its counts from
+`MAX_ACTIVE_GROUP_MEMBERS` instead of hardcoded numbers.
+
+**Test result:** full `mvn test` — **152/152 pass** (141 before this stage + 11 new), 0 failures, 0
+errors.
+
+**Files changed this stage:** `GroupAuthorizationService.java` (new), `GroupService.java` (modified:
+delegates its active-membership gate to the new service, `addMember` fixed as above, member-limit
+constant removed in favor of the central one), `GroupServiceTest.java` (modified: member-limit test
+now uses the central constant), `GroupAuthorizationServiceTest.java` (new), this document.
+Frontend untouched. No database migration — no schema change was needed or made.
+
+**Next stage:** Groups Stage 2 (invitations/member-management workflow). Do not begin without
+explicit instruction. Unresolved items Stage 2 must pick up: actual invitation persistence against
+`group_invitations` (schema exists, unused), wiring `evaluateAddMember`'s decision into a real
+add/invite endpoint, the race-safety upgrade to `addMember` flagged above, and — separately, still
+open from the original architecture review — the group-messaging E2EE scheme decision (PDF Stage 8,
+untouched by this stage).

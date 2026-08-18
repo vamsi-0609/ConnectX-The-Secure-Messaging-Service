@@ -127,18 +127,20 @@ class GroupServiceTest {
         assertEquals("OWNER", members.get(0).getRole());
     }
 
-    // 10, 11. the 100-active-member cap is enforced, and soft-deleted members don't count toward
-    // it.
+    // 10, 11. the central active-member cap (GroupAuthorizationService.MAX_ACTIVE_GROUP_MEMBERS)
+    // is enforced, and soft-deleted members don't count toward it. Derives every count from the
+    // constant rather than hardcoding it, so this test tracks the cap automatically if it changes.
     @Test
     void memberLimit_enforcedButExcludesSoftDeletedMembers() {
+        int cap = GroupAuthorizationService.MAX_ACTIVE_GROUP_MEMBERS;
         User creator = newUser("limit_owner");
         GroupDto group = groupService.createGroup(creator.getId(), new CreateGroupRequestDto("Big Group", null));
         Conversation conversation = conversationRepository.findById(group.getId()).orElseThrow();
 
-        // Creator already occupies slot 1; fill 98 more active slots directly (99 total), then
-        // soft-delete one of them so the active count is 98 again.
+        // Creator already occupies slot 1; fill (cap - 2) more active slots directly ((cap - 1)
+        // total), then soft-delete one of them so the active count is (cap - 2) again.
         User softDeletedUser = null;
-        for (int i = 0; i < 98; i++) {
+        for (int i = 0; i < cap - 2; i++) {
             User filler = newUser("limit_filler_" + i);
             ConversationMember member = new ConversationMember(conversation, filler);
             member.setRole(GroupRole.MEMBER);
@@ -147,31 +149,31 @@ class GroupServiceTest {
                 softDeletedUser = filler;
             }
         }
-        assertEquals(99, conversationMemberRepository.countByConversationIdAndDeletedAtIsNull(group.getId()));
+        assertEquals(cap - 1, conversationMemberRepository.countByConversationIdAndDeletedAtIsNull(group.getId()));
 
-        // One more active member reaches exactly 100 -- still allowed.
-        User the100th = newUser("limit_100th");
-        groupService.addMember(conversation, the100th, GroupRole.MEMBER, creator.getId());
-        assertEquals(100, conversationMemberRepository.countByConversationIdAndDeletedAtIsNull(group.getId()));
+        // One more active member reaches exactly the cap -- still allowed.
+        User theLastSlot = newUser("limit_last_slot");
+        groupService.addMember(conversation, theLastSlot, GroupRole.MEMBER, creator.getId());
+        assertEquals(cap, conversationMemberRepository.countByConversationIdAndDeletedAtIsNull(group.getId()));
 
-        // The 101st active member must be rejected.
-        User the101st = newUser("limit_101st");
+        // One past the cap must be rejected.
+        User overCap = newUser("limit_over_cap");
         ApiException ex = assertThrows(ApiException.class,
-                () -> groupService.addMember(conversation, the101st, GroupRole.MEMBER, creator.getId()));
+                () -> groupService.addMember(conversation, overCap, GroupRole.MEMBER, creator.getId()));
         assertEquals("GROUP_MEMBER_LIMIT_EXCEEDED", ex.getCode());
 
         // Soft-delete one existing member -- the active count drops below the cap, so a new member
-        // can now be added even though 100 ConversationMember rows still exist for this group.
+        // can now be added even though `cap` ConversationMember rows still exist for this group.
         ConversationMember toRemove = conversationMemberRepository
                 .findByConversationIdAndUserId(group.getId(), softDeletedUser.getId())
                 .orElseThrow();
         toRemove.setDeletedAt(Instant.now());
         conversationMemberRepository.save(toRemove);
-        assertEquals(99, conversationMemberRepository.countByConversationIdAndDeletedAtIsNull(group.getId()));
+        assertEquals(cap - 1, conversationMemberRepository.countByConversationIdAndDeletedAtIsNull(group.getId()));
 
-        User the101stRetry = newUser("limit_101st_retry");
-        assertDoesNotThrow(() -> groupService.addMember(conversation, the101stRetry, GroupRole.MEMBER, creator.getId()));
-        assertEquals(100, conversationMemberRepository.countByConversationIdAndDeletedAtIsNull(group.getId()));
+        User overCapRetry = newUser("limit_over_cap_retry");
+        assertDoesNotThrow(() -> groupService.addMember(conversation, overCapRetry, GroupRole.MEMBER, creator.getId()));
+        assertEquals(cap, conversationMemberRepository.countByConversationIdAndDeletedAtIsNull(group.getId()));
     }
 
     // 12. adding the same active member twice is rejected -- no duplicate row is ever created.
