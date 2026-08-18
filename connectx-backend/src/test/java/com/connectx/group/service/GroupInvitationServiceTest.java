@@ -143,19 +143,25 @@ class GroupInvitationServiceTest {
         assertEquals("NO_INVITE_PERMISSION", ex.getCode());
     }
 
-    // 4. MEMBER can invite when ALL_MEMBERS.
+    // 4. MEMBER can invite when ALL_MEMBERS -- but per
+    // docs/CONNECTX_GROUP_ARCHITECTURE.md §7's worked example, only a connected target: "B may
+    // invite C because B and C are connected." (Stage 4 corrected this: previously a MEMBER could
+    // invite anyone under ALL_MEMBERS, connection only affecting DIRECT_ADD vs
+    // INVITATION_REQUIRED -- see GroupSettingsAndPrivacyTest#memberWithAllMembers_cannotInviteUnconnectedTarget
+    // for the case of an unconnected target, which is now correctly DENIED instead.)
     @Test
     void member_canInvite_whenAllMembers() {
         User owner = newUser("inv_owner4");
         User member = newUser("inv_member4");
         User target = newUser("inv_member4_target");
+        connect(member, target);
         GroupDto group = newGroup(owner, "All Members Invite Group");
         addRawMember(group.getId(), member, GroupRole.MEMBER);
         setWhoCanInvite(group.getId(), WhoCanInvite.ALL_MEMBERS);
 
         CreateGroupInvitationResponseDto result = groupInvitationService.createInvitation(
                 member.getId(), group.getId(), new CreateGroupInvitationRequestDto(target.getId()));
-        assertEquals("INVITATION_SENT", result.getOutcome());
+        assertEquals("DIRECT_ADDED", result.getOutcome());
     }
 
     // 5. a non-member cannot invite.

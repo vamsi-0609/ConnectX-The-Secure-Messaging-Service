@@ -8,6 +8,7 @@ import com.connectx.common.util.AfterCommitExecutor;
 import com.connectx.user.dto.PublicUserDto;
 import com.connectx.user.dto.UserDto;
 import com.connectx.user.dto.UserProfileUpdateDto;
+import com.connectx.user.entity.GroupAddPrivacy;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
 import com.connectx.user.storage.ProfileImageStorage;
@@ -31,6 +32,8 @@ public class UserService {
     private static final Pattern USERNAME_PATTERN = Pattern.compile("^[a-zA-Z0-9_]{3,30}$");
     private static final Set<String> VALID_PHOTO_VISIBILITY_VALUES = Set.of(
             ProfileVisibilityService.VISIBILITY_EVERYONE, ProfileVisibilityService.VISIBILITY_CONNECTIONS);
+    private static final Set<String> VALID_GROUP_ADD_PRIVACY_VALUES = java.util.Arrays.stream(GroupAddPrivacy.values())
+            .map(Enum::name).collect(Collectors.toSet());
 
     private final UserRepository userRepository;
     private final ProfileImageStorage profileImageStorage;
@@ -110,6 +113,15 @@ public class UserService {
                 throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_DISPLAY_NAME", "Display name cannot exceed 50 characters");
             }
             user.setDisplayName(newDisplayName);
+        }
+
+        if (updateDto.getGroupAddPrivacy() != null) {
+            String privacy = updateDto.getGroupAddPrivacy().trim().toUpperCase();
+            if (!VALID_GROUP_ADD_PRIVACY_VALUES.contains(privacy)) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_GROUP_ADD_PRIVACY",
+                        "groupAddPrivacy must be one of: " + VALID_GROUP_ADD_PRIVACY_VALUES);
+            }
+            user.setGroupAddPrivacy(GroupAddPrivacy.valueOf(privacy));
         }
 
         if (updateDto.getProfilePhotoVisibility() != null) {

@@ -10,6 +10,8 @@ public class GroupDto {
     private String description;
     private String avatarUrl;
     private String whoCanInvite;
+    private String whoCanSendMessages;
+    private String whoCanEditGroupInfo;
     private Long createdByUserId;
     private String currentUserRole;
     private long activeMemberCount;
@@ -64,6 +66,22 @@ public class GroupDto {
 
     public void setWhoCanInvite(String whoCanInvite) {
         this.whoCanInvite = whoCanInvite;
+    }
+
+    public String getWhoCanSendMessages() {
+        return whoCanSendMessages;
+    }
+
+    public void setWhoCanSendMessages(String whoCanSendMessages) {
+        this.whoCanSendMessages = whoCanSendMessages;
+    }
+
+    public String getWhoCanEditGroupInfo() {
+        return whoCanEditGroupInfo;
+    }
+
+    public void setWhoCanEditGroupInfo(String whoCanEditGroupInfo) {
+        this.whoCanEditGroupInfo = whoCanEditGroupInfo;
     }
 
     public Long getCreatedByUserId() {

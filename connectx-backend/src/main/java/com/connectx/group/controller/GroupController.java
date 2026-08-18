@@ -5,6 +5,7 @@ import com.connectx.common.security.UserPrincipal;
 import com.connectx.conversation.dto.ConversationMemberDto;
 import com.connectx.group.dto.CreateGroupRequestDto;
 import com.connectx.group.dto.GroupDto;
+import com.connectx.group.dto.UpdateGroupSettingsRequestDto;
 import com.connectx.group.service.GroupService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -45,5 +46,14 @@ public class GroupController {
             @PathVariable Long groupId) {
         List<ConversationMemberDto> members = groupService.getGroupMembers(currentUser.getId(), groupId);
         return ResponseEntity.ok(ApiResponse.success("Group members", members));
+    }
+
+    @PatchMapping("/{groupId}/settings")
+    public ResponseEntity<ApiResponse<GroupDto>> updateSettings(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long groupId,
+            @RequestBody UpdateGroupSettingsRequestDto dto) {
+        GroupDto group = groupService.updateSettings(currentUser.getId(), groupId, dto);
+        return ResponseEntity.ok(ApiResponse.success("Group settings updated", group));
     }
 }

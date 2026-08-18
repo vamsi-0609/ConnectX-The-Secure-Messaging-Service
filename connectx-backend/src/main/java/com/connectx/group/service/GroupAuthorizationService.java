@@ -10,6 +10,7 @@ import com.connectx.conversation.repository.ConversationMemberRepository;
 import com.connectx.group.entity.ChatGroup;
 import com.connectx.group.entity.WhoCanInvite;
 import com.connectx.group.repository.ChatGroupRepository;
+import com.connectx.user.entity.GroupAddPrivacy;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
 import org.springframework.http.HttpStatus;
@@ -67,9 +68,6 @@ public class GroupAuthorizationService {
     public enum MembershipState { NEVER_MEMBER, ACTIVE_MEMBER, INACTIVE }
 
     public enum AddMemberDecision { DIRECT_ADD, INVITATION_REQUIRED, DENIED }
-
-    /** "Who can add me to groups?" -- see class-level javadoc on {@link #resolveGroupAddPrivacy}. */
-    public enum GroupAddPrivacy { ANYONE, CONNECTIONS, NOBODY }
 
     public static final class AddMemberEvaluation {
         private final AddMemberDecision decision;
@@ -247,11 +245,36 @@ public class GroupAuthorizationService {
     /**
      * Evaluates whether {@code actorUserId} adding {@code targetUserId} to {@code groupId} should
      * be a silent {@code DIRECT_ADD}, require an explicit {@code INVITATION_REQUIRED} accept step,
-     * or be flatly {@code DENIED} -- without performing any write. Stage 1.5 establishes this
-     * decision model only; no invitation persistence exists yet (deferred to Stage 2), and
-     * GroupService#addMember is not wired to any endpoint that calls this. Order matters and
-     * mirrors this codebase's existing precedence conventions (see ProfileVisibilityService's
-     * javadoc: "a block always wins, checked first").
+     * or be flatly {@code DENIED} -- without performing any write. No invitation persistence
+     * happens here (see {@code GroupInvitationService}, which acts on this result); this method
+     * only decides.
+     * <p>
+     * Precedence (docs/CONNECTX_GROUP_IMPLEMENTATION_STATE.md's Stage 4 checkpoint has the full
+     * rationale for why this exact order, and for the two corrections Stage 4 made to the original
+     * Stage 1.5/2 version -- role/permission split into a coarse gate (3) and a final,
+     * connection-aware confirmation (9), and CONNECTIONS privacy added as a target-side veto):
+     * <ol>
+     * <li>group validity + actor active membership ({@link #requireActiveMember})</li>
+     * <li>(self-add short-circuit)</li>
+     * <li>actor role/permission -- coarse gate: OWNER/ADMIN always pass; MEMBER passes only if
+     * {@code who_can_invite = ALL_MEMBERS} (docs/CONNECTX_GROUP_ARCHITECTURE.md §6/§7)</li>
+     * <li>blocking, either direction -- always wins, same precedence convention as
+     * {@code ProfileVisibilityService}</li>
+     * <li>target membership state -- INACTIVE (LEFT/REMOVED, collapsed -- see class javadoc)
+     * always resolves to INVITATION_REQUIRED here, never DIRECT_ADD, regardless of every check
+     * below; this is the one rule privacy/policy/connection can never override</li>
+     * <li>group capacity</li>
+     * <li>target's persisted group-add privacy ({@code User#getGroupAddPrivacy}) -- NOBODY denies
+     * outright</li>
+     * <li>connection relationship</li>
+     * <li>group invitation policy, finalized -- CONNECTIONS privacy denies outright if not
+     * connected (a target-side veto even an OWNER/ADMIN cannot bypass, per §8); a MEMBER actor
+     * (already confirmed ALL_MEMBERS at step 3) is denied outright if not connected to the target,
+     * per §7's worked example ("if B and C were not connected, B could not invite C even with
+     * this setting"); an OWNER/ADMIN may always invite an unconnected target -- connection then
+     * only decides DIRECT_ADD vs. INVITATION_REQUIRED for them</li>
+     * <li>final decision</li>
+     * </ol>
      */
     @Transactional(readOnly = true)
     public AddMemberEvaluation evaluateAddMember(Long actorUserId, Long groupId, Long targetUserId) {
@@ -260,9 +283,13 @@ public class GroupAuthorizationService {
         if (actorUserId.equals(targetUserId)) {
             return new AddMemberEvaluation(AddMemberDecision.DENIED, "CANNOT_ADD_SELF");
         }
+
+        GroupRole actorRole = activeRoleOrNull(actorUserId, groupId);
+        boolean actorIsElevated = actorRole == GroupRole.OWNER || actorRole == GroupRole.ADMIN;
         if (!canInvite(actorUserId, groupId)) {
             return new AddMemberEvaluation(AddMemberDecision.DENIED, "NO_INVITE_PERMISSION");
         }
+
         if (userBlockRepository.existsEitherDirection(actorUserId, targetUserId)) {
             return new AddMemberEvaluation(AddMemberDecision.DENIED, "BLOCKED");
         }
@@ -274,7 +301,8 @@ public class GroupAuthorizationService {
         if (targetState == MembershipState.INACTIVE) {
             // Consent rule: a user who left or was removed must never be silently reactivated --
             // see class-level javadoc on the LEFT/REMOVED collapse. Always INVITATION_REQUIRED,
-            // regardless of connection status or the target's privacy setting below.
+            // regardless of privacy, group policy, or connection status below. No user-level
+            // privacy value (ANYONE/CONNECTIONS/NOBODY) changes this.
             return new AddMemberEvaluation(AddMemberDecision.INVITATION_REQUIRED, "REQUIRES_REINVITATION");
         }
 
@@ -284,13 +312,28 @@ public class GroupAuthorizationService {
 
         User target = userRepository.findById(targetUserId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "Target user not found"));
-        if (resolveGroupAddPrivacy(target) == GroupAddPrivacy.NOBODY) {
+        GroupAddPrivacy privacy = resolveGroupAddPrivacy(target);
+        if (privacy == GroupAddPrivacy.NOBODY) {
             return new AddMemberEvaluation(AddMemberDecision.DENIED, "TARGET_PRIVACY_NOBODY");
         }
 
-        if (!isConnected(actorUserId, targetUserId)) {
+        boolean connected = isConnected(actorUserId, targetUserId);
+
+        // CONNECTIONS is a target-side veto stronger than group role: only a connected actor may
+        // add/invite this target at all, even an owner/admin who could otherwise invite anyone.
+        if (privacy == GroupAddPrivacy.CONNECTIONS && !connected) {
+            return new AddMemberEvaluation(AddMemberDecision.DENIED, "TARGET_PRIVACY_CONNECTIONS_ONLY");
+        }
+
+        if (!connected) {
+            if (!actorIsElevated) {
+                // A MEMBER's who_can_invite=ALL_MEMBERS permission (already confirmed passing
+                // step 3) only ever extends to their own connections -- never downgraded to an
+                // invitation for someone they aren't connected to.
+                return new AddMemberEvaluation(AddMemberDecision.DENIED, "NO_INVITE_PERMISSION");
+            }
             // Not connected -- connection is a precondition for a *silent* add, not for an
-            // invitation; the actor can still send one for the target to explicitly accept.
+            // invitation; an owner/admin can still send one for the target to explicitly accept.
             return new AddMemberEvaluation(AddMemberDecision.INVITATION_REQUIRED, "NOT_CONNECTED");
         }
 
@@ -385,14 +428,15 @@ public class GroupAuthorizationService {
     }
 
     /**
-     * "Who can add me to groups?" is not yet a persisted user setting or a UI (explicitly out of
-     * scope for Stage 1.5) -- this returns the default (ANYONE) unconditionally so
-     * {@link #evaluateAddMember} has a real slot to call once a settings column exists, instead of
-     * inlining a TODO into the decision method itself. Per the Stage 1.5 spec, ANYONE only means
-     * the user's own preference does not additionally restrict an otherwise-authorized action; it
-     * does not bypass canInvite, blocking, membership state, or the capacity check above.
+     * "Who can add me to groups?" (docs/CONNECTX_GROUP_ARCHITECTURE.md §8), persisted since Stage 4
+     * on {@code User#groupAddPrivacy}. NULL (every user who existed before this column, and never
+     * explicitly set it) means ANYONE -- the single place that interpretation lives, mirroring
+     * {@code ProfileVisibilityService}'s identical null-means-EVERYONE convention for
+     * {@code profilePhotoVisibility} on the same entity. ANYONE only means the user's own
+     * preference does not additionally restrict an otherwise-authorized action; it never bypasses
+     * canInvite, blocking, membership state, or the capacity check in {@link #evaluateAddMember}.
      */
     private GroupAddPrivacy resolveGroupAddPrivacy(User target) {
-        return GroupAddPrivacy.ANYONE;
+        return target.getGroupAddPrivacy() != null ? target.getGroupAddPrivacy() : GroupAddPrivacy.ANYONE;
     }
 }

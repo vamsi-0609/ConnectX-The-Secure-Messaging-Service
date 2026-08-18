@@ -14,6 +14,7 @@ public class UserDto {
     private Instant lastSeenAt;
     private Instant createdAt;
     private String profilePhotoVisibility;
+    private String groupAddPrivacy;
 
     public UserDto() {}
 
@@ -28,6 +29,7 @@ public class UserDto {
         dto.setLastSeenAt(user.getLastSeenAt());
         dto.setCreatedAt(user.getCreatedAt());
         dto.setProfilePhotoVisibility(user.getProfilePhotoVisibility() != null ? user.getProfilePhotoVisibility() : "EVERYONE");
+        dto.setGroupAddPrivacy(user.getGroupAddPrivacy() != null ? user.getGroupAddPrivacy().name() : "ANYONE");
         return dto;
     }
 
@@ -115,5 +117,13 @@ public class UserDto {
 
     public void setProfilePhotoVisibility(String profilePhotoVisibility) {
         this.profilePhotoVisibility = profilePhotoVisibility;
+    }
+
+    public String getGroupAddPrivacy() {
+        return groupAddPrivacy;
+    }
+
+    public void setGroupAddPrivacy(String groupAddPrivacy) {
+        this.groupAddPrivacy = groupAddPrivacy;
     }
 }

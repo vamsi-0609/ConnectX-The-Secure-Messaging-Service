@@ -10,7 +10,11 @@ import com.connectx.conversation.repository.ConversationMemberRepository;
 import com.connectx.conversation.repository.ConversationRepository;
 import com.connectx.group.dto.CreateGroupRequestDto;
 import com.connectx.group.dto.GroupDto;
+import com.connectx.group.dto.UpdateGroupSettingsRequestDto;
 import com.connectx.group.entity.ChatGroup;
+import com.connectx.group.entity.WhoCanEditGroupInfo;
+import com.connectx.group.entity.WhoCanInvite;
+import com.connectx.group.entity.WhoCanSendMessages;
 import com.connectx.group.repository.ChatGroupRepository;
 import com.connectx.group.repository.GroupInvitationRepository;
 import com.connectx.user.entity.User;
@@ -117,6 +121,48 @@ public class GroupService {
         return members.stream()
                 .map(m -> ConversationMemberDto.fromEntity(m, photoVisibilityByUserId.getOrDefault(m.getUser().getId(), false)))
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * Groups Stage 4: updates the group's three policy settings (docs/CONNECTX_GROUP_ARCHITECTURE.md
+     * §5.1/§6 -- "Change group settings (the 3 ENUMs) -- Owner only"). Every field in the request is
+     * optional; only the ones actually supplied are validated and applied. All-or-nothing: an
+     * invalid value in any supplied field throws before any field is set, and since this is a
+     * single @Transactional method with no intermediate flush, nothing partial is ever persisted --
+     * either every valid change in the request commits, or (on an invalid field) none of them do.
+     * Existing membership, invitations, connections, and blocks are all untouched -- a settings
+     * change only affects future authorization decisions, never retroactively.
+     */
+    @Transactional
+    public GroupDto updateSettings(Long actorUserId, Long groupId, UpdateGroupSettingsRequestDto dto) {
+        groupAuthorizationService.requireOwner(actorUserId, groupId);
+
+        ChatGroup chatGroup = chatGroupRepository.findById(groupId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "Group not found"));
+
+        if (dto.getWhoCanInvite() != null) {
+            chatGroup.setWhoCanInvite(parseEnum(WhoCanInvite.class, dto.getWhoCanInvite(), "whoCanInvite"));
+        }
+        if (dto.getWhoCanSendMessages() != null) {
+            chatGroup.setWhoCanSendMessages(parseEnum(WhoCanSendMessages.class, dto.getWhoCanSendMessages(), "whoCanSendMessages"));
+        }
+        if (dto.getWhoCanEditGroupInfo() != null) {
+            chatGroup.setWhoCanEditGroupInfo(parseEnum(WhoCanEditGroupInfo.class, dto.getWhoCanEditGroupInfo(), "whoCanEditGroupInfo"));
+        }
+
+        chatGroupRepository.save(chatGroup);
+
+        long activeMemberCount = conversationMemberRepository.countByConversationIdAndDeletedAtIsNull(groupId);
+        return buildGroupDto(chatGroup.getConversation(), chatGroup, activeMemberCount, GroupRole.OWNER);
+    }
+
+    private <E extends Enum<E>> E parseEnum(Class<E> enumType, String rawValue, String fieldName) {
+        try {
+            return Enum.valueOf(enumType, rawValue.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_SETTING_VALUE",
+                    fieldName + " must be one of: " + java.util.Arrays.toString(enumType.getEnumConstants()));
+        }
     }
 
     /**
@@ -286,6 +332,8 @@ public class GroupService {
         dto.setDescription(chatGroup.getDescription());
         dto.setAvatarUrl(chatGroup.getAvatarUrl());
         dto.setWhoCanInvite(chatGroup.getWhoCanInvite().name());
+        dto.setWhoCanSendMessages(chatGroup.getWhoCanSendMessages().name());
+        dto.setWhoCanEditGroupInfo(chatGroup.getWhoCanEditGroupInfo().name());
         dto.setCreatedByUserId(chatGroup.getCreatedByUser().getId());
         dto.setCurrentUserRole(viewerRole != null ? viewerRole.name() : null);
         dto.setActiveMemberCount(activeMemberCount);

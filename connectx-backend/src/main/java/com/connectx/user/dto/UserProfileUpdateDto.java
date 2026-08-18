@@ -15,6 +15,7 @@ public class UserProfileUpdateDto {
     private String displayName;
     private String status;
     private String profilePhotoVisibility;
+    private String groupAddPrivacy;
 
     public UserProfileUpdateDto() {}
 
@@ -48,5 +49,13 @@ public class UserProfileUpdateDto {
 
     public void setProfilePhotoVisibility(String profilePhotoVisibility) {
         this.profilePhotoVisibility = profilePhotoVisibility;
+    }
+
+    public String getGroupAddPrivacy() {
+        return groupAddPrivacy;
+    }
+
+    public void setGroupAddPrivacy(String groupAddPrivacy) {
+        this.groupAddPrivacy = groupAddPrivacy;
     }
 }

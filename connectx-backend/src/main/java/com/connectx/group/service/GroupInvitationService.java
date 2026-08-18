@@ -138,6 +138,7 @@ public class GroupInvitationService {
             case "GROUP_FULL" -> new ApiException(HttpStatus.CONFLICT, "GROUP_MEMBER_LIMIT_EXCEEDED",
                     "This group has reached the maximum of " + GroupAuthorizationService.MAX_ACTIVE_GROUP_MEMBERS + " members");
             case "TARGET_PRIVACY_NOBODY" -> new ApiException(HttpStatus.FORBIDDEN, "TARGET_PRIVACY_NOBODY", "This action is not permitted");
+            case "TARGET_PRIVACY_CONNECTIONS_ONLY" -> new ApiException(HttpStatus.FORBIDDEN, "TARGET_PRIVACY_CONNECTIONS_ONLY", "This action is not permitted");
             default -> new ApiException(HttpStatus.FORBIDDEN, "DENIED", "This action is not permitted");
         };
     }

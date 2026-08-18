@@ -60,8 +60,12 @@ describe:**
   "Checkpoint — Groups Stage 3 member management (2026-08-18)" at the end of this document. No
   schema change. Implements §6/§10 of `CONNECTX_GROUP_ARCHITECTURE.md`'s pre-approved permission
   matrix (ownership transfer explicitly excluded, per this stage's own scope).
+- **Groups Stage 4** (group settings, user-level group privacy, and a correctness fix to
+  `evaluateAddMember` uncovered while implementing them) — see "Checkpoint — Groups Stage 4
+  settings and privacy (2026-08-18)" at the end of this document.
+  `V4__group_settings_and_user_privacy.sql` applied to `connectx_db`.
 
-**Next stage: Groups Stage 4 (group settings, or the group frontend) — not started, awaiting
+**Next stage: Groups Stage 5 (group messaging, or the group frontend) — not started, awaiting
 explicit instruction.** The stale "not started" framing directly below (written before any Groups
 code existed) is superseded by the above; kept as-is for historical accuracy of what was true when
 written.
@@ -1275,3 +1279,152 @@ its owner in V1); no group messaging exists yet, so "messages remain intact" was
 directly-inserted `Message` row rather than a real send flow; the group-add privacy setting
 (ANYONE/CONNECTIONS/NOBODY) is still structural-only, no persisted column or UI; group E2EE remains
 entirely undecided (PDF Stage 8, untouched).
+
+---
+
+## Checkpoint — Groups Stage 4 settings and privacy (2026-08-18)
+
+Follows Groups Stage 3 (`01ccd45`, member management). Implements the remaining two of
+`CONNECTX_GROUP_ARCHITECTURE.md` §5.1's "3 dynamic settings" (`who_can_send_messages`,
+`who_can_edit_group_info` -- `who_can_invite` already existed) plus §8's user-level group privacy
+(`ANYONE`/`CONNECTIONS`/`NOBODY`), and wires the privacy setting into
+`GroupAuthorizationService#evaluateAddMember` for real enforcement -- accelerated ahead of the
+architecture doc's own original "designed now, enforcement deferred to Future" phasing (§660),
+per this stage's explicit instruction to enforce both, not just design them.
+
+**Schema:** `V4__group_settings_and_user_privacy.sql`, three additive columns, no backfill needed
+for any of them (verified empirically, same reasoning already used for `V3`):
+`chat_groups.who_can_send_messages ENUM('EVERYONE','ADMINS_ONLY') NOT NULL DEFAULT 'EVERYONE'`,
+`chat_groups.who_can_edit_group_info ENUM('OWNER_ADMIN_ONLY','ALL_MEMBERS') NOT NULL DEFAULT
+'OWNER_ADMIN_ONLY'` (both zero-row-affected, `chat_groups` has no production data yet),
+`users.group_add_privacy VARCHAR(20) NULL` (nullable, no default, no backfill -- deliberately
+mirrors `users.profile_photo_visibility`'s exact existing shape and null-means-default convention,
+so none of `connectx_db`'s 87 existing users needed touching). Applied to `connectx_db`, verified
+via `SHOW COLUMNS`.
+
+**User privacy model:** `GroupAddPrivacy` enum (`ANYONE`/`CONNECTIONS`/`NOBODY`), promoted from a
+nested type inside `GroupAuthorizationService` (where Stage 1.5 first defined it, unenforced) to a
+top-level `com.connectx.user.entity.GroupAddPrivacy`, `@Enumerated(STRING)` on `User`. Reused the
+existing `PATCH /api/v1/users/me` → `UserService#updateUserProfile` path exactly (new
+`groupAddPrivacy` field on `UserProfileUpdateDto`/`UserDto`, validated against
+`GroupAddPrivacy.values()` the same way `profilePhotoVisibility` is validated against its own set)
+-- no new endpoint, per the explicit instruction not to add `PATCH /users/{userId}/group-settings`.
+A user can only ever modify their own row, since the id always comes from
+`@AuthenticationPrincipal`, never the request body.
+
+**Default:** NULL means `ANYONE`, interpreted in exactly one place
+(`GroupAuthorizationService#resolveGroupAddPrivacy`), mirroring `ProfileVisibilityService`'s
+identical null-means-`EVERYONE` convention for the sibling field on the same entity. New users get
+an explicit `ANYONE` from `User#onCreate` (again mirroring `profilePhotoVisibility`); only rows that
+existed before this migration stay genuinely NULL.
+
+**Group settings implemented:** all three ENUM policies (`who_can_invite`, `who_can_send_messages`,
+`who_can_edit_group_info`) via one endpoint, `PATCH /api/v1/groups/{groupId}/settings` →
+`GroupService#updateSettings`. Request carries only the fields being changed (all optional); an
+invalid value in any supplied field throws before any field is set, and since this is one
+`@Transactional` method with no intermediate flush, that's already fully atomic -- no extra
+machinery needed. `who_can_send_messages`/`who_can_edit_group_info` are established and validated
+only, per instruction -- no MessageService or group-info-edit enforcement exists yet; those belong
+to their respective future stages.
+
+**Group-setting permission matrix:** all three settings are OWNER-only to change
+(`CONNECTX_GROUP_ARCHITECTURE.md` §6: "Change group settings (the 3 ENUMs) -- Owner only") --
+reused the existing `GroupAuthorizationService#requireOwner` gate as-is, no new authorization method
+needed. ADMIN and MEMBER are rejected identically (`OWNER_ONLY`) for every one of the three
+settings; there is no setting an admin is permitted to change in V1.
+
+**Invitation interaction -- the real correctness fix this stage made:** re-reading
+`CONNECTX_GROUP_ARCHITECTURE.md` §7 in full (required by this stage's explicit "inspect the
+architecture document" instruction) surfaced that Stage 1.5/2's original `evaluateAddMember` was
+incomplete relative to the approved design, not just unenforced on privacy. §7's worked example is
+explicit: *"who_can_invite = ALL_MEMBERS: B may invite C because B and C are connected. If B and C
+were not connected, B could not invite C even with this setting."* The original implementation let
+a MEMBER with `ALL_MEMBERS` invite *anyone*, connection only deciding DIRECT_ADD vs.
+INVITATION_REQUIRED -- identical treatment to an OWNER/ADMIN, which the doc never intended. Fixed
+this stage: a MEMBER actor's invite permission is now unconditionally denied (`NO_INVITE_PERMISSION`)
+for an unconnected target, never downgraded to an invitation; an OWNER/ADMIN's is not (connection
+still only decides DIRECT_ADD vs. INVITATION_REQUIRED for them). This changed the actual behavior
+of one existing Stage 2 test
+(`GroupInvitationServiceTest#member_canInvite_whenAllMembers`, updated to connect the pair first, now
+correctly asserting `DIRECT_ADDED`) -- flagged prominently rather than silently patched, since it's
+a real behavior change, not a refactor.
+
+**Privacy enforcement, added this stage:** `CONNECTIONS` is a target-side veto stronger than group
+role -- denies outright (`TARGET_PRIVACY_CONNECTIONS_ONLY`) if the actor isn't connected to the
+target, even for an OWNER/ADMIN who could otherwise invite anyone. `NOBODY` denies outright
+(`TARGET_PRIVACY_NOBODY`) regardless of role, connection, or group policy -- proven not bypassable
+by any of the three (`groupPolicy_doesNotBypassNobody`, `connection_doesNotBypassNobody`). Neither
+privacy value is ever consulted for the LEFT/REMOVED consent rule -- that check (`MembershipState.
+INACTIVE` -> always `INVITATION_REQUIRED`) still runs first and unconditionally, exactly as Stage
+1.5 established. Precedence order implemented matches this stage's own 10-step specification
+exactly (see `evaluateAddMember`'s updated javadoc for the full ordered list and rationale).
+
+**Inactive-member behavior:** unchanged -- still always `INVITATION_REQUIRED`, still never silently
+restorable by any privacy value, proven fresh this stage
+(`inactiveTarget_stillRequiresInvitation_neverSilentlyRestored`).
+
+**NOBODY vs. voluntary acceptance -- explicit semantic, tested:** per this stage's own instruction
+("do not prevent the target voluntarily accepting a valid invitation"), `NOBODY` is deliberately
+**not** re-checked at `acceptInvitation` time -- accept-time re-checks remain exactly what Stage 2/3
+already established (PENDING status, blocking, capacity), and privacy was never one of them, on
+purpose: re-checking a user's own current preference against their own explicit accept action would
+contradict the instruction. Proven by
+`nobodyPrivacySetAfterInvitationSent_doesNotBlockOwnVoluntaryAcceptance` -- a target who sets
+NOBODY *after* receiving an invitation can still accept it themselves.
+
+**Settings-change interaction:** a group policy change never retroactively cancels or invalidates an
+already-PENDING invitation (`policyChangeAfterInvitationSent_doesNotInvalidateIt`) -- "settings
+control future authorization behavior" only, matching the explicit instruction not to auto-delete
+invitations on a settings change. Changing a user's privacy setting has zero membership side
+effects anywhere (`changingPrivacy_hasNoMembershipSideEffects`) -- no row created, no existing row
+touched.
+
+**Blocking interaction:** unchanged, still checked before privacy/policy/connection in
+`evaluateAddMember`'s precedence, still not bypassable by any group setting or privacy value
+(`blockedPair_remainsDenied`).
+
+**Performance/query behavior:** `resolveGroupAddPrivacy` reads the already-loaded `target` User
+entity's field directly -- zero extra queries. `updateSettings` = 1 authorization read (via
+`requireOwner`) + 1 `ChatGroup` re-fetch + 1 `UPDATE`, no member-list load. `evaluateAddMember`'s
+new privacy check adds exactly the one `userRepository.findById(targetUserId)` call that already
+existed in the pre-Stage-4 version (needed regardless, to build the `USER_NOT_FOUND` case) -- no new
+query was introduced, and there is no per-member privacy lookup anywhere (a single target is always
+evaluated one user at a time, never a whole member list).
+
+**Tests added:** `GroupSettingsAndPrivacyTest` (25 cases covering user privacy, group settings
+authorization, all ten precedence steps, settings-change/invitation interaction, and the
+NOBODY-vs-voluntary-acceptance semantic). One existing Stage 2 test updated
+(`member_canInvite_whenAllMembers`) to match the corrected connection-aware MEMBER-invite behavior.
+Security items (IDOR, forged actor/role, cross-group modification, blocked-user bypass) and
+regression items 33-45 were not independently re-tested where an already-passing suite already
+covers the identical guarantee (e.g. `GroupMembershipServiceTest`/`GroupInvitationServiceTest` for
+group lifecycle regression, `DirectConversationAuthorizationTest`/`ConnectionServiceTest`/
+`BlockServiceTest`/`WebSocketSubscriptionAuthorizationTest` for DIRECT/connection/blocking/WebSocket
+regression) -- all reconfirmed passing in the same full run.
+
+**Test result:** full `mvn test` -- **250/250 pass** (225 before this stage + 25 new), 0 failures,
+0 errors.
+
+**DIRECT regression:** confirmed via the full suite above -- every DIRECT/connection/blocking/
+WebSocket suite passed unchanged.
+
+**E2EE/WebSocket/Web Push status:** none touched.
+
+**Files changed this stage:** `db/migrations/V4__group_settings_and_user_privacy.sql` (new, applied
+to `connectx_db`), `GroupAddPrivacy.java` (new, `user.entity`), `WhoCanSendMessages.java` /
+`WhoCanEditGroupInfo.java` (new, `group.entity`), `User.java` (modified: `groupAddPrivacy` field +
+default), `ChatGroup.java` (modified: two new settings fields), `UserProfileUpdateDto.java` /
+`UserDto.java` (modified: `groupAddPrivacy`), `UserService.java` (modified: validation), `GroupDto.java`
+(modified: two new fields), `UpdateGroupSettingsRequestDto.java` (new), `GroupService.java`
+(modified: `updateSettings` added), `GroupController.java` (modified: `PATCH .../settings`),
+`GroupAuthorizationService.java` (modified: `evaluateAddMember` rewritten, `GroupAddPrivacy` moved
+out), `GroupInvitationService.java` (modified: new `denialFor` case),
+`GroupInvitationServiceTest.java` (modified: one test corrected), `GroupSettingsAndPrivacyTest.java`
+(new), this document. Frontend untouched.
+
+**Remaining before Group Messaging/E2EE:** no group-info-edit endpoint exists yet to actually
+consume `who_can_edit_group_info` (setting is persisted/validated only); no `MessageService`
+enforcement of `who_can_send_messages` (explicitly deferred to the Group Messaging stage);
+ownership transfer remains unimplemented (unchanged from Stage 3); no invite-links/join-requests
+(explicitly Future per the architecture doc); group E2EE remains entirely undecided (PDF Stage 8,
+untouched); no frontend UI exists for either the group settings or the user privacy preference yet.

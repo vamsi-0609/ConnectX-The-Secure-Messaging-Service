@@ -38,6 +38,14 @@ public class User {
     @Column(name = "profile_photo_visibility", length = 20)
     private String profilePhotoVisibility;
 
+    // Groups Stage 4 ("who can add me to groups?", see GroupAddPrivacy's javadoc). Same nullable
+    // convention as profilePhotoVisibility directly above: null means every existing row from
+    // before this column existed, and is treated as ANYONE everywhere -- see
+    // GroupAuthorizationService#resolveGroupAddPrivacy, the single place that interpretation lives.
+    @Enumerated(EnumType.STRING)
+    @Column(name = "group_add_privacy", length = 20)
+    private GroupAddPrivacy groupAddPrivacy;
+
     @Column(name = "last_seen_at")
     private Instant lastSeenAt;
 
@@ -65,6 +73,9 @@ public class User {
         }
         if (this.profilePhotoVisibility == null) {
             this.profilePhotoVisibility = "EVERYONE";
+        }
+        if (this.groupAddPrivacy == null) {
+            this.groupAddPrivacy = GroupAddPrivacy.ANYONE;
         }
     }
 
@@ -144,6 +155,14 @@ public class User {
 
     public void setProfilePhotoVisibility(String profilePhotoVisibility) {
         this.profilePhotoVisibility = profilePhotoVisibility;
+    }
+
+    public GroupAddPrivacy getGroupAddPrivacy() {
+        return groupAddPrivacy;
+    }
+
+    public void setGroupAddPrivacy(GroupAddPrivacy groupAddPrivacy) {
+        this.groupAddPrivacy = groupAddPrivacy;
     }
 
     public Instant getLastSeenAt() {

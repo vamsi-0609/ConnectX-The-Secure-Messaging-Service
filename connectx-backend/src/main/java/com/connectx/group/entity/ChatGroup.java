@@ -43,6 +43,18 @@ public class ChatGroup {
     @Column(name = "who_can_invite", nullable = false, length = 20)
     private WhoCanInvite whoCanInvite = WhoCanInvite.OWNER_ADMIN_ONLY;
 
+    // Groups Stage 4 (V4__group_settings_and_user_privacy.sql) -- established/validated only;
+    // actual MessageService enforcement belongs to the Group Messaging stage.
+    @Enumerated(EnumType.STRING)
+    @Column(name = "who_can_send_messages", nullable = false, length = 20)
+    private WhoCanSendMessages whoCanSendMessages = WhoCanSendMessages.EVERYONE;
+
+    // Groups Stage 4 (V4__group_settings_and_user_privacy.sql) -- established/validated only; the
+    // group-info-edit endpoint this is meant to gate is out of scope until a future stage.
+    @Enumerated(EnumType.STRING)
+    @Column(name = "who_can_edit_group_info", nullable = false, length = 20)
+    private WhoCanEditGroupInfo whoCanEditGroupInfo = WhoCanEditGroupInfo.OWNER_ADMIN_ONLY;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -124,6 +136,22 @@ public class ChatGroup {
 
     public void setWhoCanInvite(WhoCanInvite whoCanInvite) {
         this.whoCanInvite = whoCanInvite;
+    }
+
+    public WhoCanSendMessages getWhoCanSendMessages() {
+        return whoCanSendMessages;
+    }
+
+    public void setWhoCanSendMessages(WhoCanSendMessages whoCanSendMessages) {
+        this.whoCanSendMessages = whoCanSendMessages;
+    }
+
+    public WhoCanEditGroupInfo getWhoCanEditGroupInfo() {
+        return whoCanEditGroupInfo;
+    }
+
+    public void setWhoCanEditGroupInfo(WhoCanEditGroupInfo whoCanEditGroupInfo) {
+        this.whoCanEditGroupInfo = whoCanEditGroupInfo;
     }
 
     public Instant getCreatedAt() {
