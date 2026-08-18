@@ -9,8 +9,12 @@ import com.connectx.connection.service.ConnectionService;
 import com.connectx.conversation.entity.Conversation;
 import com.connectx.conversation.entity.ConversationMember;
 import com.connectx.conversation.entity.ConversationType;
+import com.connectx.conversation.entity.GroupRole;
 import com.connectx.conversation.repository.ConversationMemberRepository;
 import com.connectx.conversation.repository.ConversationRepository;
+import com.connectx.group.dto.CreateGroupRequestDto;
+import com.connectx.group.dto.GroupDto;
+import com.connectx.group.service.GroupService;
 import com.connectx.message.dto.MessageDto;
 import com.connectx.message.dto.SendMessageRequestDto;
 import com.connectx.message.entity.Message;
@@ -39,6 +43,8 @@ class MessageConnectionAuthorizationTest {
 
     @Autowired
     private MessageService messageService;
+    @Autowired
+    private GroupService groupService;
     @Autowired
     private ConnectionService connectionService;
     @Autowired
@@ -69,6 +75,13 @@ class MessageConnectionAuthorizationTest {
         conversationMemberRepository.save(new ConversationMember(conversation, a));
         conversationMemberRepository.save(new ConversationMember(conversation, b));
         return conversation;
+    }
+
+    private void addRawGroupMember(Long groupId, User user, GroupRole role) {
+        Conversation conversation = conversationRepository.findById(groupId).orElseThrow();
+        ConversationMember member = new ConversationMember(conversation, user);
+        member.setRole(role);
+        conversationMemberRepository.save(member);
     }
 
     private SendMessageRequestDto textDto(Long conversationId, String ciphertext) {
@@ -217,20 +230,23 @@ class MessageConnectionAuthorizationTest {
         assertEquals("ECDH-P256+AES-256-GCM", reloaded.getEncryptionAlgorithm());
     }
 
-    // 11. GROUP conversations are completely unaffected by the new connection check -- it is
-    // scoped to ConversationType.DIRECT only, exactly like the pre-existing BLOCKED check. Not
-    // testing any actual group business logic (none exists yet) -- only that a GROUP-typed
-    // conversation's send path never reaches the new DIRECT-only authorization block.
+    // 11. GROUP conversations are completely unaffected by the DIRECT-only connection check -- it
+    // is scoped to ConversationType.DIRECT only, exactly like the pre-existing BLOCKED check.
+    // Updated for Groups Stage 5: real group message authorization now exists
+    // (GroupAuthorizationService#requireCanSendMessage), so this uses a properly-created group
+    // (via GroupService, which is the only legitimate way a ChatGroup row ever comes to exist)
+    // rather than the raw Conversation+ConversationMember construction this test originally used
+    // back when no group business logic existed at all -- the point being verified is unchanged:
+    // none of the three members are connected to each other, and the send still succeeds.
     @Test
     void groupConversation_isNotSubjectToConnectionCheck() {
         User a = newUser("groupsend_a");
         User b = newUser("groupsend_b");
         User c = newUser("groupsend_c");
         // Deliberately never connected to each other.
-        Conversation group = conversationRepository.save(new Conversation(ConversationType.GROUP));
-        conversationMemberRepository.save(new ConversationMember(group, a));
-        conversationMemberRepository.save(new ConversationMember(group, b));
-        conversationMemberRepository.save(new ConversationMember(group, c));
+        GroupDto group = groupService.createGroup(a.getId(), new CreateGroupRequestDto("Connection Check Group", null));
+        addRawGroupMember(group.getId(), b, GroupRole.MEMBER);
+        addRawGroupMember(group.getId(), c, GroupRole.MEMBER);
 
         MessageDto sent = messageService.sendMessage(a.getId(), textDto(group.getId(), "group-ct"));
 

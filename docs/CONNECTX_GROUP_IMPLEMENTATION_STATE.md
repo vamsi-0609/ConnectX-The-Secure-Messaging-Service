@@ -64,11 +64,15 @@ describe:**
   `evaluateAddMember` uncovered while implementing them) — see "Checkpoint — Groups Stage 4
   settings and privacy (2026-08-18)" at the end of this document.
   `V4__group_settings_and_user_privacy.sql` applied to `connectx_db`.
+- **Groups Stage 5** (group message authorization/persistence/real-time delivery, entirely through
+  the existing MessageService/Message/WebSocket pipeline, plus two DIRECT-only-semantics bugs
+  found and fixed while extending it to GROUP) — see "Checkpoint — Groups Stage 5 messaging
+  (2026-08-18)" at the end of this document. No schema change, no E2EE change.
 
-**Next stage: Groups Stage 5 (group messaging, or the group frontend) — not started, awaiting
-explicit instruction.** The stale "not started" framing directly below (written before any Groups
-code existed) is superseded by the above; kept as-is for historical accuracy of what was true when
-written.
+**Next stage: Groups Stage 6 (group frontend, or ownership transfer / group-info editing) — not
+started, awaiting explicit instruction.** The stale "not started" framing directly below (written
+before any Groups code existed) is superseded by the above; kept as-is for historical accuracy of
+what was true when written.
 
 Everything below this point through "Checkpoint — Legacy DIRECT connection backfill (2026-08-18)" is
 the original per-stage record and is left as-is (historical, not rewritten). The **"Current status"
@@ -1428,3 +1432,137 @@ enforcement of `who_can_send_messages` (explicitly deferred to the Group Messagi
 ownership transfer remains unimplemented (unchanged from Stage 3); no invite-links/join-requests
 (explicitly Future per the architecture doc); group E2EE remains entirely undecided (PDF Stage 8,
 untouched); no frontend UI exists for either the group settings or the user privacy preference yet.
+
+---
+
+## Checkpoint — Groups Stage 5 messaging (2026-08-18)
+
+Follows Groups Stage 4 (`d5d6f0f`, settings and privacy). Delivers on the previous checkpoint's
+"remaining" item: `MessageService` now enforces `who_can_send_messages` for real. Entirely built on
+the existing `Message`/`MessageRepository`/`MessageService`/WebSocket pipeline -- zero new tables,
+zero new DTOs, zero new WebSocket topics. `Conversation.type == GROUP` is the only distinction from
+DIRECT, exactly as instructed.
+
+**Architecture confirmed unchanged, not re-derived:** `MessageController`'s `POST /messages` and
+`WebSocketMessageController`'s `/app/message.send` STOMP handler were both already fully
+conversation-type-agnostic (they just call `messageService.sendMessage(currentUserId, dto)`) --
+neither needed a single line changed. `Message.conversation` is a generic FK, already
+type-agnostic. The `/topic/conversation/{id}` publish/subscribe mechanism is unchanged; Stage 0's
+SUBSCRIBE-time authorization (`existsByConversationIdAndUserIdAndDeletedAtIsNull`) was verified
+(not modified) to already correctly reject a removed member for a GROUP conversation, exactly as it
+does for DIRECT.
+
+**New authorization primitive:** `GroupAuthorizationService#requireCanSendMessage(userId, groupId)`
+-- the throwing gate `MessageService#sendMessage`'s new GROUP branch calls. Covers group
+existence/type + active membership (via the existing `requireActiveMember`) plus
+`who_can_send_messages`: `EVERYONE` (default) permits any active member; `ADMINS_ONLY` permits only
+OWNER/ADMIN, rejecting MEMBER with `SEND_NOT_PERMITTED` -- matches
+`CONNECTX_GROUP_ARCHITECTURE.md` §12's own pseudocode for this exact check verbatim, including the
+error code. OWNER always retains send permission (never excluded by either policy value, since the
+role check only ever *adds* ADMIN alongside OWNER, never removes OWNER). `canSendMessages` (the
+Stage 1.5 stub that unconditionally returned "any active member," since the setting didn't exist
+yet) now consults the real setting too, for callers that want a boolean.
+
+**Two real bugs found and fixed while extending `sendMessage` to GROUP** (both root-caused to the
+same thing: existing code assumed DIRECT's "soft-deleted member = hid this chat for myself, should
+auto-restore on new activity" semantics *unconditionally*, which is actively wrong for GROUP's
+"soft-deleted member = left/removed, must never auto-restore" semantics established since Stage
+1.5):
+1. The visibility-restore loop (`ConversationService#restoreConversationVisibilityForUser`, called
+   once per soft-deleted member found in the conversation's full member list) would have silently
+   *reactivated* any GROUP member's membership -- clearing their `deletedAt` -- the moment anyone
+   else sent a new message in that group, completely bypassing the fresh-invitation-required
+   consent rule through an entirely new code path nobody had touched before this stage. Fixed by
+   scoping the entire restore block (self-restore and the other-members loop) to
+   `ConversationType.DIRECT` only.
+2. The live-broadcast/push-notification fan-out iterated the conversation's *entire* member list,
+   including soft-deleted ones -- meaning a removed/left GROUP member would keep receiving
+   `MESSAGE_RECEIVED` events on their personal `/queue/messages` channel and push notifications for
+   messages sent after their removal, violating this stage's explicit "must not receive newly
+   broadcast group messages" requirement. Fixed with a `broadcastRecipients` list: unfiltered
+   (unchanged) for DIRECT, filtered to `deletedAt IS NULL` for GROUP.
+
+Both are genuine correctness fixes required to implement GROUP messaging safely, not scope creep --
+neither code path existed as a *problem* before this stage because nothing could previously trigger
+it for a GROUP conversation (no send authorization existed to reach that far). Proven by
+`removedMember_receivesNoPushForMessagesSentAfterRemoval` (real embedded `HttpServer` push capture,
+same technique as `MessagePushPreviewTest`) and by `MessageService`'s own updated inline
+documentation at both fixed call sites.
+
+**`who_can_send_messages` enforcement:** implemented exactly as specified -- `EVERYONE` allows
+OWNER+ADMIN+MEMBER, `ADMINS_ONLY` allows only OWNER+ADMIN, OWNER always retained. No
+frontend-only disabling exists (there is no group frontend yet); the backend is the sole
+enforcement point.
+
+**Blocking:** unchanged and confirmed non-interfering, per instruction --
+`blockedPair_canBothStillSendGroupMessages` proves a blocked pair can both still send/receive in a
+shared group; the DIRECT-only block/connection check block in `sendMessage` was not touched, only
+guarded behind its existing `ConversationType.DIRECT` condition (now paired with an `else if
+(GROUP)` branch instead of falling through unconditionally).
+
+**Connection status:** confirmed group messaging never checks `UserConnectionRepository` at all --
+`groupMessage_neverRequiresConnectionToOtherMembers` and the corrected
+`MessageConnectionAuthorizationTest#groupConversation_isNotSubjectToConnectionCheck` (updated to
+build its group through `GroupService`, since a real `ChatGroup` row is now required for a GROUP
+send to succeed at all -- that test predated any group authorization existing) both send among
+entirely unconnected members successfully.
+
+**Membership check:** `deletedAt IS NULL` is the active-membership condition throughout, reusing
+`GroupAuthorizationService#requireActiveMember`/`resolveMembershipState` -- no new membership query
+shape was introduced.
+
+**Removed/left users:** immediately lose send authorization (`removedMember_cannotSendMessage`,
+`leftMember_cannotSendMessage`) and are excluded from new-message delivery (previous section). Stage
+0's WebSocket SUBSCRIBE authorization continues to correctly reject them for new subscription
+attempts -- verified, not modified. The one already-documented V1 gap (an already-open WebSocket
+session isn't proactively torn down mid-flight on removal --
+`CONNECTX_GROUP_ARCHITECTURE.md` §13) remains exactly as previously accepted; this stage does not
+attempt to close it, since doing so would require session-eviction infrastructure that doesn't
+exist and wasn't asked for here.
+
+**50-member limit:** confirmed unaffected by message sending
+(`sendingMessages_doesNotAffectMemberCapacityAccounting`) -- no membership-count logic was
+introduced into the send path.
+
+**Message persistence:** the existing `Message` entity, unmodified -- no `GroupMessage` type was
+created (the existing architecture represents a group message perfectly: `Message.conversation` →
+`Conversation(type=GROUP)`, sender is the authenticated `User`, same as DIRECT).
+`groupMessage_persistsWithOpaqueCiphertext` confirms ciphertext/nonce/encryptionAlgorithm are stored
+exactly as received.
+
+**E2EE boundary:** untouched. No group key generation, distribution, or wrapping; no plaintext
+storage; the server continues treating ciphertext/nonce/encryptionAlgorithm as opaque for GROUP
+messages exactly as it always has for DIRECT -- the new GROUP branch in `sendMessage` only adds an
+authorization check *before* the existing (unmodified) persistence code, and never inspects the
+encrypted payload's contents.
+
+**Tests added:** `GroupMessagingTest` (13 cases: full authorization matrix including the
+EVERYONE/ADMINS_ONLY policy, non-member/removed/left rejection, blocking and connection
+non-interference, opaque persistence, and the push-exclusion proof) plus one corrected pre-existing
+test (`MessageConnectionAuthorizationTest#groupConversation_isNotSubjectToConnectionCheck`, updated
+to use a real `GroupService`-created group instead of the raw Conversation+ConversationMember
+construction it used back when no group authorization existed at all to require it).
+
+**Test result:** full `mvn test` -- **263/263 pass** (250 before this stage + 13 new), 0 failures,
+0 errors.
+
+**DIRECT regression:** confirmed via the full suite -- every DIRECT/connection/blocking/WebSocket/
+reaction/star/push suite passed unchanged, including the corrected
+`MessageConnectionAuthorizationTest`.
+
+**E2EE/WebSocket/Web Push status:** E2EE untouched (see above). WebSocket SUBSCRIBE authorization
+(Stage 0) untouched, verified still correct for GROUP. Web Push infrastructure untouched -- only the
+*recipient list* passed into it for GROUP sends was corrected (bug #2 above); the push
+encryption/transport code itself was not modified.
+
+**Files changed this stage:** `GroupAuthorizationService.java` (modified: `requireCanSendMessage`
+added, `canSendMessages` now consults the real setting), `MessageService.java` (modified: new GROUP
+branch in `sendMessage`, DIRECT-only restore-visibility gating, `broadcastRecipients` filtering, new
+`GroupAuthorizationService` dependency), `MessageConnectionAuthorizationTest.java` (modified: one
+test corrected), `GroupMessagingTest.java` (new), this document. Frontend untouched. No database
+migration.
+
+**Remaining before group frontend / further hardening:** no group-info-edit endpoint (unchanged
+from Stage 4); ownership transfer unimplemented (unchanged from Stage 3); group E2EE entirely
+undecided (unchanged, PDF Stage 8); the already-open-WebSocket-session-on-removal gap remains
+accepted, not closed; no frontend exists to actually compose/render a group message yet.

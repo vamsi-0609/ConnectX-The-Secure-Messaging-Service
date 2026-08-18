@@ -9,6 +9,7 @@ import com.connectx.conversation.entity.GroupRole;
 import com.connectx.conversation.repository.ConversationMemberRepository;
 import com.connectx.group.entity.ChatGroup;
 import com.connectx.group.entity.WhoCanInvite;
+import com.connectx.group.entity.WhoCanSendMessages;
 import com.connectx.group.repository.ChatGroupRepository;
 import com.connectx.user.entity.GroupAddPrivacy;
 import com.connectx.user.entity.User;
@@ -176,10 +177,46 @@ public class GroupAuthorizationService {
         return resolveMembershipState(groupId, userId) == MembershipState.ACTIVE_MEMBER;
     }
 
-    /** V1: any active member may send; there is no mute/restricted-posting mode yet. */
+    /**
+     * Groups Stage 5: consults the group's persisted {@code who_can_send_messages} setting
+     * (Stage 4). {@code EVERYONE} (the default) permits any active member; {@code ADMINS_ONLY}
+     * permits only OWNER/ADMIN -- matches
+     * docs/CONNECTX_GROUP_ARCHITECTURE.md §12's own pseudocode for this exact check
+     * ("if who_can_send_messages == ADMINS_ONLY: require role in {OWNER, ADMIN}, else 403
+     * SEND_NOT_PERMITTED"). Non-throwing form for callers that just want a boolean (e.g. building a
+     * "can I send" UI flag later); {@link #requireCanSendMessage} is the throwing gate
+     * MessageService actually calls.
+     */
     @Transactional(readOnly = true)
     public boolean canSendMessages(Long userId, Long groupId) {
-        return resolveMembershipState(groupId, userId) == MembershipState.ACTIVE_MEMBER;
+        GroupRole role = activeRoleOrNull(userId, groupId);
+        if (role == null) {
+            return false;
+        }
+        ChatGroup chatGroup = chatGroupRepository.findById(groupId).orElse(null);
+        if (chatGroup == null || chatGroup.getWhoCanSendMessages() == WhoCanSendMessages.EVERYONE) {
+            return true;
+        }
+        return role == GroupRole.OWNER || role == GroupRole.ADMIN;
+    }
+
+    /**
+     * The throwing gate {@code MessageService#sendMessage} calls for every GROUP send. Covers
+     * group existence/type and active membership (via {@link #requireActiveMember}) plus the
+     * {@code who_can_send_messages} policy above -- the one authorization decision this stage adds
+     * to message sending. Reused as-is, never duplicated in MessageService: that service
+     * orchestrates persistence and broadcast, this service still owns every authorization
+     * decision, matching every prior Groups stage's convention.
+     */
+    @Transactional(readOnly = true)
+    public void requireCanSendMessage(Long userId, Long groupId) {
+        ChatGroup chatGroup = requireActiveMember(userId, groupId);
+        if (chatGroup.getWhoCanSendMessages() == WhoCanSendMessages.ADMINS_ONLY) {
+            GroupRole role = activeRoleOrNull(userId, groupId);
+            if (role != GroupRole.OWNER && role != GroupRole.ADMIN) {
+                throw new ApiException(HttpStatus.FORBIDDEN, "SEND_NOT_PERMITTED", "Only group admins can send messages in this group");
+            }
+        }
     }
 
     @Transactional(readOnly = true)

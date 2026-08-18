@@ -12,6 +12,7 @@ import com.connectx.conversation.repository.ConversationRepository;
 import com.connectx.conversation.service.ConversationService;
 import com.connectx.device.entity.Device;
 import com.connectx.device.repository.DeviceRepository;
+import com.connectx.group.service.GroupAuthorizationService;
 import com.connectx.media.entity.MessageMedia;
 import com.connectx.media.repository.MessageMediaRepository;
 import com.connectx.media.service.MediaService;
@@ -62,6 +63,7 @@ public class MessageService {
     private final SimpMessagingTemplate messagingTemplate;
     private final AfterCommitExecutor afterCommitExecutor;
     private final com.connectx.push.service.WebPushService webPushService;
+    private final GroupAuthorizationService groupAuthorizationService;
     // Self-injected (via @Lazy, the standard Spring pattern for this) so
     // tryInsertReactionInNewTransaction below can be called as a real proxied bean method —
     // required for its own @Transactional(REQUIRES_NEW) to actually take effect, since
@@ -84,6 +86,7 @@ public class MessageService {
                           SimpMessagingTemplate messagingTemplate,
                           AfterCommitExecutor afterCommitExecutor,
                           com.connectx.push.service.WebPushService webPushService,
+                          GroupAuthorizationService groupAuthorizationService,
                           @org.springframework.context.annotation.Lazy MessageService self) {
         this.messageRepository = messageRepository;
         this.messageUserStateRepository = messageUserStateRepository;
@@ -101,6 +104,7 @@ public class MessageService {
         this.messagingTemplate = messagingTemplate;
         this.afterCommitExecutor = afterCommitExecutor;
         this.webPushService = webPushService;
+        this.groupAuthorizationService = groupAuthorizationService;
         this.self = self;
     }
 
@@ -142,6 +146,22 @@ public class MessageService {
                             "You must be connected with this user to send messages");
                 }
             }
+        } else if (conversation.getType() == ConversationType.GROUP) {
+            // Groups Stage 5: authorization is membership + role-based, never pairwise
+            // block/connection checks against every other member -- a GROUP member does not need
+            // to be connected to (or unblocked by) every other member to send, per
+            // docs/CONNECTX_GROUP_IMPLEMENTATION_STATE.md's Stage 5 checkpoint and
+            // CONNECTX_GROUP_ARCHITECTURE.md's approved blocking semantics (a block never removes
+            // shared group membership or hides existing group messages). requireCanSendMessage
+            // covers: group exists and is actually type GROUP, sender has ACTIVE membership
+            // (deletedAt IS NULL -- stricter than the plain membership-row lookup above, which a
+            // few lines below is used for DIRECT's separate "soft-deleted sender restores their
+            // own hidden view" behavior; that semantic does not apply to a GROUP member who left
+            // or was removed, so this check must reject them before that logic is ever reached),
+            // and the group's current who_can_send_messages policy. GroupAuthorizationService is
+            // the sole authority for this decision, exactly as every prior Groups stage's
+            // convention -- MessageService does not re-derive any of it.
+            groupAuthorizationService.requireCanSendMessage(currentUserId, conversation.getId());
         }
 
         MessageType messageType = dto.getMessageType() != null ? dto.getMessageType() : MessageType.TEXT;
@@ -239,27 +259,49 @@ public class MessageService {
         List<ConversationMember> allMembers = conversationMemberRepository.findByConversationIdWithUsers(conversation.getId());
         List<String> restoredUsernames = new ArrayList<>();
 
-        if (senderMembership.getDeletedAt() != null) {
-            conversationService.forceRestoreConversationForUser(conversation.getId(), currentUserId);
-            restoredUsernames.add(currentUser.getUsername());
+        // "Restore visibility on new activity" is a DIRECT-only concept: deletedAt there means
+        // "I hid this chat for myself" (see ConversationService#restoreConversationVisibilityForUser's
+        // own javadoc), so surfacing it again when a new message arrives is correct DIRECT UX. For
+        // GROUP, deletedAt means the member LEFT or was REMOVED (Stage 1.5's consent rule) -- a
+        // brand-new message must never silently reactivate that membership. requireCanSendMessage
+        // above already guarantees the SENDER is active for a GROUP send, so the self-restore
+        // branch is structurally unreachable there anyway; the loop below iterates every OTHER
+        // member too, including any who left/were removed, so it must not run for GROUP at all or
+        // it would resurrect their membership the moment anyone else sends a message -- exactly
+        // the bug this Stage 5 gate exists to prevent.
+        if (conversation.getType() == ConversationType.DIRECT) {
+            if (senderMembership.getDeletedAt() != null) {
+                conversationService.forceRestoreConversationForUser(conversation.getId(), currentUserId);
+                restoredUsernames.add(currentUser.getUsername());
+            }
+
+            for (ConversationMember member : allMembers) {
+                if (member.getUser() == null) {
+                    continue;
+                }
+                Long memberUserId = member.getUser().getId();
+                if (memberUserId.equals(currentUserId)) {
+                    continue;
+                }
+                // Skip the restore-visibility round trip entirely for the common case (member
+                // hasn't deleted this conversation) -- restoreConversationVisibilityForUser
+                // would only re-fetch this same row and immediately no-op anyway.
+                if (member.getDeletedAt() != null
+                        && conversationService.restoreConversationVisibilityForUser(conversation.getId(), memberUserId, messageSentAt)) {
+                    restoredUsernames.add(member.getUser().getUsername());
+                }
+            }
         }
 
-        for (ConversationMember member : allMembers) {
-            if (member.getUser() == null) {
-                continue;
-            }
-            Long memberUserId = member.getUser().getId();
-            if (memberUserId.equals(currentUserId)) {
-                continue;
-            }
-            // Skip the restore-visibility round trip entirely for the common case (member
-            // hasn't deleted this conversation) -- restoreConversationVisibilityForUser
-            // would only re-fetch this same row and immediately no-op anyway.
-            if (member.getDeletedAt() != null
-                    && conversationService.restoreConversationVisibilityForUser(conversation.getId(), memberUserId, messageSentAt)) {
-                restoredUsernames.add(member.getUser().getUsername());
-            }
-        }
+        // Who actually receives the live broadcast/push below. DIRECT keeps using the unfiltered
+        // allMembers (a soft-deleted DIRECT member was just restored above, so including them is
+        // correct -- they should see the conversation "reappear" with this very message). GROUP
+        // must exclude anyone with deletedAt set: a member who left or was removed must not
+        // receive newly broadcast group messages, on their personal /queue/messages channel or as
+        // a push notification, even though the restore step above never ran for them.
+        List<ConversationMember> broadcastRecipients = conversation.getType() == ConversationType.GROUP
+                ? allMembers.stream().filter(m -> m.getDeletedAt() == null).collect(Collectors.toList())
+                : allMembers;
 
         Map<String, Object> recvPayload = new HashMap<>();
         recvPayload.put("messageId", savedMessage.getId());
@@ -306,7 +348,7 @@ public class MessageService {
         afterCommitExecutor.runAfterCommit(() -> {
             messagingTemplate.convertAndSend("/topic/conversation/" + conversation.getId(), recvEvent);
 
-            for (ConversationMember member : allMembers) {
+            for (ConversationMember member : broadcastRecipients) {
                 if (member.getUser() != null) {
                     messagingTemplate.convertAndSendToUser(member.getUser().getUsername(), "/queue/messages", recvEvent);
 
