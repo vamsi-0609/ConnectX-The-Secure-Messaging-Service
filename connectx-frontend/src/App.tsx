@@ -3113,16 +3113,8 @@ export const App: React.FC = () => {
             currentUser={currentUser}
             onClose={() => setShowSettingsModal(false)}
             onUserUpdated={handleUserUpdated}
-            onExportChat={handleExportChat}
-            exportingChat={exportingChat}
-            activeDirectChatName={
-              activeConversation?.type === 'DIRECT'
-                ? getRecipientUser(activeConversation)?.displayName || getRecipientUser(activeConversation)?.username || null
-                : null
-            }
-            onOpenProfile={handleOpenProfileMenu}
-            onOpenDevices={() => setShowDeviceModal(true)}
-            onOpenBlockedUsers={() => setShowBlockedUsersModal(true)}
+            notificationsEnabled={notificationsEnabled}
+            onToggleNotifications={handleToggleNotifications}
           />
         </React.Suspense>
       )}

@@ -1,5 +1,16 @@
 import React, { useEffect, useState } from 'react';
-import { ArrowLeft, X, Users, Image, FileText, Link2, Pin, Bell, Settings, ShieldCheck, LogOut, Trash2, ChevronRight, Loader2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  X,
+  Users,
+  Settings,
+  ShieldCheck,
+  LogOut,
+  Trash2,
+  ChevronRight,
+  Loader2,
+  UserPlus,
+} from 'lucide-react';
 import { groupApi } from '../../api/groupApi';
 import { ConversationMember, Group, User } from '../../types';
 import { GroupAvatar } from './GroupAvatar';
@@ -25,15 +36,6 @@ interface GroupContactInfoDrawerProps {
 
 type DrawerView = 'main' | 'members' | 'settings';
 
-// Deliberately a separate component from ContactInfoDrawer (P2P), not a retrofit -- group info is
-// structurally different (member roster/roles, settings, invitations) from a 1:1 relationship
-// panel. Same visual language (shell, header, section labels), different information
-// architecture: identity -> members -> media -> notifications -> settings entry -> security ->
-// leave, vs. ContactInfoDrawer's identity -> encryption -> devices -> relationship -> block.
-//
-// Internal drill-down (main -> members / settings) instead of stacking further modals, per this
-// stage's "avoid nested modal stacking" guidance -- each sub-view replaces the drawer's content and
-// has its own back arrow, mirroring ContactInfoDrawer's own mobile back-arrow pattern.
 export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
   group,
   currentUser,
@@ -69,7 +71,7 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
       const updated = await groupApi.getGroup(groupId);
       onGroupUpdated(updated);
     } catch {
-      // best-effort -- the drawer still works with the last-known group snapshot
+      // best-effort
     }
   };
 
@@ -118,13 +120,6 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
   const canAddMembers =
     group.currentUserRole === 'OWNER' || group.currentUserRole === 'ADMIN' || group.whoCanInvite === 'ALL_MEMBERS';
 
-  // AddMembersModal (and, on the main view, the leave/delete confirm dialogs) are rendered once,
-  // below, regardless of which sub-view is active -- they're full-screen overlays, not part of any
-  // one view's own layout. Previously each sub-view (members/settings) returned early, so opening
-  // "Add members" from the Members screen set showAddMembers but the modal keyed off it lived only
-  // in the 'main' view's JSX and never rendered; using view === 'members' / 'settings' as branches
-  // in a single return (instead of three separate early returns) fixes that without changing what
-  // each view itself renders.
   return (
     <>
       {view === 'members' && (
@@ -148,141 +143,142 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
       )}
 
       {view === 'main' && (
-    <div className="fixed inset-0 z-40 md:static md:inset-auto md:z-20 w-full md:w-80 h-full bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800/80 flex flex-col flex-shrink-0 transition-colors duration-300 animate-slide-right overflow-y-auto text-slate-900 dark:text-white select-none">
-      <div className="h-16 px-4 border-b border-slate-200 dark:border-slate-800/80 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={onClose}
-            className="md:hidden p-1.5 -ml-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-            aria-label="Back"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <h3 className="font-bold text-base">Group Info</h3>
-        </div>
-        <button
-          onClick={onClose}
-          className="hidden md:block p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-          aria-label="Close"
-        >
-          <X className="w-5 h-5" />
-        </button>
-      </div>
-
-      <div className="p-6 text-center border-b border-slate-200 dark:border-slate-800/80 space-y-3">
-        <GroupAvatar name={group.name} avatarUrl={group.avatarUrl} size="xl" className="mx-auto shadow-xl" />
-        <div>
-          <h2 className="text-lg font-bold">{group.name}</h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            {group.activeMemberCount} {group.activeMemberCount === 1 ? 'member' : 'members'}
-          </p>
-          {group.description && (
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 leading-relaxed">{group.description}</p>
-          )}
-        </div>
-      </div>
-
-      <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 space-y-2.5">
-        <div className="flex items-center justify-between">
-          <SettingsSectionLabel>Members</SettingsSectionLabel>
-          {canAddMembers && (
+        <div className="fixed inset-0 z-40 md:static md:inset-auto md:z-20 w-full md:w-80 h-full bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800/80 flex flex-col flex-shrink-0 transition-colors duration-300 animate-slide-right overflow-y-auto text-slate-900 dark:text-white select-none">
+          {/* Header */}
+          <div className="h-16 px-4 border-b border-slate-200 dark:border-slate-800/80 flex items-center justify-between flex-shrink-0">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={onClose}
+                className="md:hidden p-1.5 -ml-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                aria-label="Back"
+              >
+                <ArrowLeft className="w-5 h-5" />
+              </button>
+              <h3 className="font-bold text-base">Group Info</h3>
+            </div>
             <button
-              onClick={() => setShowAddMembers(true)}
-              className="text-[11px] font-semibold text-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-400"
+              onClick={onClose}
+              className="hidden md:block p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              aria-label="Close"
             >
-              + Add members
+              <X className="w-5 h-5" />
             </button>
-          )}
-        </div>
-
-        {loadingMembers ? (
-          <div className="flex items-center justify-center py-4 text-slate-400">
-            <Loader2 className="w-4 h-4 animate-spin" />
           </div>
-        ) : (
-          <div className="space-y-1">
-            {previewMembers.map((member) => (
-              <div key={member.id} className="flex items-center gap-2.5 py-1">
-                <UserAvatar user={member.user} size="xs" viewable={false} />
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-slate-800 dark:text-slate-100 truncate">
-                    {member.user.displayName || member.user.username}
-                    {member.user.id === currentUser.id && <span className="text-slate-400 font-normal"> (You)</span>}
-                  </p>
-                </div>
-                <span className="text-[11px] text-slate-400 flex-shrink-0">{ROLE_LABEL[member.role ?? 'MEMBER']}</span>
+
+          {/* Group Identity */}
+          <div className="p-6 text-center border-b border-slate-200 dark:border-slate-800/80 space-y-3 flex-shrink-0 bg-slate-50/40 dark:bg-slate-900/40">
+            <GroupAvatar name={group.name} avatarUrl={group.avatarUrl} size="xl" className="mx-auto shadow-xl" />
+            <div>
+              <h2 className="text-lg font-bold tracking-tight">{group.name}</h2>
+              <p className="text-xs text-violet-600 dark:text-violet-400 font-medium mt-0.5">
+                {group.activeMemberCount} {group.activeMemberCount === 1 ? 'member' : 'members'}
+              </p>
+              {group.description && (
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 leading-relaxed px-2">
+                  {group.description}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Members Section */}
+          <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 space-y-3">
+            <div className="flex items-center justify-between">
+              <SettingsSectionLabel>Members ({group.activeMemberCount})</SettingsSectionLabel>
+              {canAddMembers && (
+                <button
+                  onClick={() => setShowAddMembers(true)}
+                  className="text-xs font-semibold text-violet-600 dark:text-violet-400 hover:text-violet-500 flex items-center gap-1 transition-colors"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  Add
+                </button>
+              )}
+            </div>
+
+            {loadingMembers ? (
+              <div className="flex items-center justify-center py-4 text-slate-400">
+                <Loader2 className="w-4 h-4 animate-spin" />
               </div>
-            ))}
+            ) : (
+              <div className="space-y-1.5">
+                {previewMembers.map((member) => (
+                  <div
+                    key={member.id}
+                    className="flex items-center gap-3 p-2 rounded-xl bg-slate-50/60 dark:bg-slate-800/30 border border-slate-100 dark:border-slate-800/50"
+                  >
+                    <UserAvatar user={member.user} size="xs" viewable={false} />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold text-slate-800 dark:text-slate-100 truncate">
+                        {member.user.displayName || member.user.username}
+                        {member.user.id === currentUser.id && (
+                          <span className="text-slate-400 font-normal"> (You)</span>
+                        )}
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
+                      {ROLE_LABEL[member.role ?? 'MEMBER']}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button
+              onClick={() => setView('members')}
+              className="w-full flex items-center justify-between p-2 text-xs font-semibold text-violet-600 dark:text-violet-400 hover:bg-violet-500/10 rounded-xl transition-colors"
+            >
+              <span className="flex items-center gap-2">
+                <Users className="w-4 h-4" /> View all members
+              </span>
+              <ChevronRight className="w-4 h-4" />
+            </button>
           </div>
-        )}
 
-        <button
-          onClick={() => setView('members')}
-          className="w-full flex items-center justify-between px-1 py-2 text-sm font-medium text-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
-        >
-          <span className="flex items-center gap-2">
-            <Users className="w-4 h-4" /> View all members
-          </span>
-          <ChevronRight className="w-4 h-4" />
-        </button>
-      </div>
+          {/* Group Settings */}
+          <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 space-y-1">
+            <SettingsSectionLabel>Group Administration</SettingsSectionLabel>
+            <SettingsRow
+              icon={<Settings className="w-4 h-4" />}
+              label="Group Settings"
+              sublabel="Permissions & invitations"
+              onClick={() => setView('settings')}
+            />
+          </div>
 
-      {/* Media/files/links and pinned messages are placeholders -- no group-scoped media gallery
-          or pinned-message list exists yet; these are integration points for a future stage, not
-          functional screens. */}
-      <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 space-y-1">
-        <SettingsSectionLabel>Media</SettingsSectionLabel>
-        <SettingsRow icon={<Image className="w-4 h-4" />} label="Media" badge="Soon" disabled />
-        <SettingsRow icon={<FileText className="w-4 h-4" />} label="Files" badge="Soon" disabled />
-        <SettingsRow icon={<Link2 className="w-4 h-4" />} label="Links" badge="Soon" disabled />
-        <SettingsRow icon={<Pin className="w-4 h-4" />} label="Pinned messages" badge="Soon" disabled />
-      </div>
+          {/* Privacy & Security */}
+          <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 space-y-1.5">
+            <div className="flex items-center gap-2 text-xs font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">
+              <ShieldCheck className="w-4 h-4" />
+              <span>Privacy &amp; Security</span>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              Messages and media in this group are private. Only confirmed group members can access conversation content.
+            </p>
+          </div>
 
-      <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 space-y-1">
-        <SettingsSectionLabel>Notifications</SettingsSectionLabel>
-        <SettingsRow icon={<Bell className="w-4 h-4" />} label="Group notifications" badge="Soon" disabled />
-      </div>
-
-      <div className="p-4 border-b border-slate-200 dark:border-slate-800/80">
-        <SettingsRow
-          icon={<Settings className="w-4 h-4" />}
-          label="Group Settings"
-          onClick={() => setView('settings')}
-        />
-      </div>
-
-      <div className="p-4 border-b border-slate-200 dark:border-slate-800/80 space-y-1.5">
-        <div className="flex items-center gap-2 text-xs font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">
-          <ShieldCheck className="w-4 h-4" />
-          <span>Privacy &amp; security</span>
+          {/* Danger Zone */}
+          <div className="p-4 space-y-2 flex-1">
+            <SettingsSectionLabel>Danger Zone</SettingsSectionLabel>
+            {group.currentUserRole === 'OWNER' ? (
+              <SettingsRow
+                icon={<Trash2 className="w-4 h-4" />}
+                label="Delete group"
+                sublabel="Permanently delete group and conversations"
+                danger
+                onClick={() => setShowDeleteConfirm(true)}
+              />
+            ) : (
+              <SettingsRow
+                icon={<LogOut className="w-4 h-4" />}
+                label="Leave group"
+                sublabel="Exit this group conversation"
+                danger
+                onClick={() => setShowLeaveConfirm(true)}
+              />
+            )}
+          </div>
         </div>
-        <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-          🔒 Messages are private. Only current members can access messages in this group.
-        </p>
-      </div>
-
-      <div className="p-4 space-y-2">
-        <SettingsSectionLabel>Danger zone</SettingsSectionLabel>
-        {group.currentUserRole === 'OWNER' ? (
-          // The owner's only exit is deleting the group -- ownership transfer doesn't exist yet,
-          // so "Leave group" is never shown to an owner (see LeaveGroupConfirmDialog usage below,
-          // which an owner can never reach).
-          <SettingsRow
-            icon={<Trash2 className="w-4 h-4" />}
-            label="Delete group"
-            danger
-            onClick={() => setShowDeleteConfirm(true)}
-          />
-        ) : (
-          <SettingsRow
-            icon={<LogOut className="w-4 h-4" />}
-            label="Leave group"
-            danger
-            onClick={() => setShowLeaveConfirm(true)}
-          />
-        )}
-      </div>
-    </div>
       )}
 
       {showAddMembers && (
@@ -315,3 +311,4 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
     </>
   );
 };
+
