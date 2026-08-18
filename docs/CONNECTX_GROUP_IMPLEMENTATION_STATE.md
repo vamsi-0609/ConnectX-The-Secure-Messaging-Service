@@ -68,9 +68,17 @@ describe:**
   the existing MessageService/Message/WebSocket pipeline, plus two DIRECT-only-semantics bugs
   found and fixed while extending it to GROUP) — see "Checkpoint — Groups Stage 5 messaging
   (2026-08-18)" at the end of this document. No schema change, no E2EE change.
+- **Groups Stage 6A** (Group E2EE architecture/design review) — READ-ONLY, no application or
+  schema change, no commit.
+- **Groups Stage 6B** (Group E2EE database/key-model foundation: `chat_groups.key_version`,
+  `messages.group_key_version`, the new `group_member_keys` table/entity/repository) — see
+  "Checkpoint — Groups Stage 6B group E2EE key model (2026-08-18)" at the end of this document.
+  `V5__group_e2ee_key_model.sql` applied to `connectx_db`. No crypto, no key generation/wrapping/
+  rotation, no frontend, no `MessageService`/WebSocket/Web Push change.
 
-**Next stage: Groups Stage 6 (group frontend, or ownership transfer / group-info editing) — not
-started, awaiting explicit instruction.** The stale "not started" framing directly below (written
+**Next stage: Groups Stage 6C (per PART 16's instruction, Stage 6B stops here — key
+generation/wrapping endpoints and any further Group E2EE work need explicit approval before
+proceeding).** The stale "not started" framing directly below (written
 before any Groups code existed) is superseded by the above; kept as-is for historical accuracy of
 what was true when written.
 
@@ -1566,3 +1574,163 @@ migration.
 from Stage 4); ownership transfer unimplemented (unchanged from Stage 3); group E2EE entirely
 undecided (unchanged, PDF Stage 8); the already-open-WebSocket-session-on-removal gap remains
 accepted, not closed; no frontend exists to actually compose/render a group message yet.
+
+---
+
+## Checkpoint — Groups Stage 6B group E2EE key model (2026-08-18)
+
+Database/model foundation only for the approved Group E2EE V1 design (one random AES-256 group
+key per group, wrapped per member, key-versioned so removed/left members lose access on
+rotation — see `docs/CONNECTX_GROUP_ARCHITECTURE.md` §21). Preceded by a read-only Stage 6A
+architecture review (no application or schema change, no commit). **No key generation, wrapping,
+rotation, message-encryption, `MessageService`, WebSocket, Web Push, or frontend behavior was
+implemented or modified this stage** — schema and JPA mapping only, per this stage's explicit
+scope.
+
+**Git state before starting:** branch `feature/pwa-notifications`, HEAD `a771625`, working tree
+clean.
+
+**Inspection performed before writing anything:** `ChatGroup`, `Message`, `Conversation`,
+`ConversationMember` entities; `V1`–`V4` migration scripts and their idempotent-DDL/FK/cascade
+conventions; `application.yml`/`application-test.yml` (`ddl-auto=update` against `connectx_db`,
+`ddl-auto=create-drop` against `connectx_test_db` — confirmed still no Flyway); `ChatGroupRepository`/
+`GroupInvitationRepository` for Spring Data conventions; `docs/CONNECTX_GROUP_ARCHITECTURE.md` §21,
+which had already pre-approved this exact `group_member_keys` shape (columns, FK targets,
+`ON DELETE CASCADE` on both FKs, unique key on `(conversation_id, member_user_id)`) during the
+Stage 6A review — this stage's `wrap_nonce` column is the one addition beyond that §21 sketch, per
+this stage's explicit instructions (AES-256-GCM wrapping needs its own nonce, kept separate from
+any per-message nonce).
+
+**Live-data verification before migrating (`connectx_db`):** `chat_groups`: 0 rows. `conversations`
+WHERE `type='GROUP'`: 0 rows. `messages` (DIRECT): 2228 rows. `messages` (GROUP): 0 rows.
+`conversation_members` duplicate `(conversation_id, user_id)` pairs: 0. Confirmed none of
+`chat_groups.key_version`, `messages.group_key_version`, `group_member_keys` already existed.
+Zero GROUP data in production to protect — the safest possible starting point.
+
+### Database changes
+`connectx-backend/db/migrations/V5__group_e2ee_key_model.sql` (new, same standalone
+manually-applied-to-`connectx_db` convention as V1/V3/V4, idempotent via
+`information_schema`-check-then-`PREPARE`/`EXECUTE` for the two `ALTER TABLE`s and native
+`CREATE TABLE IF NOT EXISTS` for the new table):
+- `chat_groups.key_version INT NOT NULL DEFAULT 1` — every existing/future group resolves to 1
+  until a later stage implements rotation.
+- `messages.group_key_version INT NULL` — no backfill; every existing (DIRECT) row stays `NULL`,
+  its correct value.
+- `group_member_keys` (new table): `id` PK, `conversation_id`/`member_user_id` `BIGINT NOT NULL`,
+  `wrapped_key`/`wrap_nonce` `TEXT NOT NULL` (opaque — no plaintext key material), `key_version
+  INT NOT NULL`, `updated_at DATETIME(6) NOT NULL`; `UNIQUE KEY uk_groupmemberkey_conversation_member
+  (conversation_id, member_user_id)`; `CONSTRAINT fk_groupmemberkey_conversation FOREIGN KEY
+  (conversation_id) REFERENCES chat_groups (conversation_id) ON DELETE CASCADE`; `CONSTRAINT
+  fk_groupmemberkey_member FOREIGN KEY (member_user_id) REFERENCES users (id) ON DELETE CASCADE`.
+
+Applied to `connectx_db` and run a second time to confirm idempotency (second run cleanly reported
+"already exists, skipping" for both `ALTER TABLE`s, zero errors). Post-migration verification: all
+2228 existing DIRECT messages unaffected, all with `group_key_version IS NULL`; `chat_groups`/
+`group_member_keys` both still empty (0 rows); `SHOW CREATE TABLE group_member_keys` matches the
+spec exactly.
+
+### Entity changes
+- `ChatGroup.java` (modified) — added `keyVersion` (`int`, default `1`, `@Column(name =
+  "key_version", nullable = false)`) + getter/setter.
+- `Message.java` (modified) — added `groupKeyVersion` (`Integer`, nullable, `@Column(name =
+  "group_key_version")`) + getter/setter. `NULL` for every DIRECT message always; not read or
+  written by `MessageService` yet.
+- `GroupMemberKey.java` (new, `com.connectx.group.entity`) — maps `group_member_keys`. Plain
+  `Long conversationId`/`memberUserId` fields (not entity associations), matching
+  `ConversationMember.invitedByUserId`'s established convention — the DB-level FK still enforces
+  referential integrity. `@Table(uniqueConstraints = ...)` re-declares
+  `uk_groupmemberkey_conversation_member` so `ddl-auto=create-drop` generates the identical real
+  constraint against `connectx_test_db` (same pattern as `UserConnection`/`ConversationMember`
+  precedent). Holds only `wrappedKey`/`wrapNonce` (opaque `TEXT`) plus `keyVersion`/`updatedAt` —
+  no plaintext key field of any kind.
+
+### Repository added
+`GroupMemberKeyRepository.java` (new, `com.connectx.group.repository`) — 4 minimal methods, no
+speculative additions:
+- `findByConversationIdAndMemberUserId` — a member's current wrapped key.
+- `findByConversationIdAndKeyVersion` — all rows for one group at one key version.
+- `findByConversationId` — all current wrapped-key rows for a group (doubles as "every member who
+  currently holds a key" since the unique constraint guarantees one row per active member).
+- `deleteByConversationIdAndMemberUserId` — removes a departing/removed member's wrapped key.
+"Replace/update the wrapped key for an existing member" needs no custom method — inherited `save()`
+covers it.
+
+### Existing data verification
+See live-data verification above (pre-migration) and post-migration verification (same section,
+database changes). Zero data loss: identical 2228 DIRECT message count before/after, all with the
+new column `NULL` as expected; `chat_groups`/`group_invitations`/`conversation_members` row counts
+unaffected (this stage touched no existing row in any of them).
+
+### Tests added
+`GroupE2eeKeyModelTest.java` (new, `com.connectx.group.service`, same `@SpringBootTest` +
+`@ActiveProfiles("test")` + real-MySQL conventions as every prior Groups suite) — 6 tests:
+1. `createGroup_keyVersionDefaultsToOne` — fresh `ChatGroup.keyVersion == 1` (covers items 1, 9).
+2. `directMessage_persistsWithNullGroupKeyVersion` — DIRECT message round-trips with
+   `groupKeyVersion == null` (covers items 2, 3, 10).
+3. `groupMessage_persistsGroupKeyVersion` — GROUP message round-trips a set `groupKeyVersion`
+   (covers item 4).
+4. `groupMemberKey_persistsAllFields` — all 5 mapped fields plus auto-stamped `updatedAt`
+   round-trip (covers item 5).
+5. `groupMemberKey_multipleMembersOfSameGroup_allPersist` — two different members, same group,
+   both rows persist (covers item 7).
+6. `groupMemberKey_duplicateConversationAndMember_rejected` — a second row for the same
+   `(conversation_id, member_user_id)` throws `DataIntegrityViolationException` (covers items 6, 8).
+
+Items 11–13 (existing WebSocket/blocking/connection tests unaffected) are covered by the full
+regression run below, not new tests — nothing in this stage touches those code paths.
+
+### Security verification (PART 12)
+Repo-wide search for `groupKey`, `plaintextGroupKey`, `privateGroupKey`, `masterPrivateKey`,
+`secretKey` after implementation: 6 pre-existing hits, all outside this stage's changed files
+(`User.java`'s already-escrowed `masterPrivateKey` — a known, separately-tracked issue per Stage
+0A's "Known issues", unrelated to and untouched by this stage; `UserIdentityKeyDto.java`;
+`userApi.ts`; `deviceSession.ts`; both doc files). Zero new server-side plaintext-group-key
+handling introduced. `group_member_keys`/`GroupMemberKey` is referenced from no DTO anywhere in
+the codebase (confirmed by search) — not exposed through any API surface, accidentally or
+otherwise, since no endpoint reads or writes it yet.
+
+### Regression — full suite
+`mvn test` (real MySQL, `connectx_test_db`, `ddl-auto=create-drop`): **BUILD SUCCESS, 269/269
+tests passed, 0 failures, 0 errors**, across every existing test class plus the new
+`GroupE2eeKeyModelTest` (6/6). The recurring `SqlExceptionHelper` "Duplicate entry" ERROR-level
+log lines during the reaction/star/connection/group race-integration tests, and the single
+`UnrecognizedPropertyException` log line during `UserServiceProfileVisibilityTest`, are expected,
+caught-and-handled test noise (same pre-existing pattern noted in every prior checkpoint) — not
+failures. DIRECT messaging, E2EE, connection authorization, blocking, WebSocket SUBSCRIBE
+authorization, group authorization, invitations, member removal, group settings, and push
+notification suites all passed unchanged.
+
+### Frontend
+Untouched. No `.tsx`/`.ts`/crypto/`KeyManager`/IndexedDB/`MessageInput`/`App.tsx` file was read for
+editing or modified — confirmed by `git status`/`git diff --name-only` showing only the 4 backend
+files plus this document.
+
+### Files changed
+**Main:** `ChatGroup.java` (modified), `Message.java` (modified), `GroupMemberKey.java` (new),
+`GroupMemberKeyRepository.java` (new). **Test:** `GroupE2eeKeyModelTest.java` (new). **Migration:**
+`db/migrations/V5__group_e2ee_key_model.sql` (new). **Docs:** this file (modified). Zero other
+files touched — confirmed via `git status`/`git diff --name-only`.
+
+### Database
+`connectx_db` gained 2 new nullable-or-defaulted columns and 1 new empty table (see above). No
+existing table, row, or column altered or removed. `connectx_test_db` schema is unaffected
+(rebuilt fresh from entity metadata on every `mvn test` run, as always).
+
+### Plaintext GROUP_KEY confirmation
+**Confirmed: no plaintext GROUP_KEY exists server-side.** `GroupMemberKey` holds only
+`wrappedKey`/`wrapNonce` (both opaque `TEXT`, treated as ciphertext by every layer that touches
+them — nothing server-side ever unwraps them, since no wrapping/unwrapping code exists yet). No
+`groupKey`/`plaintextGroupKey`/`privateGroupKey`/`secretKey` field was introduced anywhere in this
+stage's changes (see Security verification above). No key generation code (`crypto.getRandomValues`
+or any backend equivalent) was added.
+
+### Rollback procedure
+Delete `GroupMemberKey.java` and `GroupMemberKeyRepository.java`; revert the `keyVersion`/
+`groupKeyVersion` additions to `ChatGroup.java`/`Message.java`; revert the Stage 6B commit. To
+fully roll back the database itself, manually drop `group_member_keys` and the two new columns —
+safe at any point before a later stage starts reading/writing them (nothing does yet). No existing
+table, row, or column needs to change either way.
+
+### Next stage
+Groups Stage 6C (key generation/wrapping endpoints and further Group E2EE work) — **not started,
+awaiting explicit instruction**, per this stage's own STOP-after-6B mandate.

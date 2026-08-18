@@ -63,6 +63,13 @@ public class Message {
     @Column(name = "nonce", length = 100)
     private String nonce;
 
+    // Groups Stage 6B (V5__group_e2ee_key_model.sql) -- NULL for every DIRECT message (always) and
+    // for every GROUP message until a later stage starts populating it. Not read or written by
+    // MessageService yet; only establishes the persistence field for the approved shared-group-key
+    // E2EE design (docs/CONNECTX_GROUP_ARCHITECTURE.md §21).
+    @Column(name = "group_key_version")
+    private Integer groupKeyVersion;
+
     @Column(name = "sent_at", nullable = false)
     private Instant sentAt;
 
@@ -229,6 +236,14 @@ public class Message {
 
     public void setNonce(String nonce) {
         this.nonce = nonce;
+    }
+
+    public Integer getGroupKeyVersion() {
+        return groupKeyVersion;
+    }
+
+    public void setGroupKeyVersion(Integer groupKeyVersion) {
+        this.groupKeyVersion = groupKeyVersion;
     }
 
     public Instant getSentAt() {

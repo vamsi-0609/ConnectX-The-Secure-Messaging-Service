@@ -55,6 +55,14 @@ public class ChatGroup {
     @Column(name = "who_can_edit_group_info", nullable = false, length = 20)
     private WhoCanEditGroupInfo whoCanEditGroupInfo = WhoCanEditGroupInfo.OWNER_ADMIN_ONLY;
 
+    // Groups Stage 6B (V5__group_e2ee_key_model.sql) -- authoritative current group-key version
+    // for the approved shared-AES-256-group-key E2EE design (docs/CONNECTX_GROUP_ARCHITECTURE.md
+    // §21). No key generation, wrapping, or rotation exists yet -- this field only establishes the
+    // persistence/versioning model. Every group (new or pre-existing) resolves to 1 until a later
+    // stage implements rotation.
+    @Column(name = "key_version", nullable = false)
+    private int keyVersion = 1;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -152,6 +160,14 @@ public class ChatGroup {
 
     public void setWhoCanEditGroupInfo(WhoCanEditGroupInfo whoCanEditGroupInfo) {
         this.whoCanEditGroupInfo = whoCanEditGroupInfo;
+    }
+
+    public int getKeyVersion() {
+        return keyVersion;
+    }
+
+    public void setKeyVersion(int keyVersion) {
+        this.keyVersion = keyVersion;
     }
 
     public Instant getCreatedAt() {
