@@ -12,6 +12,7 @@ import com.connectx.group.dto.CreateGroupRequestDto;
 import com.connectx.group.dto.GroupDto;
 import com.connectx.group.entity.ChatGroup;
 import com.connectx.group.repository.ChatGroupRepository;
+import com.connectx.group.repository.GroupInvitationRepository;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
 import com.connectx.user.service.ProfileVisibilityService;
@@ -21,6 +22,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -41,6 +43,7 @@ public class GroupService {
     private final ConversationRepository conversationRepository;
     private final ConversationMemberRepository conversationMemberRepository;
     private final ChatGroupRepository chatGroupRepository;
+    private final GroupInvitationRepository groupInvitationRepository;
     private final UserRepository userRepository;
     private final ProfileVisibilityService profileVisibilityService;
     private final GroupAuthorizationService groupAuthorizationService;
@@ -48,12 +51,14 @@ public class GroupService {
     public GroupService(ConversationRepository conversationRepository,
                          ConversationMemberRepository conversationMemberRepository,
                          ChatGroupRepository chatGroupRepository,
+                         GroupInvitationRepository groupInvitationRepository,
                          UserRepository userRepository,
                          ProfileVisibilityService profileVisibilityService,
                          GroupAuthorizationService groupAuthorizationService) {
         this.conversationRepository = conversationRepository;
         this.conversationMemberRepository = conversationMemberRepository;
         this.chatGroupRepository = chatGroupRepository;
+        this.groupInvitationRepository = groupInvitationRepository;
         this.userRepository = userRepository;
         this.profileVisibilityService = profileVisibilityService;
         this.groupAuthorizationService = groupAuthorizationService;
@@ -112,6 +117,70 @@ public class GroupService {
         return members.stream()
                 .map(m -> ConversationMemberDto.fromEntity(m, photoVisibilityByUserId.getOrDefault(m.getUser().getId(), false)))
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * Groups Stage 3: OWNER-only promote/demote (ADMIN &lt;-&gt; MEMBER). No locking -- per
+     * docs/CONNECTX_GROUP_ARCHITECTURE.md's own concurrency analysis, a role field update has no
+     * uniqueness constraint to race against and is idempotent-to-set, so last-write-wins under two
+     * concurrent changes is an accepted, harmless outcome (unlike an insert, where a race could
+     * duplicate a row or blow past the member cap).
+     */
+    @Transactional
+    public ConversationMemberDto changeRole(Long actorUserId, Long groupId, Long targetUserId, GroupRole newRole) {
+        groupAuthorizationService.requireCanChangeRole(actorUserId, groupId, targetUserId, newRole);
+
+        ConversationMember target = conversationMemberRepository.findByConversationIdAndUserId(groupId, targetUserId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "NOT_GROUP_MEMBER", "Target user is not an active member of this group"));
+        target.setRole(newRole);
+        conversationMemberRepository.save(target);
+
+        boolean photoVisible = profileVisibilityService.isProfilePhotoVisible(target.getUser(), actorUserId);
+        return ConversationMemberDto.fromEntity(target, photoVisible);
+    }
+
+    /**
+     * Groups Stage 3: OWNER may remove any non-owner member (including admins); ADMIN may remove a
+     * plain MEMBER only -- see GroupAuthorizationService#requireCanRemoveMember for the full
+     * matrix, decided entirely there. Soft-deletes only (existing architecture -- messages, the
+     * group, connections, and any block relationship are all untouched), and cancels any other
+     * PENDING invitation for this exact (group, user) pair so a stale invitation predating (or
+     * racing) this removal can't later be accepted to silently undo an admin's decision -- the
+     * removed user still gets a completely clean path back in via a *fresh* invitation, per the
+     * Stage 1.5/2 consent rule; this only closes the "accept an old leftover invite instead"
+     * loophole. No pessimistic lock: removal only ever decreases the active-member count, so it
+     * can never itself cause the 50-cap to be exceeded, and per the architecture doc's own
+     * concurrency analysis a second concurrent removal of the same target simply lands on
+     * NOT_GROUP_MEMBER (already removed) -- an accepted, harmless outcome requiring no special
+     * handling, mirroring ConnectionService#removeConnection's identical precedent.
+     */
+    @Transactional
+    public void removeMember(Long actorUserId, Long groupId, Long targetUserId) {
+        groupAuthorizationService.requireCanRemoveMember(actorUserId, groupId, targetUserId);
+        endMembership(groupId, targetUserId);
+    }
+
+    /**
+     * Groups Stage 3: voluntary leave. OWNER is blocked (see
+     * GroupAuthorizationService#requireCanLeave); MEMBER/ADMIN always allowed. Shares
+     * endMembership with removeMember -- same soft-delete + stale-invitation-cancellation
+     * behavior, since a voluntary leave must be exactly as resistant to a stale-invitation bypass
+     * as an admin-initiated removal (Stage 3's re-entry-consent rule draws no distinction between
+     * the two once membership has ended).
+     */
+    @Transactional
+    public void leaveGroup(Long actorUserId, Long groupId) {
+        groupAuthorizationService.requireCanLeave(actorUserId, groupId);
+        endMembership(groupId, actorUserId);
+    }
+
+    private void endMembership(Long groupId, Long userId) {
+        ConversationMember member = conversationMemberRepository.findByConversationIdAndUserId(groupId, userId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "NOT_GROUP_MEMBER", "User is not an active member of this group"));
+        Instant now = Instant.now();
+        member.setDeletedAt(now);
+        conversationMemberRepository.save(member);
+        groupInvitationRepository.cancelAllPendingForGroupAndInvitee(groupId, userId, now);
     }
 
     /**

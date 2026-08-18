@@ -297,6 +297,87 @@ public class GroupAuthorizationService {
         return new AddMemberEvaluation(AddMemberDecision.DIRECT_ADD, "CONNECTED");
     }
 
+    // ==================== role management / removal / leave (Stage 3) ====================
+    //
+    // Permission matrix (docs/CONNECTX_GROUP_ARCHITECTURE.md §6/§10, the pre-approved design this
+    // stage implements against -- not invented here):
+    //   Promote member -> admin: OWNER only.
+    //   Demote admin -> member: OWNER only.
+    //   Remove member: OWNER may remove any non-owner (including admins); ADMIN may remove a plain
+    //     MEMBER only (not another admin, not the owner); MEMBER may remove nobody.
+    //   Leave: MEMBER/ADMIN always allowed; OWNER blocked in V1 (ownership transfer is a separate,
+    //     not-yet-implemented stage -- ChatGroup ever having zero or >1 OWNER is not a state this
+    //     codebase can reach yet, so "OWNER is the only owner" is unconditionally true today).
+
+    /**
+     * OWNER only. Rejects OWNER as a target role (promotion/demotion never produces or removes an
+     * owner -- ownership transfer is explicitly out of scope this stage) and rejects the group's
+     * own OWNER as a target (their role can never be changed through this operation).
+     */
+    @Transactional(readOnly = true)
+    public void requireCanChangeRole(Long actorUserId, Long groupId, Long targetUserId, GroupRole newRole) {
+        GroupRole actorRole = requireRole(actorUserId, groupId);
+        if (actorRole != GroupRole.OWNER) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "OWNER_ONLY", "Only the group owner can change member roles");
+        }
+        if (newRole != GroupRole.ADMIN && newRole != GroupRole.MEMBER) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_ROLE", "role must be ADMIN or MEMBER");
+        }
+
+        GroupRole targetRole = activeRoleOrNull(targetUserId, groupId);
+        if (targetRole == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "NOT_GROUP_MEMBER", "Target user is not an active member of this group");
+        }
+        if (targetRole == GroupRole.OWNER) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "CANNOT_MODIFY_OWNER", "The group owner's role cannot be changed");
+        }
+    }
+
+    /**
+     * OWNER may remove any non-owner member (including admins). ADMIN may remove a plain MEMBER
+     * only -- never another admin, never the owner. MEMBER may remove nobody. The owner can never
+     * be removed by anyone through this operation, regardless of actor role.
+     */
+    @Transactional(readOnly = true)
+    public void requireCanRemoveMember(Long actorUserId, Long groupId, Long targetUserId) {
+        GroupRole actorRole = requireRole(actorUserId, groupId);
+        if (actorUserId.equals(targetUserId)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "CANNOT_REMOVE_SELF", "Use the leave endpoint to remove yourself from a group");
+        }
+
+        GroupRole targetRole = activeRoleOrNull(targetUserId, groupId);
+        if (targetRole == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "NOT_GROUP_MEMBER", "Target user is not an active member of this group");
+        }
+        if (targetRole == GroupRole.OWNER) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "CANNOT_REMOVE_OWNER", "The group owner cannot be removed");
+        }
+
+        if (actorRole == GroupRole.OWNER) {
+            return;
+        }
+        if (actorRole == GroupRole.ADMIN) {
+            if (targetRole == GroupRole.ADMIN) {
+                throw new ApiException(HttpStatus.FORBIDDEN, "ADMIN_CANNOT_REMOVE_ADMIN", "Admins cannot remove other admins");
+            }
+            return;
+        }
+        throw new ApiException(HttpStatus.FORBIDDEN, "NO_REMOVE_PERMISSION", "You do not have permission to remove members from this group");
+    }
+
+    /**
+     * MEMBER/ADMIN may always leave. OWNER is blocked -- ownership transfer (the only way to leave
+     * without abandoning the group) is a separate, not-yet-implemented stage.
+     */
+    @Transactional(readOnly = true)
+    public void requireCanLeave(Long actorUserId, Long groupId) {
+        GroupRole role = requireRole(actorUserId, groupId);
+        if (role == GroupRole.OWNER) {
+            throw new ApiException(HttpStatus.CONFLICT, "OWNER_CANNOT_LEAVE",
+                    "The group owner cannot leave without transferring ownership first");
+        }
+    }
+
     private boolean isConnected(Long userId1, Long userId2) {
         Long low = Math.min(userId1, userId2);
         Long high = Math.max(userId1, userId2);

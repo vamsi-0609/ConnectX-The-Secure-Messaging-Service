@@ -56,11 +56,15 @@ describe:**
   see "Checkpoint — Groups Stage 2 invitation workflow (2026-08-18)" at the end of this document.
   First additive schema change of the Groups initiative since Stage 0B
   (`V3__group_membership_unique_constraint.sql`, applied to `connectx_db`).
+- **Groups Stage 3** (role management, member removal, voluntary leave, re-entry consent) — see
+  "Checkpoint — Groups Stage 3 member management (2026-08-18)" at the end of this document. No
+  schema change. Implements §6/§10 of `CONNECTX_GROUP_ARCHITECTURE.md`'s pre-approved permission
+  matrix (ownership transfer explicitly excluded, per this stage's own scope).
 
-**Next stage: Groups Stage 3 (role management / member removal, or group frontend) — not started,
-awaiting explicit instruction.** The stale "not started" framing directly below (written before any
-Groups code existed) is superseded by the above; kept as-is for historical accuracy of what was
-true when written.
+**Next stage: Groups Stage 4 (group settings, or the group frontend) — not started, awaiting
+explicit instruction.** The stale "not started" framing directly below (written before any Groups
+code existed) is superseded by the above; kept as-is for historical accuracy of what was true when
+written.
 
 Everything below this point through "Checkpoint — Legacy DIRECT connection backfill (2026-08-18)" is
 the original per-stage record and is left as-is (historical, not rewritten). The **"Current status"
@@ -1118,3 +1122,156 @@ far, never through a real flow), no member-removal endpoint, no group-settings-u
 (name/description/avatar/`whoCanInvite` can only be set at creation time or via raw repository
 access), invitation expiry remains explicitly out of scope, and the group-add privacy setting
 (ANYONE/CONNECTIONS/NOBODY) remains structural-only with no persisted column or UI.
+
+---
+
+## Checkpoint — Groups Stage 3 member management (2026-08-18)
+
+Follows Groups Stage 2 (`4d5b259`, invitation workflow). Implements role management
+(promote/demote), member removal, voluntary leave, and closes the "stale invitation" loophole the
+Stage 1.5/2 consent rule left open. Implements `CONNECTX_GROUP_ARCHITECTURE.md` §6/§10's
+pre-approved permission matrix directly -- no permissions were invented; every ADMIN-vs-OWNER
+ambiguity in this stage's own instructions (can an admin manage another admin? promote anyone?) was
+resolved by reading that matrix, not by guessing.
+
+**No schema change.** `GroupRole` already had all three values; `conversation_members.deletedAt`
+already distinguishes active from inactive; `V3`'s uniqueness constraint (Stage 2) already prevents
+a duplicate row on any reactivation path. Nothing here needed new columns or tables.
+
+**Role matrix implemented** (§6, table form):
+
+| Action | OWNER | ADMIN | MEMBER |
+|---|---|---|---|
+| Promote MEMBER→ADMIN | Yes | No | No |
+| Demote ADMIN→MEMBER | Yes | No | No |
+| Remove MEMBER | Yes | Yes | No |
+| Remove ADMIN | Yes | No (`ADMIN_CANNOT_REMOVE_ADMIN`) | No |
+| Remove OWNER | Never (`CANNOT_REMOVE_OWNER`), by anyone, including self via this endpoint |
+| Leave | Blocked (`OWNER_CANNOT_LEAVE`) | Yes | Yes |
+
+All decided in `GroupAuthorizationService` (`requireCanChangeRole`, `requireCanRemoveMember`,
+`requireCanLeave`) -- `GroupService`'s new `changeRole`/`removeMember`/`leaveGroup` methods and the
+new `GroupMembershipController` make zero authorization decisions of their own, matching every
+prior stage's "controllers/services orchestrate, GroupAuthorizationService decides" convention.
+Every check re-derives both the actor's and the target's role fresh from `conversation_members` for
+the exact `(userId, groupId)` pair passed in -- nothing is ever accepted as a role or identity
+claim from the request.
+
+**Role transition rules:** only `ADMIN`/`MEMBER` are valid target roles (`INVALID_ROLE` for `OWNER`,
+even from the real owner); the group's own `OWNER` can never be a target of either promotion,
+demotion, or removal (`CANNOT_MODIFY_OWNER` / `CANNOT_REMOVE_OWNER`), regardless of actor.
+Ownership transfer is untouched -- deliberately out of scope, per this stage's explicit instruction.
+
+**Remove behavior:** soft-delete only (`deletedAt` set, same column/mechanism as every other
+conversation membership state in this codebase) -- no row deleted, no message touched, no group
+touched, no connection touched, no block created. Additionally cancels any other PENDING
+`GroupInvitation` for that exact `(group, user)` pair (new bulk
+`GroupInvitationRepository#cancelAllPendingForGroupAndInvitee`) -- see "re-entry behavior" below for
+why.
+
+**Leave behavior:** `MEMBER`/`ADMIN` always allowed; `OWNER` blocked with `OWNER_CANNOT_LEAVE` (V1
+has no ownership-transfer flow, so "OWNER is the only owner" is unconditionally true today -- the
+check doesn't need to look for co-owners because none can exist). Shares the same
+soft-delete-plus-stale-invitation-cancellation primitive (`GroupService#endMembership`) as removal
+-- Stage 3's consent rule draws no distinction between the two once membership has ended.
+
+**Re-entry behavior:** unchanged from Stage 1.5/2's rule (`MembershipState.INACTIVE` -- collapsing
+LEFT/REMOVED, still not distinguishable -- always resolves to `INVITATION_REQUIRED`, never
+`DIRECT_ADD`), now exercised end-to-end for the first time against real removal/leave rather than
+only hand-constructed soft-deleted rows. New this stage: closed the "stale invitation" gap this
+consent rule left open -- a `PENDING` invitation created (or left dangling by a narrow evaluate/
+direct-add race) *before* removal could previously still be accepted *after* removal, silently
+undoing the admin's decision without going through a fresh invitation. `removeMember`/`leaveGroup`
+now cancel any such stale invitation as part of ending the membership, engineered and proven by
+`GroupMembershipServiceTest#removingUser_cancelsStalePendingInvitation_andItCannotBypassRemoval`.
+Accepting a fresh invitation continues to always assign role `MEMBER` (Stage 2's
+`acceptInvitation` already hardcoded this) -- a rejoined former `ADMIN` never returns as `ADMIN`,
+proven by `rejoinedFormerAdmin_returnsAsMember`.
+
+**Invitation interaction:** confirmed pending invitations cannot coexist with active membership for
+the same pair under normal flow (`evaluateAddMember` denies `ALREADY_MEMBER` before an invitation
+would ever be created); the one narrow way a stale PENDING row can exist alongside active membership
+(a connect-then-direct-add racing an earlier not-yet-accepted invitation) is exactly what the new
+cancellation closes.
+
+**Owner protection:** enforced at three independent points -- `requireCanChangeRole` (target-role
+check), `requireCanRemoveMember` (target-role check, evaluated before the actor-role branch so it
+applies uniformly regardless of who's attempting it), and `requireCanLeave` (actor-role check). No
+code path in this stage can produce a group with zero or >1 `OWNER`.
+
+**Race-condition handling:** deliberately *no* pessimistic locking for role changes or removal --
+per `CONNECTX_GROUP_ARCHITECTURE.md` §10's own concurrency analysis (a role field update has no
+uniqueness constraint to race against, last-write-wins is acceptable; removal only ever decreases
+the active count, so it cannot itself blow the cap, and a second concurrent removal of an
+already-removed target simply lands on `NOT_GROUP_MEMBER`, mirroring
+`ConnectionService#removeConnection`'s identical precedent). `GroupService#addMember`'s Stage 2
+pessimistic lock (on the group's `chat_groups` row) is untouched and unextended to these new
+operations -- reusing it here would be locking a read-then-write that doesn't need it, contrary to
+this stage's explicit instruction. All three claims (consistent concurrent role changes, idempotent
+concurrent removal, and a removal-frees-a-slot-while-an-accept-needs-one race never exceeding the
+cap or duplicating a row) are proven empirically, not just asserted, by
+`GroupMembershipRaceIntegrationTest` -- re-run 3 additional times with no flakiness observed.
+
+**50-member behavior:** a removed/left member's slot becomes available immediately (their row's
+`deletedAt` is set synchronously, in the same transaction as the removal/leave call returning) --
+the very next `countByConversationIdAndDeletedAtIsNull` read (e.g. inside a subsequent
+`addMember` call) reflects it with no propagation delay, since there is no cache or async step
+anywhere in this path.
+
+**Security tests:** IDOR (forged actor id resolves through the DB, never trusted --
+`forgedActorId_cannotChangeRoleOrRemove`), forged actor (same), forged target (every operation
+independently re-validates the target's *current* DB state, e.g. `owner_cannotBeRemoved` even when
+called by a legitimately-active admin), forged role (`forgedRole_cannotGrantChangeRoleAuthority` --
+`UpdateMemberRoleRequestDto` only ever carries the *requested* role, never an actor-role claim),
+admin privilege escalation (`admin_cannotPromoteToOwner`, `admin_cannotDemoteOwner`,
+`admin_cannotRemoveOwner`, `unauthorizedAdminRemoval_rejected`), owner manipulation (`owner_
+cannotBeDemoted`, `owner_cannotBeRemoved`, `owner_cannotLeave_whenTransferUnavailable`), accessing
+removed-member data (`removedMember_becomesInactiveAndLosesGroupAccess`), unauthorized leave (N/A --
+leave only ever acts on the caller's own membership, there is no target to forge), invitation bypass
+after removal (`removingUser_cancelsStalePendingInvitation_andItCannotBypassRemoval`). "Removing
+another group's member" / "modifying another group's role" reduce to the same forged-target-id
+guarantee already covered -- `conversation_members` lookups are always scoped to the specific
+`(groupId, userId)` pair passed in, so a valid membership row in a *different* group is simply never
+found (`NOT_GROUP_MEMBER`), not silently matched.
+
+**Query behavior (performance):** role change = 1 authorization read + 1 target re-fetch + 1 UPDATE
+(no member-list load). Remove/leave = 1 authorization read + 1 target re-fetch + 1 UPDATE + 1 bulk
+invitation-cancellation UPDATE (not a loop). Member list (`getGroupMembers`, unchanged from Stage 1)
+remains the one query already batched to avoid N+1 (`findByConversationIdAndDeletedAtIsNullWithUsers`
++ one batched photo-visibility resolution). No new N+1 was introduced -- none of the three new
+operations load every member merely to authorize one action on one target.
+
+**Tests added:** `GroupMembershipServiceTest` (36 cases covering all role/remove/leave/rejoin/
+invitation-consistency items plus two direct DIRECT-conversation regression checks; regression items
+44/46/47/48 relied on the already-passing `MessageConnectionAuthorizationTest`/`ConnectionServiceTest`'s
+`removeConnection_*` suite/`BlockServiceTest`/test 20's WebSocket check rather than being duplicated),
+`GroupMembershipRaceIntegrationTest` (3 concurrent-thread cases, re-run 3 additional times with no
+flakiness).
+
+**Test result:** full `mvn test` -- **225/225 pass** (186 before this stage + 39 new), 0 failures,
+0 errors.
+
+**DIRECT regression:** `DirectConversationAuthorizationTest`, `DirectConversationRaceIntegrationTest`,
+`MessageConnectionAuthorizationTest`, `ConnectionServiceTest`, `BlockServiceTest`,
+`BlockEnforcementIntegrationTest`, and `WebSocketSubscriptionAuthorizationTest` all still pass
+unchanged.
+
+**E2EE/WebSocket/Web Push status:** none touched. Stage 0's WebSocket SUBSCRIBE authorization was
+verified (not modified) to correctly reject a just-removed group member, via a direct
+`WebSocketAuthChannelInterceptor#preSend` test reusing Stage 0's exact test technique.
+
+**Files changed this stage:** `GroupAuthorizationService.java` (modified: `requireCanChangeRole`/
+`requireCanRemoveMember`/`requireCanLeave` added), `GroupService.java` (modified: `changeRole`/
+`removeMember`/`leaveGroup`/`endMembership` added), `GroupInvitationRepository.java` (modified:
+`cancelAllPendingForGroupAndInvitee` added), `UpdateMemberRoleRequestDto.java` /
+`GroupMembershipController.java` (new), `GroupMembershipServiceTest.java` /
+`GroupMembershipRaceIntegrationTest.java` (new), this document. Frontend untouched. No database
+migration.
+
+**Remaining before Group Settings/Messaging:** no group-settings-update endpoint yet
+(name/description/avatar/`whoCanInvite` still only settable at creation or via raw repository
+access); ownership transfer remains entirely unimplemented (an owner-only group can never be left by
+its owner in V1); no group messaging exists yet, so "messages remain intact" was proven against a
+directly-inserted `Message` row rather than a real send flow; the group-add privacy setting
+(ANYONE/CONNECTIONS/NOBODY) is still structural-only, no persisted column or UI; group E2EE remains
+entirely undecided (PDF Stage 8, untouched).
