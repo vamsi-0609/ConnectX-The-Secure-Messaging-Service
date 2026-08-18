@@ -1,6 +1,7 @@
 package com.connectx.connection.dto;
 
 import com.connectx.connection.entity.ConnectionRequest;
+import com.connectx.user.service.ProfileVisibilityService;
 
 import java.time.Instant;
 
@@ -40,6 +41,20 @@ public class ConnectionRequestDto {
         dto.setStatus(entity.getStatus().name());
         dto.setCreatedAt(entity.getCreatedAt());
         dto.setRespondedAt(entity.getRespondedAt());
+        return dto;
+    }
+
+    // The requester and recipient aren't connected while a request is only PENDING, so a
+    // CONNECTIONS-only photo must stay hidden here just like anywhere else -- only who the
+    // *viewer* (whichever of the two current-user is) is allowed to see is exposed.
+    public static ConnectionRequestDto fromEntity(ConnectionRequest entity, Long viewerId, ProfileVisibilityService visibilityService) {
+        ConnectionRequestDto dto = fromEntity(entity);
+        if (!visibilityService.isProfilePhotoVisible(entity.getRequester(), viewerId)) {
+            dto.setRequesterProfileImageUrl(null);
+        }
+        if (!visibilityService.isProfilePhotoVisible(entity.getRecipient(), viewerId)) {
+            dto.setRecipientProfileImageUrl(null);
+        }
         return dto;
     }
 

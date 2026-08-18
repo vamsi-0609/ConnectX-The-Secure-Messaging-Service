@@ -33,13 +33,15 @@ public class UserController {
 
     @GetMapping("/me")
     public ResponseEntity<ApiResponse<UserDto>> getCurrentUser(@AuthenticationPrincipal UserPrincipal currentUser) {
-        UserDto userDto = userService.getUserById(currentUser.getId());
+        UserDto userDto = userService.getUserById(currentUser.getId(), currentUser.getId());
         return ResponseEntity.ok(ApiResponse.success("Current user profile", userDto));
     }
 
     @GetMapping("/{userId}")
-    public ResponseEntity<ApiResponse<UserDto>> getUserById(@PathVariable Long userId) {
-        UserDto userDto = userService.getUserById(userId);
+    public ResponseEntity<ApiResponse<UserDto>> getUserById(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long userId) {
+        UserDto userDto = userService.getUserById(userId, currentUser.getId());
         return ResponseEntity.ok(ApiResponse.success("User details", userDto));
     }
 

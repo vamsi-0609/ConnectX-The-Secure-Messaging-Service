@@ -12,6 +12,8 @@ import {
   Palette,
   BellOff,
   Bell,
+  Download,
+  Loader2,
 } from 'lucide-react';
 import { User } from '../../types';
 import { ClearChatConfirmDialog } from './ClearChatConfirmDialog';
@@ -35,6 +37,8 @@ interface ChatHeaderProps {
   onClearChat?: () => Promise<void>;
   onMuteChat?: (duration: '8_HOURS' | '1_WEEK' | 'ALWAYS') => Promise<void>;
   onUnmuteChat?: () => Promise<void>;
+  onExportChat?: () => Promise<void>;
+  exportingChat?: boolean;
 }
 
 export const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
@@ -51,6 +55,8 @@ export const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
   onClearChat,
   onMuteChat,
   onUnmuteChat,
+  onExportChat,
+  exportingChat,
 }) => {
   const [showMenu, setShowMenu] = useState(false);
   const [menuView, setMenuView] = useState<'main' | 'wallpaper'>('main');
@@ -239,6 +245,19 @@ export const ChatHeader: React.FC<ChatHeaderProps> = React.memo(({
                         {showRawCiphertext ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                         Raw ciphertext
                       </button>
+                      {onExportChat && (
+                        <button
+                          onClick={async () => {
+                            await onExportChat();
+                            closeMenu();
+                          }}
+                          disabled={exportingChat}
+                          className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-60"
+                        >
+                          {exportingChat ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                          {exportingChat ? 'Preparing export...' : 'Export Chat'}
+                        </button>
+                      )}
                       {onClearChat && (
                         <button
                           onClick={() => {

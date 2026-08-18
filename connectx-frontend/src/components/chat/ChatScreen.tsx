@@ -71,6 +71,8 @@ interface ChatScreenProps {
   onClearChat?: () => Promise<void>;
   onMuteChat?: (duration: '8_HOURS' | '1_WEEK' | 'ALWAYS') => Promise<void>;
   onUnmuteChat?: () => Promise<void>;
+  onExportChat?: () => Promise<void>;
+  exportingChat?: boolean;
   onReactMessage?: (messageId: number, reaction: string) => Promise<void>;
   onEditMessage?: (messageId: number, newPlaintext: string) => Promise<void>;
   pinnedMessage?: Message | null;
@@ -124,6 +126,8 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   onClearChat,
   onMuteChat,
   onUnmuteChat,
+  onExportChat,
+  exportingChat,
   onReactMessage,
   onEditMessage,
   pinnedMessage,
@@ -468,6 +472,8 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
             onClearChat={onClearChat}
             onMuteChat={onMuteChat}
             onUnmuteChat={onUnmuteChat}
+            onExportChat={onExportChat}
+            exportingChat={exportingChat}
           />
         )}
       </header>

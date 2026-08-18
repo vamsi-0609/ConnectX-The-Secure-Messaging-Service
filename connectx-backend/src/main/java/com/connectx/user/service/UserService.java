@@ -19,6 +19,8 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -26,29 +28,37 @@ import java.util.stream.Collectors;
 public class UserService {
 
     private static final Pattern USERNAME_PATTERN = Pattern.compile("^[a-zA-Z0-9_]{3,30}$");
+    private static final Set<String> VALID_PHOTO_VISIBILITY_VALUES = Set.of(
+            ProfileVisibilityService.VISIBILITY_EVERYONE, ProfileVisibilityService.VISIBILITY_CONNECTIONS);
 
     private final UserRepository userRepository;
     private final ProfileImageStorage profileImageStorage;
     private final OtpTokenRepository otpTokenRepository;
     private final EmailService emailService;
     private final AfterCommitExecutor afterCommitExecutor;
+    private final ProfileVisibilityService profileVisibilityService;
 
     public UserService(UserRepository userRepository,
                        ProfileImageStorage profileImageStorage,
                        OtpTokenRepository otpTokenRepository,
                        EmailService emailService,
-                       AfterCommitExecutor afterCommitExecutor) {
+                       AfterCommitExecutor afterCommitExecutor,
+                       ProfileVisibilityService profileVisibilityService) {
         this.userRepository = userRepository;
         this.profileImageStorage = profileImageStorage;
         this.otpTokenRepository = otpTokenRepository;
         this.emailService = emailService;
         this.afterCommitExecutor = afterCommitExecutor;
+        this.profileVisibilityService = profileVisibilityService;
     }
 
-    public UserDto getUserById(Long userId) {
+    // viewerId is the caller's own id for both /users/me (viewerId == userId, always visible)
+    // and /users/{userId} (another user's profile, subject to their profilePhotoVisibility).
+    public UserDto getUserById(Long userId, Long viewerId) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User was not found"));
-        return UserDto.fromEntity(user);
+        boolean photoVisible = profileVisibilityService.isProfilePhotoVisible(user, viewerId);
+        return UserDto.fromEntity(user, photoVisible);
     }
 
     private static final int USER_SEARCH_LIMIT = 20;
@@ -60,10 +70,11 @@ public class UserService {
         if (username == null || username.trim().isEmpty()) {
             return List.of();
         }
-        return userRepository.searchByUsernameExcludingBlockedPairs(
-                        username.trim(), currentUserId, org.springframework.data.domain.PageRequest.of(0, USER_SEARCH_LIMIT))
-                .stream()
-                .map(UserDto::fromEntity)
+        List<User> users = userRepository.searchByUsernameExcludingBlockedPairs(
+                username.trim(), currentUserId, org.springframework.data.domain.PageRequest.of(0, USER_SEARCH_LIMIT));
+        Map<Long, Boolean> photoVisibility = profileVisibilityService.resolvePhotoVisibility(currentUserId, users);
+        return users.stream()
+                .map(u -> UserDto.fromEntity(u, photoVisibility.getOrDefault(u.getId(), false)))
                 .collect(Collectors.toList());
     }
 
@@ -93,6 +104,15 @@ public class UserService {
 
         if (updateDto.getProfileImageUrl() != null) {
             user.setProfileImageUrl(updateDto.getProfileImageUrl());
+        }
+
+        if (updateDto.getProfilePhotoVisibility() != null) {
+            String visibility = updateDto.getProfilePhotoVisibility().trim().toUpperCase();
+            if (!VALID_PHOTO_VISIBILITY_VALUES.contains(visibility)) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_PHOTO_VISIBILITY",
+                        "profilePhotoVisibility must be one of: " + VALID_PHOTO_VISIBILITY_VALUES);
+            }
+            user.setProfilePhotoVisibility(visibility);
         }
 
         User updatedUser = userRepository.save(user);

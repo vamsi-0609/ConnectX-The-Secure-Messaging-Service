@@ -23,6 +23,9 @@ const ProfileModal = React.lazy(() =>
 const BlockedUsersModal = React.lazy(() =>
   import('./components/profile/BlockedUsersModal').then((m) => ({ default: m.BlockedUsersModal }))
 );
+const SettingsModal = React.lazy(() =>
+  import('./components/profile/SettingsModal').then((m) => ({ default: m.SettingsModal }))
+);
 import { useWebSocket } from './websocket/WebSocketContext';
 import { wsClient } from './websocket/WebSocketClient';
 import { conversationApi } from './api/conversationApi';
@@ -48,6 +51,7 @@ import { applyTheme, isDarkTheme } from './utils/theme';
 import { soundManager } from './utils/notificationSound';
 import { browserNotifications } from './utils/browserNotifications';
 import { resolveProfileImageUrl } from './utils/profileImage';
+import { buildChatExportFilename, buildChatExportText, downloadTextFile } from './utils/chatExport';
 import { appBadge } from './utils/appBadge';
 import { registerWebPushSubscription } from './utils/pushSubscription';
 import {
@@ -250,6 +254,7 @@ export const App: React.FC = () => {
   const [showDeviceModal, setShowDeviceModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showBlockedUsersModal, setShowBlockedUsersModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showRequestsModal, setShowRequestsModal] = useState(false);
 
   // Connection/blocking relationship data -- loaded in bulk once on startup (see
@@ -847,7 +852,8 @@ export const App: React.FC = () => {
       showProfileModal ||
       showSearchModal ||
       showDeviceModal ||
-      showBlockedUsersModal;
+      showBlockedUsersModal ||
+      showSettingsModal;
 
     if (isSubScreen) {
       // Push a synthetic history entry so there is something to pop back to
@@ -855,7 +861,7 @@ export const App: React.FC = () => {
         window.history.pushState({ connectxNav: true }, '');
       }
     }
-  }, [activeConversation, showProfileModal, showSearchModal, showDeviceModal, showBlockedUsersModal]);
+  }, [activeConversation, showProfileModal, showSearchModal, showDeviceModal, showBlockedUsersModal, showSettingsModal]);
 
   useEffect(() => {
     const handlePopState = () => {
@@ -863,7 +869,9 @@ export const App: React.FC = () => {
       isHandlingPopRef.current = true;
 
       // Close the topmost screen in priority order
-      if (showBlockedUsersModal) {
+      if (showSettingsModal) {
+        setShowSettingsModal(false);
+      } else if (showBlockedUsersModal) {
         setShowBlockedUsersModal(false);
       } else if (showDeviceModal) {
         setShowDeviceModal(false);
@@ -876,6 +884,7 @@ export const App: React.FC = () => {
       }
       // Re-push so a second back still works if multiple layers are open
       const stillSubScreen =
+        showSettingsModal ||
         showBlockedUsersModal ||
         showDeviceModal ||
         showSearchModal ||
@@ -890,7 +899,7 @@ export const App: React.FC = () => {
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [activeConversation, showProfileModal, showSearchModal, showDeviceModal, showBlockedUsersModal]);
+  }, [activeConversation, showProfileModal, showSearchModal, showDeviceModal, showBlockedUsersModal, showSettingsModal]);
 
   const decryptSingleMessage = useCallback(
     async (msg: Message, userId: number, peerUserId?: number | null): Promise<Message> => {
@@ -2347,6 +2356,47 @@ export const App: React.FC = () => {
     setActiveConversation((prev) => (prev ? withoutLastMessagePreview(prev) : null));
   };
 
+  const [exportingChat, setExportingChat] = useState(false);
+
+  // Client-side-only TXT export of the active DIRECT conversation's full history. Starts from
+  // whatever's already cached (same LRU the chat screen itself reads) and walks older pages via
+  // the same before/limit cursor loadOlderMessages uses, instead of a bespoke fetch-everything
+  // endpoint -- the backend never sees or generates plaintext, only ciphertext it already had.
+  const handleExportChat = useCallback(async () => {
+    if (exportingChat || !currentUser) return;
+    const conv = activeConversationRef.current;
+    if (!conv || conv.type !== 'DIRECT') return;
+    const other = getOtherParticipant(conv, currentUser.id);
+    if (!other) return;
+
+    setExportingChat(true);
+    try {
+      const cached = conversationCache.getConversation(conv.id);
+      let all: Message[] = cached ? cached.messages : messages;
+      let hasMore = cached ? cached.hasMore : hasMoreMessages;
+      let cursor: number | null = cached?.oldestCursor ?? (all.length > 0 ? all[0].id : null);
+
+      while (hasMore && cursor != null) {
+        const page = await messageApi.getMessages(conv.id, { before: cursor, limit: 100 });
+        if (page.messages.length === 0) break;
+        const existingIds = new Set(all.map((m) => m.id));
+        const newOnes = page.messages.filter((m) => !existingIds.has(m.id));
+        all = sortMessages([...newOnes, ...all]);
+        hasMore = page.hasMore;
+        cursor = page.nextCursor ?? null;
+      }
+
+      const decrypted = await Promise.all(all.map((m) => decryptSingleMessage(m, currentUser.id, other.id)));
+      const text = buildChatExportText({ currentUser, otherUser: other, messages: sortMessages(decrypted) });
+      downloadTextFile(buildChatExportFilename(other), text);
+    } catch (err) {
+      console.error('[ConnectX] Chat export failed:', err);
+      alert('Failed to export chat. Please try again.');
+    } finally {
+      setExportingChat(false);
+    }
+  }, [exportingChat, currentUser, messages, hasMoreMessages, decryptSingleMessage]);
+
   const handleSelectConversation = useCallback(
     (conv: Conversation) => {
       // Switching to a different conversation must not carry over Contact Info being left open
@@ -2664,6 +2714,8 @@ export const App: React.FC = () => {
               onOptimisticDocumentMessage={handleOptimisticDocumentMessage}
               onMessageSent={handleMessageSent}
               onClearChat={handleClearChat}
+              onExportChat={handleExportChat}
+              exportingChat={exportingChat}
               onMuteChat={handleMuteChat}
               onUnmuteChat={handleUnmuteChat}
               onReactMessage={handleReactMessage}
@@ -2744,6 +2796,7 @@ export const App: React.FC = () => {
             onToggleTheme={() => setIsDarkMode(!isDarkMode)}
             onOpenDevices={() => setShowDeviceModal(true)}
             onOpenBlockedUsers={() => setShowBlockedUsersModal(true)}
+            onOpenSettings={() => setShowSettingsModal(true)}
             onClose={() => setShowProfileModal(false)}
             onLogout={handleLogout}
             onUserUpdated={handleUserUpdated}
@@ -2796,6 +2849,23 @@ export const App: React.FC = () => {
       {showBlockedUsersModal && (
         <React.Suspense fallback={null}>
           <BlockedUsersModal onClose={() => setShowBlockedUsersModal(false)} onUnblock={handleUnblockUser} />
+        </React.Suspense>
+      )}
+
+      {showSettingsModal && (
+        <React.Suspense fallback={null}>
+          <SettingsModal
+            currentUser={currentUser}
+            onClose={() => setShowSettingsModal(false)}
+            onUserUpdated={handleUserUpdated}
+            onExportChat={handleExportChat}
+            exportingChat={exportingChat}
+            activeDirectChatName={
+              activeConversation?.type === 'DIRECT'
+                ? getRecipientUser(activeConversation)?.displayName || getRecipientUser(activeConversation)?.username || null
+                : null
+            }
+          />
         </React.Suspense>
       )}
 

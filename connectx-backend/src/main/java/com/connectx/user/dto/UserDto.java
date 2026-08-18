@@ -13,6 +13,7 @@ public class UserDto {
     private String status;
     private Instant lastSeenAt;
     private Instant createdAt;
+    private String profilePhotoVisibility;
 
     public UserDto() {}
 
@@ -26,6 +27,21 @@ public class UserDto {
         dto.setStatus(user.getStatus() != null ? user.getStatus() : "OFFLINE");
         dto.setLastSeenAt(user.getLastSeenAt());
         dto.setCreatedAt(user.getCreatedAt());
+        dto.setProfilePhotoVisibility(user.getProfilePhotoVisibility() != null ? user.getProfilePhotoVisibility() : "EVERYONE");
+        return dto;
+    }
+
+    /**
+     * Same as fromEntity(User), except the photo is omitted when the caller has already
+     * determined (via ProfileVisibilityService) that the viewer isn't allowed to see it. Used
+     * for every "another user's profile" DTO; the plain fromEntity(User) above stays for
+     * self-views, where visibility never applies.
+     */
+    public static UserDto fromEntity(User user, boolean includeProfilePhoto) {
+        UserDto dto = fromEntity(user);
+        if (!includeProfilePhoto) {
+            dto.setProfileImageUrl(null);
+        }
         return dto;
     }
 
@@ -91,5 +107,13 @@ public class UserDto {
 
     public void setCreatedAt(Instant createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public String getProfilePhotoVisibility() {
+        return profilePhotoVisibility;
+    }
+
+    public void setProfilePhotoVisibility(String profilePhotoVisibility) {
+        this.profilePhotoVisibility = profilePhotoVisibility;
     }
 }

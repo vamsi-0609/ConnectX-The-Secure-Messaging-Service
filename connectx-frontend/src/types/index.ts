@@ -1,3 +1,5 @@
+export type ProfilePhotoVisibility = 'EVERYONE' | 'CONNECTIONS';
+
 export interface User {
   id: number;
   username: string;
@@ -7,6 +9,8 @@ export interface User {
   status: 'ONLINE' | 'OFFLINE' | 'AWAY';
   lastSeenAt?: string;
   createdAt: string;
+  // Absent/undefined on users created before this setting existed -- treat the same as EVERYONE.
+  profilePhotoVisibility?: ProfilePhotoVisibility;
 }
 
 export interface AuthResponse {

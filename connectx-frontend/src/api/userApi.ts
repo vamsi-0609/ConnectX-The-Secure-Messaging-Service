@@ -11,7 +11,7 @@ export const userApi = {
   getUserById: (userId: number) =>
     apiRequest<User>(`/users/${userId}`),
 
-  updateProfile: (data: { username?: string; displayName?: string; profileImageUrl?: string; status?: string }) =>
+  updateProfile: (data: { username?: string; displayName?: string; profileImageUrl?: string; status?: string; profilePhotoVisibility?: string }) =>
     apiRequest<User>('/users/me', {
       method: 'PATCH',
       body: JSON.stringify(data),

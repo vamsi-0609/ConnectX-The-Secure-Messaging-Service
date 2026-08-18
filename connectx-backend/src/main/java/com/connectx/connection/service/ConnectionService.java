@@ -13,6 +13,7 @@ import com.connectx.connection.repository.ConnectionRequestRepository;
 import com.connectx.connection.repository.UserConnectionRepository;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
+import com.connectx.user.service.ProfileVisibilityService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Lazy;
@@ -35,6 +36,7 @@ public class ConnectionService {
     private final UserConnectionRepository userConnectionRepository;
     private final UserRepository userRepository;
     private final UserBlockRepository userBlockRepository;
+    private final ProfileVisibilityService profileVisibilityService;
     // Self-injected proxy so the REQUIRES_NEW methods below actually run through Spring's
     // transactional AOP proxy when invoked from within this class -- the same pattern already
     // proven in MessageService for the reaction/star insert races (see
@@ -48,11 +50,13 @@ public class ConnectionService {
                               UserConnectionRepository userConnectionRepository,
                               UserRepository userRepository,
                               UserBlockRepository userBlockRepository,
+                              ProfileVisibilityService profileVisibilityService,
                               @Lazy ConnectionService self) {
         this.connectionRequestRepository = connectionRequestRepository;
         this.userConnectionRepository = userConnectionRepository;
         this.userRepository = userRepository;
         this.userBlockRepository = userBlockRepository;
+        this.profileVisibilityService = profileVisibilityService;
         this.self = self;
     }
 
@@ -95,7 +99,7 @@ public class ConnectionService {
 
         try {
             ConnectionRequest saved = self.insertConnectionRequestInNewTransaction(requester, recipient);
-            return ConnectionRequestDto.fromEntity(saved);
+            return ConnectionRequestDto.fromEntity(saved, currentUserId, profileVisibilityService);
         } catch (DataIntegrityViolationException e) {
             // Lost a race with a concurrent request for the same ordered pair (uk_connreq_pending_pair).
             log.debug("Duplicate pending connection request lost race: requesterId={}, recipientId={}", currentUserId, recipientId);
@@ -114,7 +118,7 @@ public class ConnectionService {
         return connectionRequestRepository
                 .findByRecipientIdAndStatusWithUsers(currentUserId, ConnectionRequestStatus.PENDING)
                 .stream()
-                .map(ConnectionRequestDto::fromEntity)
+                .map(r -> ConnectionRequestDto.fromEntity(r, currentUserId, profileVisibilityService))
                 .collect(Collectors.toList());
     }
 
@@ -123,7 +127,7 @@ public class ConnectionService {
         return connectionRequestRepository
                 .findByRequesterIdAndStatusWithUsers(currentUserId, ConnectionRequestStatus.PENDING)
                 .stream()
-                .map(ConnectionRequestDto::fromEntity)
+                .map(r -> ConnectionRequestDto.fromEntity(r, currentUserId, profileVisibilityService))
                 .collect(Collectors.toList());
     }
 
@@ -167,7 +171,7 @@ public class ConnectionService {
             }
         }
 
-        return ConnectionRequestDto.fromEntity(request);
+        return ConnectionRequestDto.fromEntity(request, currentUserId, profileVisibilityService);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -190,7 +194,7 @@ public class ConnectionService {
         request.setStatus(ConnectionRequestStatus.REJECTED);
         request.setRespondedAt(Instant.now());
         connectionRequestRepository.save(request);
-        return ConnectionRequestDto.fromEntity(request);
+        return ConnectionRequestDto.fromEntity(request, currentUserId, profileVisibilityService);
     }
 
     @Transactional
@@ -208,7 +212,7 @@ public class ConnectionService {
         request.setStatus(ConnectionRequestStatus.CANCELLED);
         request.setRespondedAt(Instant.now());
         connectionRequestRepository.save(request);
-        return ConnectionRequestDto.fromEntity(request);
+        return ConnectionRequestDto.fromEntity(request, currentUserId, profileVisibilityService);
     }
 
     @Transactional(readOnly = true)

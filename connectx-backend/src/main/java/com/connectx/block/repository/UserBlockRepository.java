@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -13,6 +14,14 @@ import java.util.Optional;
 public interface UserBlockRepository extends JpaRepository<UserBlock, Long> {
 
     Optional<UserBlock> findByBlockerIdAndBlockedId(Long blockerId, Long blockedId);
+
+    // Batch either-direction check against a candidate set, for callers resolving many pairs at
+    // once (e.g. profile-photo visibility across a whole conversation list) instead of one query
+    // per candidate.
+    @Query("SELECT CASE WHEN b.blocker.id = :userId THEN b.blocked.id ELSE b.blocker.id END FROM UserBlock b " +
+           "WHERE (b.blocker.id = :userId AND b.blocked.id IN :otherIds) " +
+           "OR (b.blocked.id = :userId AND b.blocker.id IN :otherIds)")
+    List<Long> findBlockedEitherDirectionUserIds(@Param("userId") Long userId, @Param("otherIds") Collection<Long> otherIds);
 
     // Single indexed existence check for "is there a block between these two users, in either
     // direction" -- the shape every new-relationship authorization boundary (DIRECT send,

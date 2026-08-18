@@ -21,9 +21,15 @@ public class ConversationMemberDto {
     public ConversationMemberDto() {}
 
     public static ConversationMemberDto fromEntity(ConversationMember member) {
+        return fromEntity(member, true);
+    }
+
+    // photoVisible is resolved by the caller (ConversationService, via ProfileVisibilityService)
+    // since it depends on the viewer, which this DTO layer has no notion of.
+    public static ConversationMemberDto fromEntity(ConversationMember member, boolean photoVisible) {
         ConversationMemberDto dto = new ConversationMemberDto();
         dto.setId(member.getId());
-        dto.setUser(UserDto.fromEntity(member.getUser()));
+        dto.setUser(UserDto.fromEntity(member.getUser(), photoVisible));
         dto.setJoinedAt(member.getJoinedAt());
         dto.setLastReadMessageId(member.getLastReadMessageId());
         dto.setPinned(member.isPinned());

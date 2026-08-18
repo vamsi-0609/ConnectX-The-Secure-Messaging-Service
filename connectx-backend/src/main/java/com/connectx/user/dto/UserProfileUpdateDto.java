@@ -6,6 +6,7 @@ public class UserProfileUpdateDto {
     private String displayName;
     private String profileImageUrl;
     private String status;
+    private String profilePhotoVisibility;
 
     public UserProfileUpdateDto() {}
 
@@ -39,5 +40,13 @@ public class UserProfileUpdateDto {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public String getProfilePhotoVisibility() {
+        return profilePhotoVisibility;
+    }
+
+    public void setProfilePhotoVisibility(String profilePhotoVisibility) {
+        this.profilePhotoVisibility = profilePhotoVisibility;
     }
 }

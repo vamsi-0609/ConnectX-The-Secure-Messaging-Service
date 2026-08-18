@@ -32,6 +32,12 @@ public class User {
     @Column(length = 20)
     private String status;
 
+    // Nullable: existing rows predate this column and have no value. Application code must treat
+    // null the same as "EVERYONE" (see ProfileVisibilityService) so pre-existing users keep their
+    // current (unrestricted) photo visibility rather than being silently locked to CONNECTIONS.
+    @Column(name = "profile_photo_visibility", length = 20)
+    private String profilePhotoVisibility;
+
     @Column(name = "last_seen_at")
     private Instant lastSeenAt;
 
@@ -56,6 +62,9 @@ public class User {
         this.updatedAt = now;
         if (this.status == null) {
             this.status = "OFFLINE";
+        }
+        if (this.profilePhotoVisibility == null) {
+            this.profilePhotoVisibility = "EVERYONE";
         }
     }
 
@@ -127,6 +136,14 @@ public class User {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public String getProfilePhotoVisibility() {
+        return profilePhotoVisibility;
+    }
+
+    public void setProfilePhotoVisibility(String profilePhotoVisibility) {
+        this.profilePhotoVisibility = profilePhotoVisibility;
     }
 
     public Instant getLastSeenAt() {

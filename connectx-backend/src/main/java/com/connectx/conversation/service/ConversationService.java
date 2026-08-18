@@ -13,6 +13,7 @@ import com.connectx.conversation.repository.ConversationMemberRepository;
 import com.connectx.conversation.repository.ConversationRepository;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
+import com.connectx.user.service.ProfileVisibilityService;
 import com.connectx.message.entity.Message;
 import com.connectx.message.entity.MessageType;
 import org.slf4j.Logger;
@@ -46,6 +47,7 @@ public class ConversationService {
     private final com.connectx.media.repository.MessageMediaRepository messageMediaRepository;
     private final com.connectx.media.storage.MediaStorage mediaStorage;
     private final org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate;
+    private final ProfileVisibilityService profileVisibilityService;
 
     public ConversationService(ConversationRepository conversationRepository,
                                ConversationMemberRepository conversationMemberRepository,
@@ -58,7 +60,8 @@ public class ConversationService {
                                com.connectx.message.repository.MessageReactionRepository messageReactionRepository,
                                com.connectx.media.repository.MessageMediaRepository messageMediaRepository,
                                com.connectx.media.storage.MediaStorage mediaStorage,
-                               org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate) {
+                               org.springframework.messaging.simp.SimpMessagingTemplate messagingTemplate,
+                               ProfileVisibilityService profileVisibilityService) {
         this.conversationRepository = conversationRepository;
         this.conversationMemberRepository = conversationMemberRepository;
         this.userRepository = userRepository;
@@ -71,6 +74,7 @@ public class ConversationService {
         this.messageMediaRepository = messageMediaRepository;
         this.mediaStorage = mediaStorage;
         this.messagingTemplate = messagingTemplate;
+        this.profileVisibilityService = profileVisibilityService;
     }
 
     // READ_COMMITTED (not the MySQL default REPEATABLE READ): the pessimistic lock below can
@@ -186,10 +190,16 @@ public class ConversationService {
                 .findLatestMessagesForConversations(conversationIds, currentUserId).stream()
                 .collect(Collectors.toMap(m -> m.getConversation().getId(), m -> m));
 
+        // Same batching principle as M-04 above, applied to profile-photo visibility: resolve
+        // every member's photo visibility in one pass instead of once per conversation, which
+        // would otherwise turn an N-conversation list into an O(N) query storm.
+        List<User> allMemberUsers = allMembers.stream().map(ConversationMember::getUser).collect(Collectors.toList());
+        Map<Long, Boolean> photoVisibilityByUserId = profileVisibilityService.resolvePhotoVisibility(currentUserId, allMemberUsers);
+
         return activeConversations.stream()
                 .map(conversation -> {
                     List<ConversationMember> members = membersByConvId.getOrDefault(conversation.getId(), List.of());
-                    ConversationDto dto = buildConversationDto(conversation, currentUserId, members);
+                    ConversationDto dto = buildConversationDto(conversation, currentUserId, members, photoVisibilityByUserId);
                     applyLastMessage(dto, latestMessageByConvId.get(conversation.getId()));
                     return dto;
                 })
@@ -215,7 +225,9 @@ public class ConversationService {
     }
 
     private ConversationDto enrichConversationDtoWithMembers(Conversation conversation, Long currentUserId, List<ConversationMember> members) {
-        ConversationDto dto = buildConversationDto(conversation, currentUserId, members);
+        List<User> memberUsers = members.stream().map(ConversationMember::getUser).collect(Collectors.toList());
+        Map<Long, Boolean> photoVisibilityByUserId = profileVisibilityService.resolvePhotoVisibility(currentUserId, memberUsers);
+        ConversationDto dto = buildConversationDto(conversation, currentUserId, members, photoVisibilityByUserId);
 
         ConversationMember currentMember = members.stream()
                 .filter(m -> m.getUser() != null && m.getUser().getId().equals(currentUserId))
@@ -233,7 +245,8 @@ public class ConversationService {
         return dto;
     }
 
-    private ConversationDto buildConversationDto(Conversation conversation, Long currentUserId, List<ConversationMember> members) {
+    private ConversationDto buildConversationDto(Conversation conversation, Long currentUserId, List<ConversationMember> members,
+                                                  Map<Long, Boolean> photoVisibilityByUserId) {
         ConversationDto dto = new ConversationDto();
         dto.setId(conversation.getId());
         dto.setType(conversation.getType().name());
@@ -241,7 +254,7 @@ public class ConversationService {
         dto.setUpdatedAt(conversation.getUpdatedAt());
 
         dto.setMembers(members.stream()
-                .map(ConversationMemberDto::fromEntity)
+                .map(m -> ConversationMemberDto.fromEntity(m, photoVisibilityByUserId.getOrDefault(m.getUser().getId(), false)))
                 .collect(Collectors.toList()));
 
         ConversationMember currentMember = members.stream()
