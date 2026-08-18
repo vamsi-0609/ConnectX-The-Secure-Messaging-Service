@@ -49,6 +49,8 @@ import { ApiRequestError } from './api/apiClient';
 import { getRelationshipStatus } from './utils/relationship';
 import { keyManager } from './crypto/keyManager';
 import { decryptMessage } from './crypto/decryption';
+import { decryptWithGroupKey } from './crypto/groupCrypto';
+import { groupKeyManager } from './crypto/groupKeyManager';
 import { encryptMessage } from './crypto/encryption';
 import { ensureLocalCryptoDevice } from './crypto/deviceSession';
 import { conversationCache } from './cache/conversationCache';
@@ -383,6 +385,22 @@ export const App: React.FC = () => {
       setPinnedMessage(null);
     }
   }, [activeConversation]);
+
+  // Proactively resolves the current GROUP key for the open conversation, independent of send
+  // permission -- a MEMBER under an ADMINS_ONLY policy never renders the composer (so never
+  // triggers ensureGroupKey via a send attempt) but must still be able to decrypt incoming
+  // messages. ensureGroupKey itself is cheap to call redundantly (checks the in-memory/IndexedDB
+  // cache first, dedupes concurrent calls per group), so this doesn't add per-message chatter.
+  useEffect(() => {
+    if (!activeConversation || activeConversation.type !== 'GROUP' || !currentUser) {
+      return;
+    }
+    const group = groupInfoById[activeConversation.id];
+    if (!group) {
+      return;
+    }
+    groupKeyManager.ensureGroupKey(group, currentUser.id).catch(() => {});
+  }, [activeConversation, groupInfoById, currentUser]);
 
   const conversationsRef = useRef<Conversation[]>([]);
   const conversationPreviewsRef = useRef<Record<number, ConversationPreview>>({});
@@ -850,6 +868,7 @@ export const App: React.FC = () => {
         delete next[groupId];
         return next;
       });
+      groupKeyManager.cleanupGroup(groupId);
       await loadConversations();
     },
     [loadConversations]
@@ -871,6 +890,7 @@ export const App: React.FC = () => {
         delete next[groupId];
         return next;
       });
+      groupKeyManager.cleanupGroup(groupId);
       await loadConversations();
       showActionMessage('Group deleted.');
     },
@@ -1129,6 +1149,25 @@ export const App: React.FC = () => {
       const cached = await keyManager.getDecryptedMessage(msg.id);
       if (cached) {
         return { ...msg, decryptedContent: cached, decryptionError: false };
+      }
+
+      if (msg.groupKeyVersion != null) {
+        // GROUP TEXT message -- a single shared AES key per version, never per-peer ECDH.
+        try {
+          const groupKey = await groupKeyManager.getKeyForVersion(msg.conversationId, msg.groupKeyVersion);
+          if (!groupKey) {
+            // Expected for a member who joined after this version was rotated away (Part 12: no
+            // historical-key fetch exists by design), or if this client hasn't caught up with the
+            // current version yet.
+            return { ...msg, decryptionError: true };
+          }
+          const decrypted = await decryptWithGroupKey(groupKey, msg.ciphertext, msg.nonce);
+          await keyManager.saveDecryptedMessage(msg.id, decrypted);
+          return { ...msg, decryptedContent: decrypted, decryptionError: false };
+        } catch (err) {
+          console.warn(`[ConnectX Group E2EE] Message ${msg.id} decryption failed:`, err);
+          return { ...msg, decryptionError: true };
+        }
       }
 
       let resolvedPeerUserId: number | null = peerUserId ?? null;
@@ -1892,10 +1931,38 @@ export const App: React.FC = () => {
           delete next[targetConvId];
           return next;
         });
+        setGroupInfoById((prev) => {
+          if (prev[targetConvId] === undefined) return prev;
+          const next = { ...prev };
+          delete next[targetConvId];
+          return next;
+        });
+        groupKeyManager.cleanupGroup(targetConvId);
         if (activeConversationRef.current?.id === targetConvId) {
           setActiveConversation(null);
           setMessages([]);
         }
+      } else if (event.type === 'GROUP_KEY_ROTATION_REQUIRED') {
+        // A membership change (join/removal/leave) just advanced this group's key version --
+        // drop the in-memory cache so the next send/decrypt re-checks the server rather than
+        // trusting a version that's now behind, and refresh the group's own cached info (its
+        // authoritative keyVersion) so the composer's availability check reflects it immediately.
+        const rotatedGroupId = event.payload.conversationId as number;
+        groupKeyManager.invalidate(rotatedGroupId);
+        groupApi
+          .getGroup(rotatedGroupId)
+          .then((freshGroup) => {
+            setGroupInfoById((prev) => ({ ...prev, [rotatedGroupId]: freshGroup }));
+            // Proactively resolve the new key in the background if this group is the one
+            // currently open -- lets an eligible client self-elect as rotator right away rather
+            // than waiting for the next send attempt (pure liveness, see
+            // GroupService#markKeyRotationRequired's javadoc for the safety property this
+            // doesn't depend on).
+            if (activeConversationRef.current?.id === rotatedGroupId && currentUser) {
+              groupKeyManager.ensureGroupKey(freshGroup, currentUser.id).catch(() => {});
+            }
+          })
+          .catch(() => {});
       } else if (event.type === 'CONVERSATION_CLEARED') {
         const targetConvId = event.payload.conversationId as number;
         conversationCache.removeConversation(targetConvId);

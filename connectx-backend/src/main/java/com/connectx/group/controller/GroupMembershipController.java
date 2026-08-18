@@ -3,6 +3,7 @@ package com.connectx.group.controller;
 import com.connectx.common.response.ApiResponse;
 import com.connectx.common.security.UserPrincipal;
 import com.connectx.conversation.dto.ConversationMemberDto;
+import com.connectx.group.dto.TransferOwnershipRequestDto;
 import com.connectx.group.dto.UpdateMemberRoleRequestDto;
 import com.connectx.group.service.GroupService;
 import jakarta.validation.Valid;
@@ -51,5 +52,16 @@ public class GroupMembershipController {
             @PathVariable Long groupId) {
         groupService.leaveGroup(currentUser.getId(), groupId);
         return ResponseEntity.ok(ApiResponse.success("Left group", "Left"));
+    }
+
+    // Owner-only. Authorization is entirely GroupService#transferOwnership ->
+    // GroupAuthorizationService#requireCanTransferOwnership -- nothing here decides or duplicates it.
+    @PostMapping("/{groupId}/ownership/transfer")
+    public ResponseEntity<ApiResponse<String>> transferOwnership(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long groupId,
+            @Valid @RequestBody TransferOwnershipRequestDto dto) {
+        groupService.transferOwnership(currentUser.getId(), groupId, dto.getNewOwnerUserId());
+        return ResponseEntity.ok(ApiResponse.success("Ownership transferred", "Transferred"));
     }
 }

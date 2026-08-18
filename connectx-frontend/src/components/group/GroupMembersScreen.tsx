@@ -7,6 +7,7 @@ import { ROLE_LABEL } from '../../utils/groupLabels';
 import { groupErrorMessage } from '../../utils/groupErrorMessages';
 import { GroupMemberActionsMenu } from './GroupMemberActionsMenu';
 import { RemoveMemberConfirmDialog } from './RemoveMemberConfirmDialog';
+import { TransferOwnershipConfirmDialog } from './TransferOwnershipConfirmDialog';
 
 interface GroupMembersScreenProps {
   group: Group;
@@ -31,6 +32,7 @@ export const GroupMembersScreen: React.FC<GroupMembersScreenProps> = ({
   const [openMenuUserId, setOpenMenuUserId] = useState<number | null>(null);
   const [busyUserId, setBusyUserId] = useState<number | null>(null);
   const [removeTarget, setRemoveTarget] = useState<ConversationMember | null>(null);
+  const [transferTarget, setTransferTarget] = useState<ConversationMember | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadMembers = async () => {
@@ -85,6 +87,12 @@ export const GroupMembersScreen: React.FC<GroupMembersScreenProps> = ({
     if (!removeTarget) return;
     await runAction(removeTarget, () => groupApi.removeMember(group.id, removeTarget.user.id));
     setRemoveTarget(null);
+  };
+
+  const handleConfirmTransfer = async () => {
+    if (!transferTarget) return;
+    await runAction(transferTarget, () => groupApi.transferOwnership(group.id, transferTarget.user.id));
+    setTransferTarget(null);
   };
 
   return (
@@ -179,6 +187,10 @@ export const GroupMembersScreen: React.FC<GroupMembersScreenProps> = ({
                               setOpenMenuUserId(null);
                               setRemoveTarget(member);
                             }}
+                            onTransferOwnership={() => {
+                              setOpenMenuUserId(null);
+                              setTransferTarget(member);
+                            }}
                             onClose={() => setOpenMenuUserId(null)}
                           />
                         )}
@@ -198,6 +210,15 @@ export const GroupMembersScreen: React.FC<GroupMembersScreenProps> = ({
           removing={busyUserId === removeTarget.user.id}
           onCancel={() => setRemoveTarget(null)}
           onConfirm={handleConfirmRemove}
+        />
+      )}
+
+      {transferTarget && (
+        <TransferOwnershipConfirmDialog
+          memberName={transferTarget.user.displayName || transferTarget.user.username}
+          transferring={busyUserId === transferTarget.user.id}
+          onCancel={() => setTransferTarget(null)}
+          onConfirm={handleConfirmTransfer}
         />
       )}
     </div>

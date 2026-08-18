@@ -15,6 +15,11 @@ public class GroupDto {
     private Long createdByUserId;
     private String currentUserRole;
     private long activeMemberCount;
+    // The group's authoritative current E2EE key version (ChatGroup.keyVersion) -- the frontend
+    // compares this against its own cached/fetched wrapped key's version to detect a rotation it
+    // hasn't caught up with yet (see docs on the group key lifecycle). Never a secret by itself --
+    // just a counter -- but never accompanied by any key material in this DTO.
+    private int keyVersion;
     private Instant createdAt;
     private Instant updatedAt;
 
@@ -106,6 +111,14 @@ public class GroupDto {
 
     public void setActiveMemberCount(long activeMemberCount) {
         this.activeMemberCount = activeMemberCount;
+    }
+
+    public int getKeyVersion() {
+        return keyVersion;
+    }
+
+    public void setKeyVersion(int keyVersion) {
+        this.keyVersion = keyVersion;
     }
 
     public Instant getCreatedAt() {

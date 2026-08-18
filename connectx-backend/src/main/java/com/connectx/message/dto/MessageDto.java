@@ -23,6 +23,7 @@ public class MessageDto {
     private String encryptionAlgorithm;
     private String ciphertext;
     private String nonce;
+    private Integer groupKeyVersion;
     private Instant sentAt;
     private Instant deliveredAt;
     private Instant readAt;
@@ -81,6 +82,7 @@ public class MessageDto {
             dto.setCiphertext(message.getCiphertext());
             dto.setNonce(message.getNonce());
         }
+        dto.setGroupKeyVersion(message.getGroupKeyVersion());
         dto.setSentAt(message.getSentAt());
         dto.setDeliveredAt(message.getDeliveredAt());
         dto.setReadAt(message.getReadAt());
@@ -246,6 +248,14 @@ public class MessageDto {
 
     public void setNonce(String nonce) {
         this.nonce = nonce;
+    }
+
+    public Integer getGroupKeyVersion() {
+        return groupKeyVersion;
+    }
+
+    public void setGroupKeyVersion(Integer groupKeyVersion) {
+        this.groupKeyVersion = groupKeyVersion;
     }
 
     public Instant getSentAt() {

@@ -67,6 +67,9 @@ public class WebSocketMessageController {
         if (payload.containsKey("replyToMessageId") && payload.get("replyToMessageId") != null) {
             sendDto.setReplyToMessageId(((Number) payload.get("replyToMessageId")).longValue());
         }
+        if (payload.containsKey("groupKeyVersion") && payload.get("groupKeyVersion") != null) {
+            sendDto.setGroupKeyVersion(((Number) payload.get("groupKeyVersion")).intValue());
+        }
 
         MessageDto savedMessage = messageService.sendMessage(currentUserId, sendDto);
         log.debug("[DB SAVE] messageId={} ciphertextLength={}", savedMessage.getId(), savedMessage.getCiphertext() != null ? savedMessage.getCiphertext().length() : 0);

@@ -97,11 +97,16 @@ class GroupMessagingTest {
     }
 
     private SendMessageRequestDto textDto(Long conversationId, String ciphertext) {
+        return textDto(conversationId, ciphertext, 1);
+    }
+
+    private SendMessageRequestDto textDto(Long conversationId, String ciphertext, int groupKeyVersion) {
         SendMessageRequestDto dto = new SendMessageRequestDto();
         dto.setConversationId(conversationId);
         dto.setEncryptionAlgorithm("ECDH-P256+AES-256-GCM");
         dto.setCiphertext(ciphertext);
         dto.setNonce("nonce-" + System.nanoTime());
+        dto.setGroupKeyVersion(groupKeyVersion);
         return dto;
     }
 
@@ -311,7 +316,8 @@ class GroupMessagingTest {
 
         groupService.removeMember(owner.getId(), group.getId(), removedMember.getId());
 
-        messageService.sendMessage(owner.getId(), textDto(group.getId(), "after-removal"));
+        // Removal rotates the group key (see GroupService#markKeyRotationRequired) -- version 2.
+        messageService.sendMessage(owner.getId(), textDto(group.getId(), "after-removal", 2));
 
         Thread.sleep(500);
         assertEquals(0, hitCount.get(), "a removed member must receive no push notification for a message sent after their removal");

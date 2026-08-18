@@ -13,14 +13,19 @@ public class GroupMemberKeyDto {
     private int keyVersion;
     private String wrappedKey;
     private String wrapNonce;
+    // The user whose client wrapped this key -- the unwrapping client needs their public key
+    // (fetched separately, e.g. via the existing /users/{id}/devices/public-keys) to re-derive the
+    // same ECDH shared secret the wrapper used. Never the recipient's own id (that's always "me").
+    private Long wrappedByUserId;
 
     public GroupMemberKeyDto() {}
 
-    public GroupMemberKeyDto(Long groupId, int keyVersion, String wrappedKey, String wrapNonce) {
+    public GroupMemberKeyDto(Long groupId, int keyVersion, String wrappedKey, String wrapNonce, Long wrappedByUserId) {
         this.groupId = groupId;
         this.keyVersion = keyVersion;
         this.wrappedKey = wrappedKey;
         this.wrapNonce = wrapNonce;
+        this.wrappedByUserId = wrappedByUserId;
     }
 
     public Long getGroupId() {
@@ -53,5 +58,13 @@ public class GroupMemberKeyDto {
 
     public void setWrapNonce(String wrapNonce) {
         this.wrapNonce = wrapNonce;
+    }
+
+    public Long getWrappedByUserId() {
+        return wrappedByUserId;
+    }
+
+    public void setWrappedByUserId(Long wrappedByUserId) {
+        this.wrappedByUserId = wrappedByUserId;
     }
 }

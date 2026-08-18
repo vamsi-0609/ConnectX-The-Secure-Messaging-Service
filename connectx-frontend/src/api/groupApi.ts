@@ -1,5 +1,5 @@
 import { apiRequest } from './apiClient';
-import { ConversationMember, CreateGroupInvitationResult, Group, GroupInvitation } from '../types';
+import { ConversationMember, CreateGroupInvitationResult, Group, GroupInvitation, GroupMemberKeyPayload } from '../types';
 
 export const groupApi = {
   createGroup: (name: string, description?: string) =>
@@ -35,6 +35,26 @@ export const groupApi = {
   leaveGroup: (groupId: number) =>
     apiRequest<string>(`/groups/${groupId}/leave`, {
       method: 'POST',
+    }),
+
+  transferOwnership: (groupId: number, newOwnerUserId: number) =>
+    apiRequest<string>(`/groups/${groupId}/ownership/transfer`, {
+      method: 'POST',
+      body: JSON.stringify({ newOwnerUserId }),
+    }),
+
+  getMyGroupKey: (groupId: number) => apiRequest<GroupMemberKeyPayload>(`/groups/${groupId}/keys/me`),
+
+  submitGroupKey: (
+    groupId: number,
+    memberUserId: number,
+    wrappedKey: string,
+    wrapNonce: string,
+    keyVersion: number
+  ) =>
+    apiRequest<GroupMemberKeyPayload>(`/groups/${groupId}/keys`, {
+      method: 'POST',
+      body: JSON.stringify({ memberUserId, wrappedKey, wrapNonce, keyVersion }),
     }),
 
   deleteGroup: (groupId: number) =>

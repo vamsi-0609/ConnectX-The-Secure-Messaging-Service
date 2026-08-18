@@ -90,6 +90,8 @@ class MessageConnectionAuthorizationTest {
         dto.setEncryptionAlgorithm("ECDH-P256+AES-256-GCM");
         dto.setCiphertext(ciphertext);
         dto.setNonce("nonce-" + System.nanoTime());
+        // Ignored for DIRECT sends; a freshly created GROUP starts at key version 1.
+        dto.setGroupKeyVersion(1);
         return dto;
     }
 

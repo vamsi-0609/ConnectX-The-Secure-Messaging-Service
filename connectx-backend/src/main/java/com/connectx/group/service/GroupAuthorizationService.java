@@ -209,7 +209,7 @@ public class GroupAuthorizationService {
      * decision, matching every prior Groups stage's convention.
      */
     @Transactional(readOnly = true)
-    public void requireCanSendMessage(Long userId, Long groupId) {
+    public ChatGroup requireCanSendMessage(Long userId, Long groupId) {
         ChatGroup chatGroup = requireActiveMember(userId, groupId);
         if (chatGroup.getWhoCanSendMessages() == WhoCanSendMessages.ADMINS_ONLY) {
             GroupRole role = activeRoleOrNull(userId, groupId);
@@ -217,6 +217,7 @@ public class GroupAuthorizationService {
                 throw new ApiException(HttpStatus.FORBIDDEN, "SEND_NOT_PERMITTED", "Only group admins can send messages in this group");
             }
         }
+        return chatGroup;
     }
 
     @Transactional(readOnly = true)
@@ -455,6 +456,27 @@ public class GroupAuthorizationService {
         if (role == GroupRole.OWNER) {
             throw new ApiException(HttpStatus.CONFLICT, "OWNER_CANNOT_LEAVE",
                     "The group owner cannot leave without transferring ownership first");
+        }
+    }
+
+    /**
+     * OWNER only. Target must be a currently ACTIVE member other than the actor themselves (an
+     * owner is trivially already "owner" of themselves -- nothing to transfer). Rejects the same
+     * way requireCanRemoveMember/requireCanChangeRole do for a non-member target, so no distinct
+     * message leaks whether a given user id exists or was ever a member of this group.
+     */
+    @Transactional(readOnly = true)
+    public void requireCanTransferOwnership(Long actorUserId, Long groupId, Long newOwnerUserId) {
+        GroupRole actorRole = requireRole(actorUserId, groupId);
+        if (actorRole != GroupRole.OWNER) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "OWNER_ONLY", "Only the group owner can transfer ownership");
+        }
+        if (actorUserId.equals(newOwnerUserId)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "CANNOT_TRANSFER_TO_SELF", "You are already the owner of this group");
+        }
+        GroupRole targetRole = activeRoleOrNull(newOwnerUserId, groupId);
+        if (targetRole == null) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "NOT_GROUP_MEMBER", "Target user is not an active member of this group");
         }
     }
 

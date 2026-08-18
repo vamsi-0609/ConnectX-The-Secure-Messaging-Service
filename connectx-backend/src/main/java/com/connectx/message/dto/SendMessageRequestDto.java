@@ -30,6 +30,11 @@ public class SendMessageRequestDto {
 
     private String nonce;
 
+    // Required for a TEXT send into a GROUP conversation (null/absent for DIRECT and for
+    // non-TEXT types) -- the shared group key version this ciphertext was encrypted under. Checked
+    // against ChatGroup.keyVersion server-side (MessageService#sendMessage); never trusted as-is.
+    private Integer groupKeyVersion;
+
     private String requestId;
 
     private Long replyToMessageId;
@@ -140,6 +145,14 @@ public class SendMessageRequestDto {
 
     public void setNonce(String nonce) {
         this.nonce = nonce;
+    }
+
+    public Integer getGroupKeyVersion() {
+        return groupKeyVersion;
+    }
+
+    public void setGroupKeyVersion(Integer groupKeyVersion) {
+        this.groupKeyVersion = groupKeyVersion;
     }
 
     public String getRequestId() {

@@ -79,7 +79,7 @@ public class GroupKeyService {
                     "Submitted key version does not match the group's current key version (" + currentVersion + ")");
         }
 
-        GroupMemberKey saved = upsert(groupId, targetUserId, dto.getWrappedKey(), dto.getWrapNonce(), currentVersion);
+        GroupMemberKey saved = upsert(groupId, targetUserId, dto.getWrappedKey(), dto.getWrapNonce(), currentVersion, actorUserId);
 
         // Never log wrappedKey/wrapNonce contents -- only identifiers and the (non-secret) version.
         log.info("Group member key submitted: groupId={}, actorUserId={}, targetUserId={}, keyVersion={}",
@@ -87,20 +87,21 @@ public class GroupKeyService {
         return toDto(saved);
     }
 
-    private GroupMemberKey upsert(Long groupId, Long targetUserId, String wrappedKey, String wrapNonce, int keyVersion) {
+    private GroupMemberKey upsert(Long groupId, Long targetUserId, String wrappedKey, String wrapNonce, int keyVersion, Long wrappedByUserId) {
         return groupMemberKeyRepository.findByConversationIdAndMemberUserId(groupId, targetUserId)
                 .map(existing -> {
                     existing.setWrappedKey(wrappedKey);
                     existing.setWrapNonce(wrapNonce);
                     existing.setKeyVersion(keyVersion);
+                    existing.setWrappedByUserId(wrappedByUserId);
                     return groupMemberKeyRepository.save(existing);
                 })
-                .orElseGet(() -> insertOrFallBackToUpdate(groupId, targetUserId, wrappedKey, wrapNonce, keyVersion));
+                .orElseGet(() -> insertOrFallBackToUpdate(groupId, targetUserId, wrappedKey, wrapNonce, keyVersion, wrappedByUserId));
     }
 
-    private GroupMemberKey insertOrFallBackToUpdate(Long groupId, Long targetUserId, String wrappedKey, String wrapNonce, int keyVersion) {
+    private GroupMemberKey insertOrFallBackToUpdate(Long groupId, Long targetUserId, String wrappedKey, String wrapNonce, int keyVersion, Long wrappedByUserId) {
         try {
-            return self.insertInNewTransaction(groupId, targetUserId, wrappedKey, wrapNonce, keyVersion);
+            return self.insertInNewTransaction(groupId, targetUserId, wrappedKey, wrapNonce, keyVersion, wrappedByUserId);
         } catch (DataIntegrityViolationException e) {
             // Lost the insert race against a concurrent first-upload for the same
             // (conversation_id, member_user_id) pair -- the unique constraint from
@@ -114,13 +115,14 @@ public class GroupKeyService {
             existing.setWrappedKey(wrappedKey);
             existing.setWrapNonce(wrapNonce);
             existing.setKeyVersion(keyVersion);
+            existing.setWrappedByUserId(wrappedByUserId);
             return groupMemberKeyRepository.save(existing);
         }
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public GroupMemberKey insertInNewTransaction(Long groupId, Long targetUserId, String wrappedKey, String wrapNonce, int keyVersion) {
-        return groupMemberKeyRepository.saveAndFlush(new GroupMemberKey(groupId, targetUserId, wrappedKey, wrapNonce, keyVersion));
+    public GroupMemberKey insertInNewTransaction(Long groupId, Long targetUserId, String wrappedKey, String wrapNonce, int keyVersion, Long wrappedByUserId) {
+        return groupMemberKeyRepository.saveAndFlush(new GroupMemberKey(groupId, targetUserId, wrappedKey, wrapNonce, keyVersion, wrappedByUserId));
     }
 
     /**
@@ -142,6 +144,6 @@ public class GroupKeyService {
     }
 
     private GroupMemberKeyDto toDto(GroupMemberKey key) {
-        return new GroupMemberKeyDto(key.getConversationId(), key.getKeyVersion(), key.getWrappedKey(), key.getWrapNonce());
+        return new GroupMemberKeyDto(key.getConversationId(), key.getKeyVersion(), key.getWrappedKey(), key.getWrapNonce(), key.getWrappedByUserId());
     }
 }

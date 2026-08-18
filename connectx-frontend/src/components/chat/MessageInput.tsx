@@ -16,6 +16,8 @@ import {
   Check,
 } from 'lucide-react';
 import { encryptMessage } from '../../crypto/encryption';
+import { encryptWithGroupKey } from '../../crypto/groupCrypto';
+import { groupKeyManager } from '../../crypto/groupKeyManager';
 import { keyManager } from '../../crypto/keyManager';
 import { deviceApi } from '../../api/deviceApi';
 import { messageApi } from '../../api/messageApi';
@@ -24,7 +26,7 @@ import { MEDIA_IMAGE_ACCEPT, validateMediaImageFile } from '../../utils/mediaIma
 import { geolocationErrorMessage, resolveCurrentLocation } from '../../utils/location';
 import { CameraCaptureModal } from './CameraCaptureModal';
 import { MediaBatchPreviewModal } from './MediaBatchPreviewModal';
-import { ReplyTarget, Message } from '../../types';
+import { ReplyTarget, Message, Group } from '../../types';
 import { conversationCache } from '../../cache/conversationCache';
 import { wsClient } from '../../websocket/WebSocketClient';
 import { activityGuard } from '../../utils/activityGuard';
@@ -34,7 +36,10 @@ const TYPING_IDLE_MS = 3000;
 
 interface MessageInputProps {
   conversationId: number;
-  recipientUserId: number;
+  // Exactly one of recipientUserId (DIRECT) or (isGroup + group) must be provided.
+  recipientUserId?: number;
+  isGroup?: boolean;
+  group?: Group | null;
   currentUserId: number;
   replyTarget?: ReplyTarget | null;
   onCancelReply?: () => void;
@@ -79,6 +84,8 @@ interface MessageInputProps {
 export const MessageInput: React.FC<MessageInputProps> = ({
   conversationId,
   recipientUserId,
+  isGroup,
+  group,
   currentUserId,
   replyTarget,
   onCancelReply,
@@ -365,44 +372,69 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     onOptimisticMessage(content, '', '', 0, replyToId, clientTempId);
 
     try {
-      let recipientPublicKeys = conversationCache.getPublicKeys(recipientUserId);
-      if (!recipientPublicKeys || recipientPublicKeys.length === 0) {
-        recipientPublicKeys = await deviceApi.getUserPublicKeys(recipientUserId);
-        if (recipientPublicKeys && recipientPublicKeys.length > 0) {
-          conversationCache.setPublicKeys(recipientUserId, recipientPublicKeys);
+      if (isGroup) {
+        if (!group) {
+          throw new Error('GROUP_INFO_UNAVAILABLE');
         }
-      }
-      if (!recipientPublicKeys || recipientPublicKeys.length === 0) {
-        throw new Error('Recipient has no registered public keys on the server.');
-      }
-      const recipientDevice = recipientPublicKeys[0];
-      const recipientPublicKeyBase64 = recipientDevice.publicKey;
+        const groupKey = await groupKeyManager.ensureGroupKey(group, currentUserId);
+        if (!groupKey) {
+          throw new Error('GROUP_KEY_UNAVAILABLE');
+        }
+        const encrypted = await encryptWithGroupKey(groupKey, content);
+        await messageApi.sendMessage({
+          conversationId,
+          messageType: 'TEXT',
+          encryptionAlgorithm: 'AES-256-GCM',
+          ciphertext: encrypted.ciphertext,
+          nonce: encrypted.nonce,
+          groupKeyVersion: group.keyVersion,
+          replyToMessageId: replyToId,
+          requestId: clientTempId,
+        });
+        onMessageSent?.();
+      } else {
+        if (!recipientUserId) {
+          throw new Error('RECIPIENT_UNAVAILABLE');
+        }
+        let recipientPublicKeys = conversationCache.getPublicKeys(recipientUserId);
+        if (!recipientPublicKeys || recipientPublicKeys.length === 0) {
+          recipientPublicKeys = await deviceApi.getUserPublicKeys(recipientUserId);
+          if (recipientPublicKeys && recipientPublicKeys.length > 0) {
+            conversationCache.setPublicKeys(recipientUserId, recipientPublicKeys);
+          }
+        }
+        if (!recipientPublicKeys || recipientPublicKeys.length === 0) {
+          throw new Error('Recipient has no registered public keys on the server.');
+        }
+        const recipientDevice = recipientPublicKeys[0];
+        const recipientPublicKeyBase64 = recipientDevice.publicKey;
 
-      const senderPrivateKey = await keyManager.getPrivateKey(currentUserId);
-      if (!senderPrivateKey) {
-        throw new Error('Sender private key is missing from local browser vault.');
+        const senderPrivateKey = await keyManager.getPrivateKey(currentUserId);
+        if (!senderPrivateKey) {
+          throw new Error('Sender private key is missing from local browser vault.');
+        }
+        const senderDevice = await keyManager.getLocalDevice(currentUserId);
+        if (!senderDevice) {
+          throw new Error('Sender device metadata is missing. Please sign out and sign in again.');
+        }
+
+        const encrypted = await encryptMessage(senderPrivateKey, recipientPublicKeyBase64, content);
+
+        const sendPayload = {
+          conversationId,
+          messageType: 'TEXT' as const,
+          senderDeviceId: senderDevice.deviceId,
+          recipientDeviceId: recipientDevice.deviceId,
+          encryptionAlgorithm: 'ECDH-P256+AES-256-GCM',
+          ciphertext: encrypted.ciphertext,
+          nonce: encrypted.nonce,
+          replyToMessageId: replyToId,
+          requestId: clientTempId,
+        };
+
+        await messageApi.sendMessage(sendPayload);
+        onMessageSent?.();
       }
-      const senderDevice = await keyManager.getLocalDevice(currentUserId);
-      if (!senderDevice) {
-        throw new Error('Sender device metadata is missing. Please sign out and sign in again.');
-      }
-
-      const encrypted = await encryptMessage(senderPrivateKey, recipientPublicKeyBase64, content);
-
-      const sendPayload = {
-        conversationId,
-        messageType: 'TEXT' as const,
-        senderDeviceId: senderDevice.deviceId,
-        recipientDeviceId: recipientDevice.deviceId,
-        encryptionAlgorithm: 'ECDH-P256+AES-256-GCM',
-        ciphertext: encrypted.ciphertext,
-        nonce: encrypted.nonce,
-        replyToMessageId: replyToId,
-        requestId: clientTempId,
-      };
-
-      await messageApi.sendMessage(sendPayload);
-      onMessageSent?.();
     } catch (err: unknown) {
       console.error('[ConnectX E2EE] Message transmission failure:', err);
       // The optimistic bubble inserted above must not linger looking "sent" once the backend has
@@ -417,6 +449,16 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         message = "This user hasn't activated secure messaging yet.";
       } else if (err instanceof ApiRequestError && err.code === 'NOT_CONNECTED') {
         message = "You're no longer connected with this user. Send a new connection request to message them again.";
+      } else if (message === 'GROUP_KEY_UNAVAILABLE' || message === 'GROUP_INFO_UNAVAILABLE') {
+        message = 'Group security is being updated. Please try again shortly.';
+      } else if (err instanceof ApiRequestError && err.code === 'GROUP_KEY_VERSION_MISMATCH') {
+        // This client's cached key fell behind a rotation mid-flight -- drop it so the next
+        // attempt re-fetches/re-derives the current one instead of retrying with the same stale
+        // key indefinitely.
+        if (group) {
+          groupKeyManager.invalidate(group.id);
+        }
+        message = 'Group security was just updated. Please try sending again.';
       }
       alert(message);
       // Restore unsent text on failure
@@ -452,7 +494,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    if (!e.clipboardData) return;
+    if (isGroup || !e.clipboardData) return;
 
     const items = Array.from(e.clipboardData.items);
     const imageItem = items.find((item) => item.type.startsWith('image/'));
@@ -642,11 +684,11 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             onChange={handleDocSelected}
           />
 
-          <div className="relative flex-shrink-0 mb-1">
+          <div className={`relative flex-shrink-0 mb-1 ${isGroup ? 'invisible pointer-events-none' : ''}`}>
             <button
               type="button"
               onClick={() => setShowMediaMenu((open) => !open)}
-              disabled={busy || !!editTarget}
+              disabled={busy || !!editTarget || isGroup}
               className="p-2.5 md:p-3 text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-300 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors disabled:opacity-50"
               aria-label="Open media options"
               aria-expanded={showMediaMenu}

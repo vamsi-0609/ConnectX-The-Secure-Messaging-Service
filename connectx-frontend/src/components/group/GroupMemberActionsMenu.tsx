@@ -1,5 +1,5 @@
 import React from 'react';
-import { ShieldPlus, ShieldMinus, UserMinus, Loader2 } from 'lucide-react';
+import { ShieldPlus, ShieldMinus, UserMinus, Crown, Loader2 } from 'lucide-react';
 import { GroupRole } from '../../types';
 
 interface GroupMemberActionsMenuProps {
@@ -9,6 +9,7 @@ interface GroupMemberActionsMenuProps {
   onPromote: () => void;
   onDemote: () => void;
   onRemove: () => void;
+  onTransferOwnership: () => void;
   onClose: () => void;
 }
 
@@ -27,13 +28,18 @@ export const GroupMemberActionsMenu: React.FC<GroupMemberActionsMenuProps> = ({
   onPromote,
   onDemote,
   onRemove,
+  onTransferOwnership,
   onClose,
 }) => {
   const canChangeRole = viewerRole === 'OWNER' && targetRole !== 'OWNER';
   const canRemove =
     viewerRole === 'OWNER' ? targetRole !== 'OWNER' : viewerRole === 'ADMIN' ? targetRole === 'MEMBER' : false;
+  // Mirrors GroupAuthorizationService#requireCanTransferOwnership: owner only, target must be an
+  // active member other than the owner themselves (already guaranteed here -- this menu never
+  // renders for the group's own OWNER row).
+  const canTransferOwnership = viewerRole === 'OWNER';
 
-  if (!canChangeRole && !canRemove) return null;
+  if (!canChangeRole && !canRemove && !canTransferOwnership) return null;
 
   return (
     <>
@@ -57,6 +63,16 @@ export const GroupMemberActionsMenu: React.FC<GroupMemberActionsMenuProps> = ({
           >
             {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldMinus className="w-4 h-4" />}
             Remove as admin
+          </button>
+        )}
+        {canTransferOwnership && (
+          <button
+            onClick={onTransferOwnership}
+            disabled={busy}
+            className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-50"
+          >
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Crown className="w-4 h-4" />}
+            Make group owner
           </button>
         )}
         {canRemove && (

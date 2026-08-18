@@ -20,6 +20,12 @@ type ForwardResult = { conversationId: number; success: boolean; error?: string 
 
 const QUICK_REACTIONS = ['❤️', '😂', '👍', '😮', '😢', '🔥'];
 
+// Mirrors GroupComposerPlaceholder's own restriction check -- UI-only, never authorization
+// (MessageService/GroupAuthorizationService re-enforce who_can_send_messages server-side
+// regardless). Decides only whether to render the real composer or the placeholder here.
+const canSendInGroup = (group: Group): boolean =>
+  !(group.whoCanSendMessages === 'ADMINS_ONLY' && group.currentUserRole === 'MEMBER');
+
 interface ChatScreenProps {
   recipient: User | null;
   // GROUP conversations render GroupChatHeader/GroupComposerPlaceholder instead of the DIRECT
@@ -542,7 +548,29 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
       </main>
 
       {isGroup ? (
-        <GroupComposerPlaceholder group={group ?? null} />
+        group && group.currentUserRole && canSendInGroup(group) ? (
+          <footer className="chat-composer flex-shrink-0">
+            <MessageInput
+              conversationId={conversationId}
+              isGroup
+              group={group}
+              currentUserId={currentUserId}
+              replyTarget={replyTarget}
+              onCancelReply={() => setReplyTarget(null)}
+              editTarget={editTarget}
+              onCancelEdit={() => setEditTarget(null)}
+              onSubmitEdit={handleSubmitEdit}
+              onOptimisticMessage={onOptimisticMessage}
+              onOptimisticMessageFailed={onOptimisticMessageFailed}
+              onOptimisticImageMessage={onOptimisticImageMessage}
+              onOptimisticLocationMessage={onOptimisticLocationMessage}
+              onOptimisticDocumentMessage={onOptimisticDocumentMessage}
+              onMessageSent={onMessageSent}
+            />
+          </footer>
+        ) : (
+          <GroupComposerPlaceholder group={group ?? null} />
+        )
       ) : relationship === 'CONNECTED' ? (
         <footer className="chat-composer flex-shrink-0">
           <MessageInput

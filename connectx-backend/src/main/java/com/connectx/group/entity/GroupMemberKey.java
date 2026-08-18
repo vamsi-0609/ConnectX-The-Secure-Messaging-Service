@@ -48,6 +48,14 @@ public class GroupMemberKey {
     @Column(name = "key_version", nullable = false)
     private int keyVersion;
 
+    // Groups E2EE messaging stage (V6__group_member_key_wrapper.sql) -- the user whose client
+    // wrapped this row's key material. Required for ECDH unwrap: the unwrapping member must derive
+    // the SAME shared secret the wrapper used, which needs the wrapper's public key, not just the
+    // opaque wrapped bytes. Always set server-side from the authenticated submitting principal
+    // (see GroupKeyService#submitWrappedKey), never client-supplied.
+    @Column(name = "wrapped_by_user_id")
+    private Long wrappedByUserId;
+
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
@@ -65,6 +73,11 @@ public class GroupMemberKey {
         this.wrappedKey = wrappedKey;
         this.wrapNonce = wrapNonce;
         this.keyVersion = keyVersion;
+    }
+
+    public GroupMemberKey(Long conversationId, Long memberUserId, String wrappedKey, String wrapNonce, int keyVersion, Long wrappedByUserId) {
+        this(conversationId, memberUserId, wrappedKey, wrapNonce, keyVersion);
+        this.wrappedByUserId = wrappedByUserId;
     }
 
     public Long getId() {
@@ -113,6 +126,14 @@ public class GroupMemberKey {
 
     public void setKeyVersion(int keyVersion) {
         this.keyVersion = keyVersion;
+    }
+
+    public Long getWrappedByUserId() {
+        return wrappedByUserId;
+    }
+
+    public void setWrappedByUserId(Long wrappedByUserId) {
+        this.wrappedByUserId = wrappedByUserId;
     }
 
     public Instant getUpdatedAt() {

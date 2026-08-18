@@ -105,6 +105,9 @@ public class GroupInvitationService {
             // 4-arg overload), which is structurally impossible to hit here anyway since
             // evaluateAddMember never returns DIRECT_ADD for an INACTIVE target.
             groupService.addMember(conversation, target, GroupRole.MEMBER, actorUserId);
+            // New active member obtained access -- the shared group key must rotate so they cannot
+            // decrypt any pre-existing message (see GroupService#markKeyRotationRequired's javadoc).
+            groupService.markKeyRotationRequired(groupId);
             log.info("Group direct-add: groupId={}, actorUserId={}, targetUserId={}", groupId, actorUserId, targetUserId);
             return new CreateGroupInvitationResponseDto("DIRECT_ADDED", null);
         }
@@ -188,6 +191,9 @@ public class GroupInvitationService {
         // consent by explicitly accepting a fresh invitation. Re-checks capacity and target state
         // itself, under its own pessimistic lock (see that method's javadoc) -- not re-derived here.
         groupService.addMember(conversation, invitee, GroupRole.MEMBER, inviterId, true);
+        // New active member obtained access -- the shared group key must rotate so they cannot
+        // decrypt any pre-existing message (see GroupService#markKeyRotationRequired's javadoc).
+        groupService.markKeyRotationRequired(groupId);
 
         invitation.setStatus(GroupInvitationStatus.ACCEPTED);
         invitation.setRespondedAt(Instant.now());

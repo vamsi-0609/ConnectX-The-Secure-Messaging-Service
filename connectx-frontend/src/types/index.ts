@@ -130,6 +130,9 @@ export interface Message {
   encryptionAlgorithm?: string;
   ciphertext: string;
   nonce: string;
+  // GROUP TEXT messages only -- the shared group key version this ciphertext was encrypted under.
+  // Absent/undefined for DIRECT messages and for non-TEXT group messages.
+  groupKeyVersion?: number;
   sentAt: string;
   deliveredAt?: string;
   readAt?: string;
@@ -193,7 +196,8 @@ export interface WsEvent<T = any> {
     | 'CONVERSATION_RESTORED'
     | 'CONVERSATION_CLEARED'
     | 'TYPING_INDICATOR'
-    | 'PRESENCE_UPDATE';
+    | 'PRESENCE_UPDATE'
+    | 'GROUP_KEY_ROTATION_REQUIRED';
   requestId?: string;
   payload: T;
 }
@@ -269,8 +273,22 @@ export interface Group {
   // group fetch is itself membership-gated server-side).
   currentUserRole: GroupRole | null;
   activeMemberCount: number;
+  // Authoritative current E2EE key version (backend ChatGroup.keyVersion). Compared against the
+  // frontend's own cached/fetched wrapped key to detect a rotation this client hasn't caught up
+  // with yet -- see crypto/groupKeyManager.ts.
+  keyVersion: number;
   createdAt: string;
   updatedAt: string;
+}
+
+// Mirrors the backend's GroupMemberKeyDto exactly -- opaque wrapped key material plus who wrapped
+// it (needed to re-derive the same ECDH shared secret for unwrap). Never a plaintext key.
+export interface GroupMemberKeyPayload {
+  groupId: number;
+  keyVersion: number;
+  wrappedKey: string;
+  wrapNonce: string;
+  wrappedByUserId: number | null;
 }
 
 export type GroupInvitationStatus = 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'CANCELLED';

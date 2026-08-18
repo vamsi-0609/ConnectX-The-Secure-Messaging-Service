@@ -9,10 +9,15 @@
  */
 
 const DB_NAME = 'ConnectX_Crypto_Vault';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 const STORE_NAME = 'private_keys';
 const DEVICE_STORE_NAME = 'device_metadata';
 const DECRYPTED_MSG_STORE_NAME = 'decrypted_messages';
+// GROUP shared-key cache -- one raw AES-256 key per (groupId, keyVersion), keyed
+// `group_${groupId}_v${keyVersion}`. Never a DIRECT/identity private key -- a completely separate
+// store from STORE_NAME, matching Part 21/28's "group crypto isolated from DIRECT crypto"
+// requirement at the storage layer too.
+const GROUP_KEY_STORE_NAME = 'group_keys';
 
 export interface LocalDeviceMetadata {
   deviceId: number;
@@ -50,6 +55,9 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(DECRYPTED_MSG_STORE_NAME)) {
         db.createObjectStore(DECRYPTED_MSG_STORE_NAME);
+      }
+      if (!db.objectStoreNames.contains(GROUP_KEY_STORE_NAME)) {
+        db.createObjectStore(GROUP_KEY_STORE_NAME);
       }
     };
 
@@ -169,13 +177,61 @@ export const cryptoStorage = {
     const db = await openDB();
     return new Promise((resolve, reject) => {
       const transaction = db.transaction(
-        [STORE_NAME, DEVICE_STORE_NAME, DECRYPTED_MSG_STORE_NAME],
+        [STORE_NAME, DEVICE_STORE_NAME, DECRYPTED_MSG_STORE_NAME, GROUP_KEY_STORE_NAME],
         'readwrite'
       );
       transaction.objectStore(STORE_NAME).clear();
       transaction.objectStore(DEVICE_STORE_NAME).clear();
       transaction.objectStore(DECRYPTED_MSG_STORE_NAME).clear();
+      transaction.objectStore(GROUP_KEY_STORE_NAME).clear();
 
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+  },
+
+  // GROUP shared-key cache. Stores the raw AES key as base64 (not a CryptoKey object -- unlike
+  // STORE_NAME's non-extractable DIRECT identity keys, a GROUP key is deliberately extractable so
+  // it can be wrapped for other members; base64 is simplest to serialize into IndexedDB).
+  async saveGroupKeyRaw(groupId: number, keyVersion: number, rawBase64: string): Promise<void> {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(GROUP_KEY_STORE_NAME, 'readwrite');
+      const request = transaction.objectStore(GROUP_KEY_STORE_NAME).put(rawBase64, `group_${groupId}_v${keyVersion}`);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  },
+
+  async getGroupKeyRaw(groupId: number, keyVersion: number): Promise<string | null> {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(GROUP_KEY_STORE_NAME, 'readonly');
+      const request = transaction.objectStore(GROUP_KEY_STORE_NAME).get(`group_${groupId}_v${keyVersion}`);
+      request.onsuccess = () => resolve((request.result as string | undefined) ?? null);
+      request.onerror = () => reject(request.error);
+    });
+  },
+
+  // Removes every cached key version for one group -- used when the group is deleted or the
+  // current user leaves/is removed, so no stale group key material lingers in this browser for a
+  // group the user no longer has any relationship to.
+  async clearGroupKeys(groupId: number): Promise<void> {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(GROUP_KEY_STORE_NAME, 'readwrite');
+      const store = transaction.objectStore(GROUP_KEY_STORE_NAME);
+      const prefix = `group_${groupId}_v`;
+      const request = store.openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (cursor) {
+          if (typeof cursor.key === 'string' && cursor.key.startsWith(prefix)) {
+            cursor.delete();
+          }
+          cursor.continue();
+        }
+      };
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error);
     });

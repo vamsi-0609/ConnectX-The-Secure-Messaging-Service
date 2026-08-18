@@ -285,6 +285,75 @@ public class GroupService {
         member.setDeletedAt(now);
         conversationMemberRepository.save(member);
         groupInvitationRepository.cancelAllPendingForGroupAndInvitee(groupId, userId, now);
+        // Confidentiality-relevant membership change (removal or voluntary leave) -- the shared
+        // group key must rotate so this now-departed member cannot decrypt any future message. See
+        // markKeyRotationRequired's own javadoc for the full rationale.
+        markKeyRotationRequired(groupId);
+    }
+
+    /**
+     * Groups E2EE messaging stage: advances the group's authoritative key version whenever a
+     * membership event (join, removal, or leave) requires the shared group key to rotate --
+     * confidentiality-relevant events only. Deliberately NOT called from createGroup (the owner's
+     * initial membership is the group's starting state, not a rotation) or changeRole (a role
+     * change never affects who can decrypt -- see docs on the key lifecycle). Does not generate,
+     * wrap, or distribute the new key itself -- an authorized active client does that afterward
+     * (GroupKeyService#submitWrappedKey), reacting to seeing its own wrapped key's version fall
+     * behind this counter, or to the notification broadcast below. Locks the chat_groups row first
+     * (findByIdForUpdate, already used by addMember for the identical reason) so concurrent
+     * membership changes for the same group serialize their version bumps rather than losing one
+     * under a plain read-modify-write.
+     * <p>
+     * Package-visible: called from GroupInvitationService (join events) as well as this class
+     * (removal/leave via endMembership), both in {@code com.connectx.group.service}.
+     * <p>
+     * Notifies every remaining ACTIVE member's personal queue (never the group's
+     * {@code /topic/conversation/{id}} topic -- see the Part 15 WebSocket-delivery fix elsewhere in
+     * this stage: a departed member's still-open browser tab must not learn anything further about
+     * this group, even a content-free notice) so any currently-open client can self-elect as
+     * rotator immediately rather than waiting for someone to next open the group. Purely a liveness
+     * optimization -- the safety property (no send/read ever succeeds under a stale key) holds
+     * regardless of whether anyone is listening, since every group message send is rejected
+     * server-side unless its groupKeyVersion matches this counter exactly (MessageService).
+     */
+    void markKeyRotationRequired(Long groupId) {
+        ChatGroup chatGroup = chatGroupRepository.findByIdForUpdate(groupId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "Group not found"));
+        chatGroup.setKeyVersion(chatGroup.getKeyVersion() + 1);
+        chatGroupRepository.save(chatGroup);
+
+        List<ConversationMember> activeMembers = conversationMemberRepository
+                .findByConversationIdAndDeletedAtIsNullWithUsers(groupId);
+        WsEvent rotationEvent = WsEvent.of("GROUP_KEY_ROTATION_REQUIRED",
+                Map.of("conversationId", groupId, "keyVersion", chatGroup.getKeyVersion()));
+        for (ConversationMember member : activeMembers) {
+            if (member.getUser() != null) {
+                messagingTemplate.convertAndSendToUser(member.getUser().getUsername(), "/queue/messages", rotationEvent);
+            }
+        }
+    }
+
+    /**
+     * Groups E2EE messaging stage: OWNER-only ownership transfer. The previous OWNER becomes
+     * ADMIN (not demoted to MEMBER -- they were already trusted at OWNER level a moment ago, and
+     * ADMIN is the closer landing role, matching how promote/demote already treats ADMIN as the
+     * senior non-owner role). No key rotation: the new owner is already an ACTIVE member and
+     * already holds the current group key (ownership is a permission change, not a membership
+     * change -- see docs on the key lifecycle, same principle as changeRole never rotating).
+     */
+    @Transactional
+    public void transferOwnership(Long actorUserId, Long groupId, Long newOwnerUserId) {
+        groupAuthorizationService.requireCanTransferOwnership(actorUserId, groupId, newOwnerUserId);
+
+        ConversationMember currentOwner = conversationMemberRepository.findByConversationIdAndUserId(groupId, actorUserId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "NOT_GROUP_MEMBER", "You are not a member of this group"));
+        ConversationMember newOwner = conversationMemberRepository.findByConversationIdAndUserId(groupId, newOwnerUserId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "NOT_GROUP_MEMBER", "Target user is not an active member of this group"));
+
+        currentOwner.setRole(GroupRole.ADMIN);
+        newOwner.setRole(GroupRole.OWNER);
+        conversationMemberRepository.save(currentOwner);
+        conversationMemberRepository.save(newOwner);
     }
 
     /**
@@ -395,6 +464,7 @@ public class GroupService {
         dto.setCreatedByUserId(chatGroup.getCreatedByUser().getId());
         dto.setCurrentUserRole(viewerRole != null ? viewerRole.name() : null);
         dto.setActiveMemberCount(activeMemberCount);
+        dto.setKeyVersion(chatGroup.getKeyVersion());
         dto.setCreatedAt(chatGroup.getCreatedAt());
         dto.setUpdatedAt(chatGroup.getUpdatedAt());
         return dto;

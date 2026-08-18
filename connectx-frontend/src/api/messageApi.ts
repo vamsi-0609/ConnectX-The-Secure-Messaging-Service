@@ -29,6 +29,8 @@ export const messageApi = {
     encryptionAlgorithm?: string;
     ciphertext?: string;
     nonce?: string;
+    // GROUP TEXT sends only -- the shared group key version this ciphertext was encrypted under.
+    groupKeyVersion?: number;
     replyToMessageId?: number;
     requestId?: string;
     forwarded?: boolean;

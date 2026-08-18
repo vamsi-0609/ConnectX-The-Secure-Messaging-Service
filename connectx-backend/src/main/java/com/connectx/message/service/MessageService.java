@@ -134,6 +134,7 @@ public class MessageService {
         // PendingRequest). Without this UserConnection check, membership plus "not currently
         // blocked" was sufficient to send into any conversation the user still belonged to, even
         // with zero current relationship -- the actual bug this check closes.
+        com.connectx.group.entity.ChatGroup groupForSend = null;
         if (conversation.getType() == ConversationType.DIRECT) {
             for (Long otherMemberId : conversationMemberRepository.findMemberUserIdsExcluding(conversation.getId(), currentUserId)) {
                 if (userBlockRepository.existsEitherDirection(currentUserId, otherMemberId)) {
@@ -161,7 +162,7 @@ public class MessageService {
             // and the group's current who_can_send_messages policy. GroupAuthorizationService is
             // the sole authority for this decision, exactly as every prior Groups stage's
             // convention -- MessageService does not re-derive any of it.
-            groupAuthorizationService.requireCanSendMessage(currentUserId, conversation.getId());
+            groupForSend = groupAuthorizationService.requireCanSendMessage(currentUserId, conversation.getId());
         }
 
         MessageType messageType = dto.getMessageType() != null ? dto.getMessageType() : MessageType.TEXT;
@@ -180,6 +181,17 @@ public class MessageService {
             }
             if (dto.getNonce() == null || dto.getNonce().isBlank()) {
                 throw new ApiException(HttpStatus.BAD_REQUEST, "NONCE_REQUIRED", "Nonce is required for text messages");
+            }
+            // GROUP E2EE: this ciphertext must have been encrypted under the group's CURRENT
+            // shared key. Rejecting any other version outright (never silently rewritten to the
+            // current version) is what makes a removed/left member's stale locally-cached key
+            // actually useless for sending, and what forces a client that hasn't caught up with a
+            // rotation yet to refresh before it can send -- see docs on the group key lifecycle.
+            if (groupForSend != null) {
+                if (dto.getGroupKeyVersion() == null || dto.getGroupKeyVersion() != groupForSend.getKeyVersion()) {
+                    throw new ApiException(HttpStatus.CONFLICT, "GROUP_KEY_VERSION_MISMATCH",
+                            "Your group encryption key is out of date");
+                }
             }
         }
 
@@ -248,6 +260,9 @@ public class MessageService {
         } else {
             message.setCiphertext(dto.getCiphertext());
             message.setNonce(dto.getNonce());
+            if (groupForSend != null) {
+                message.setGroupKeyVersion(dto.getGroupKeyVersion());
+            }
         }
 
         Message savedMessage = messageRepository.save(message);
@@ -321,6 +336,7 @@ public class MessageService {
         recvPayload.put("encryptionAlgorithm", savedMessage.getEncryptionAlgorithm());
         recvPayload.put("ciphertext", messageType == MessageType.TEXT ? dto.getCiphertext() : "");
         recvPayload.put("nonce", messageType == MessageType.TEXT ? dto.getNonce() : "");
+        recvPayload.put("groupKeyVersion", savedMessage.getGroupKeyVersion());
         recvPayload.put("sentAt", savedMessage.getSentAt().toString());
         recvPayload.put("clientTempId", dto.getRequestId());
         recvPayload.put("forwarded", savedMessage.isForwarded());
@@ -345,8 +361,21 @@ public class MessageService {
                 Map.of("conversationId", conversation.getId())
         );
 
+        boolean isGroupSend = conversation.getType() == ConversationType.GROUP;
         afterCommitExecutor.runAfterCommit(() -> {
-            messagingTemplate.convertAndSend("/topic/conversation/" + conversation.getId(), recvEvent);
+            // GROUP conversations skip the shared /topic/conversation/{id} broadcast entirely --
+            // Spring's STOMP broker only re-checks subscribe-time authorization
+            // (WebSocketAuthChannelInterceptor), never per delivered message, so a member who was
+            // just removed/left but still has that topic open in an already-connected browser tab
+            // would otherwise keep receiving every new group message regardless. The per-member
+            // convertAndSendToUser loop below already correctly excludes them (broadcastRecipients
+            // is pre-filtered to currently-ACTIVE members) and is sufficient on its own for
+            // delivery to every legitimate recipient -- DIRECT keeps using the topic too since a
+            // DIRECT conversation's only two members never have this exposure (removing/leaving
+            // isn't a DIRECT concept).
+            if (!isGroupSend) {
+                messagingTemplate.convertAndSend("/topic/conversation/" + conversation.getId(), recvEvent);
+            }
 
             for (ConversationMember member : broadcastRecipients) {
                 if (member.getUser() != null) {
@@ -520,8 +549,13 @@ public class MessageService {
             Map<String, Object> unpinPayload = wasPinned ? new HashMap<>(Map.of("messageId", messageId, "conversationId", conversationId)) : null;
             WsEvent unpinnedEvent = unpinPayload != null ? WsEvent.of("MESSAGE_UNPINNED", unpinPayload) : null;
 
+            // See sendMessage's isGroupSend comment: GROUP conversations never broadcast to the
+            // shared topic, only to each currently-ACTIVE member's personal queue.
+            boolean isGroupConv = message.getConversation().getType() == ConversationType.GROUP;
             afterCommitExecutor.runAfterCommit(() -> {
-                messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, deletedEvent);
+                if (!isGroupConv) {
+                    messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, deletedEvent);
+                }
                 List<ConversationMember> members = conversationMemberRepository.findByConversationIdAndDeletedAtIsNullWithUsers(conversationId);
                 for (ConversationMember m : members) {
                     if (m.getUser() != null) {
@@ -531,7 +565,7 @@ public class MessageService {
                         }
                     }
                 }
-                if (unpinnedEvent != null) {
+                if (unpinnedEvent != null && !isGroupConv) {
                     messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, unpinnedEvent);
                 }
             });
@@ -582,8 +616,11 @@ public class MessageService {
         payload.put("editedAt", editedAt.toString());
         WsEvent editedEvent = WsEvent.of("MESSAGE_EDITED", payload);
 
+        boolean isGroupConv = message.getConversation().getType() == ConversationType.GROUP;
         afterCommitExecutor.runAfterCommit(() -> {
-            messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, editedEvent);
+            if (!isGroupConv) {
+                messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, editedEvent);
+            }
             List<ConversationMember> members = conversationMemberRepository.findByConversationIdAndDeletedAtIsNullWithUsers(conversationId);
             for (ConversationMember m : members) {
                 if (m.getUser() != null) {
@@ -634,8 +671,11 @@ public class MessageService {
         payload.put("pinnedByUsername", pinned ? currentUser.getUsername() : null);
         WsEvent pinEvent = WsEvent.of(pinned ? "MESSAGE_PINNED" : "MESSAGE_UNPINNED", payload);
 
+        boolean isGroupConv = message.getConversation().getType() == ConversationType.GROUP;
         afterCommitExecutor.runAfterCommit(() -> {
-            messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, pinEvent);
+            if (!isGroupConv) {
+                messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, pinEvent);
+            }
             List<ConversationMember> members = conversationMemberRepository.findByConversationIdAndDeletedAtIsNullWithUsers(conversationId);
             for (ConversationMember m : members) {
                 if (m.getUser() != null) {
@@ -945,8 +985,11 @@ public class MessageService {
 
         WsEvent wsEvent = WsEvent.of("MESSAGE_REACTION_UPDATE", wsPayload);
 
+        boolean isGroupConvForReaction = message.getConversation().getType() == ConversationType.GROUP;
         afterCommitExecutor.runAfterCommit(() -> {
-            messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, wsEvent);
+            if (!isGroupConvForReaction) {
+                messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, wsEvent);
+            }
             List<ConversationMember> members = conversationMemberRepository.findByConversationIdAndDeletedAtIsNullWithUsers(conversationId);
             for (ConversationMember m : members) {
                 if (m.getUser() != null) {
@@ -992,8 +1035,11 @@ public class MessageService {
 
         WsEvent wsEvent = WsEvent.of("MESSAGE_REACTION_UPDATE", wsPayload);
 
+        boolean isGroupConvForReaction = message.getConversation().getType() == ConversationType.GROUP;
         afterCommitExecutor.runAfterCommit(() -> {
-            messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, wsEvent);
+            if (!isGroupConvForReaction) {
+                messagingTemplate.convertAndSend("/topic/conversation/" + conversationId, wsEvent);
+            }
             List<ConversationMember> members = conversationMemberRepository.findByConversationIdAndDeletedAtIsNullWithUsers(conversationId);
             for (ConversationMember m : members) {
                 if (m.getUser() != null) {
