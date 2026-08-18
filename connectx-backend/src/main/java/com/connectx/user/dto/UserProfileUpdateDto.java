@@ -1,10 +1,18 @@
 package com.connectx.user.dto;
 
+/**
+ * profileImageUrl is deliberately NOT a field here: profile photos may only be set via the
+ * dedicated upload endpoint (POST /users/me/profile-photo, which always derives a safe internal
+ * storage path) or removed via DELETE /users/me/profile-photo. Accepting an arbitrary
+ * client-supplied URL through this generic PATCH previously let a caller set an external image
+ * host, which -- combined with the frontend attaching the viewer's JWT to any http(s) profile
+ * image URL -- was a credential-exfiltration vector. See docs/CONNECTX_GROUP_IMPLEMENTATION_STATE.md's
+ * pre-Groups security checkpoint for the full writeup.
+ */
 public class UserProfileUpdateDto {
 
     private String username;
     private String displayName;
-    private String profileImageUrl;
     private String status;
     private String profilePhotoVisibility;
 
@@ -24,14 +32,6 @@ public class UserProfileUpdateDto {
 
     public void setDisplayName(String displayName) {
         this.displayName = displayName;
-    }
-
-    public String getProfileImageUrl() {
-        return profileImageUrl;
-    }
-
-    public void setProfileImageUrl(String profileImageUrl) {
-        this.profileImageUrl = profileImageUrl;
     }
 
     public String getStatus() {

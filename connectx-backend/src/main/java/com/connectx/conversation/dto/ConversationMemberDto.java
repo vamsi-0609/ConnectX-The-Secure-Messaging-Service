@@ -1,13 +1,13 @@
 package com.connectx.conversation.dto;
 
 import com.connectx.conversation.entity.ConversationMember;
-import com.connectx.user.dto.UserDto;
+import com.connectx.user.dto.PublicUserDto;
 import java.time.Instant;
 
 public class ConversationMemberDto {
 
     private Long id;
-    private UserDto user;
+    private PublicUserDto user;
     private Instant joinedAt;
     private Long lastReadMessageId;
     private boolean pinned;
@@ -29,7 +29,7 @@ public class ConversationMemberDto {
     public static ConversationMemberDto fromEntity(ConversationMember member, boolean photoVisible) {
         ConversationMemberDto dto = new ConversationMemberDto();
         dto.setId(member.getId());
-        dto.setUser(UserDto.fromEntity(member.getUser(), photoVisible));
+        dto.setUser(PublicUserDto.fromEntity(member.getUser(), photoVisible));
         dto.setJoinedAt(member.getJoinedAt());
         dto.setLastReadMessageId(member.getLastReadMessageId());
         dto.setPinned(member.isPinned());
@@ -50,11 +50,11 @@ public class ConversationMemberDto {
         this.id = id;
     }
 
-    public UserDto getUser() {
+    public PublicUserDto getUser() {
         return user;
     }
 
-    public void setUser(UserDto user) {
+    public void setUser(PublicUserDto user) {
         this.user = user;
     }
 

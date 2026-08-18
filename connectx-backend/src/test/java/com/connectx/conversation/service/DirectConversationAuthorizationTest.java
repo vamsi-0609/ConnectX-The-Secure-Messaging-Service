@@ -16,7 +16,7 @@ import com.connectx.message.dto.SendMessageRequestDto;
 import com.connectx.message.entity.Message;
 import com.connectx.message.repository.MessageRepository;
 import com.connectx.message.service.MessageService;
-import com.connectx.user.dto.UserDto;
+import com.connectx.user.dto.PublicUserDto;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
 import com.connectx.user.service.UserService;
@@ -173,7 +173,7 @@ class DirectConversationAuthorizationTest {
         User a = newUser("search_a");
         User b = newUser("search_bxyz");
 
-        List<UserDto> results = userService.searchUsersByUsername("search_bxyz", a.getId());
+        List<PublicUserDto> results = userService.searchUsersByUsername("search_bxyz", a.getId());
         assertTrue(results.stream().anyMatch(u -> u.getId().equals(b.getId())), "search must still find the unconnected user");
 
         assertFalse(conversationRepository.findDirectConversationBetweenUsers(a.getId(), b.getId()).isPresent(),

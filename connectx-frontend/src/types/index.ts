@@ -3,7 +3,10 @@ export type ProfilePhotoVisibility = 'EVERYONE' | 'CONNECTIONS';
 export interface User {
   id: number;
   username: string;
-  email: string;
+  // Only present for the current user's own profile (GET /users/me, auth responses). Every
+  // "another user" view -- GET /users/{id}, search, conversation member lists -- omits it
+  // server-side entirely; never assume it's populated outside a self-profile context.
+  email?: string;
   displayName: string;
   profileImageUrl?: string;
   status: 'ONLINE' | 'OFFLINE' | 'AWAY';

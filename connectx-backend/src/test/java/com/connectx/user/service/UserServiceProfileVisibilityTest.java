@@ -47,7 +47,7 @@ class UserServiceProfileVisibilityTest {
     @Test
     void newUser_defaultsToEveryone() {
         User user = newUser("pv_default");
-        assertEquals("EVERYONE", userService.getUserById(user.getId(), user.getId()).getProfilePhotoVisibility());
+        assertEquals("EVERYONE", userService.getOwnProfile(user.getId()).getProfilePhotoVisibility());
     }
 
     @Test
@@ -69,7 +69,7 @@ class UserServiceProfileVisibilityTest {
         User user = newUser("pv_persist");
         userService.updateUserProfile(user.getId(), visibilityDto("CONNECTIONS"));
 
-        UserDto reloaded = userService.getUserById(user.getId(), user.getId());
+        UserDto reloaded = userService.getOwnProfile(user.getId());
         assertEquals("CONNECTIONS", reloaded.getProfilePhotoVisibility());
     }
 
@@ -125,7 +125,7 @@ class UserServiceProfileVisibilityTest {
         user.setProfilePhotoVisibility(null);
         userRepository.saveAndFlush(user);
 
-        assertEquals("EVERYONE", userService.getUserById(user.getId(), user.getId()).getProfilePhotoVisibility());
+        assertEquals("EVERYONE", userService.getOwnProfile(user.getId()).getProfilePhotoVisibility());
 
         UserProfileUpdateDto dto = new UserProfileUpdateDto();
         dto.setDisplayName("Legacy Updated");

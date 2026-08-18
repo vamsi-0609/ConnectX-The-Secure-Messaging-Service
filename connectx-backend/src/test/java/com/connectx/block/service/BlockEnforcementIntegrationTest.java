@@ -20,7 +20,7 @@ import com.connectx.message.dto.SendMessageRequestDto;
 import com.connectx.message.entity.Message;
 import com.connectx.message.repository.MessageRepository;
 import com.connectx.message.service.MessageService;
-import com.connectx.user.dto.UserDto;
+import com.connectx.user.dto.PublicUserDto;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
 import com.connectx.user.service.UserService;
@@ -386,7 +386,7 @@ class BlockEnforcementIntegrationTest {
         User b = newUser("searchblock_bxyz");
         blockService.blockUser(a.getId(), b.getId());
 
-        List<UserDto> results = userService.searchUsersByUsername("searchblock_bxyz", a.getId());
+        List<PublicUserDto> results = userService.searchUsersByUsername("searchblock_bxyz", a.getId());
         assertTrue(results.stream().noneMatch(u -> u.getId().equals(b.getId())),
                 "a user the searcher blocked must not appear in search results");
     }
@@ -399,7 +399,7 @@ class BlockEnforcementIntegrationTest {
         User b = newUser("searchblock2_bxyz");
         blockService.blockUser(b.getId(), a.getId());
 
-        List<UserDto> results = userService.searchUsersByUsername("searchblock2_bxyz", a.getId());
+        List<PublicUserDto> results = userService.searchUsersByUsername("searchblock2_bxyz", a.getId());
         assertTrue(results.stream().noneMatch(u -> u.getId().equals(b.getId())),
                 "a user who blocked the searcher must not appear in that searcher's results either");
     }
@@ -412,7 +412,7 @@ class BlockEnforcementIntegrationTest {
         User c = newUser("searchblock3_c");
         blockService.blockUser(a.getId(), b.getId());
 
-        List<UserDto> results = userService.searchUsersByUsername("searchblock3_bxyz", c.getId());
+        List<PublicUserDto> results = userService.searchUsersByUsername("searchblock3_bxyz", c.getId());
         assertTrue(results.stream().anyMatch(u -> u.getId().equals(b.getId())),
                 "an unrelated user's search must be unaffected by someone else's block");
     }
@@ -428,7 +428,7 @@ class BlockEnforcementIntegrationTest {
 
         blockService.unblockUser(a.getId(), b.getId());
 
-        List<UserDto> results = userService.searchUsersByUsername("searchblock4_bxyz", a.getId());
+        List<PublicUserDto> results = userService.searchUsersByUsername("searchblock4_bxyz", a.getId());
         assertTrue(results.stream().anyMatch(u -> u.getId().equals(b.getId())),
                 "unblocking must restore discoverability in search");
     }

@@ -5,6 +5,7 @@ import com.connectx.auth.repository.OtpTokenRepository;
 import com.connectx.common.exception.ApiException;
 import com.connectx.common.service.EmailService;
 import com.connectx.common.util.AfterCommitExecutor;
+import com.connectx.user.dto.PublicUserDto;
 import com.connectx.user.dto.UserDto;
 import com.connectx.user.dto.UserProfileUpdateDto;
 import com.connectx.user.entity.User;
@@ -52,13 +53,22 @@ public class UserService {
         this.profileVisibilityService = profileVisibilityService;
     }
 
-    // viewerId is the caller's own id for both /users/me (viewerId == userId, always visible)
-    // and /users/{userId} (another user's profile, subject to their profilePhotoVisibility).
-    public UserDto getUserById(Long userId, Long viewerId) {
+    // Full self-profile, including email -- only ever for GET /users/me, never for another user.
+    public UserDto getOwnProfile(Long userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User was not found"));
+        return UserDto.fromEntity(user);
+    }
+
+    // Another user's profile, for GET /users/{userId} -- deliberately returns PublicUserDto (no
+    // email) regardless of who's asking, since this is a general-purpose user lookup, not a
+    // self-profile endpoint. Photo visibility still resolves correctly when viewerId equals
+    // userId (ProfileVisibilityService treats self as always-visible).
+    public PublicUserDto getPublicProfile(Long userId, Long viewerId) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User was not found"));
         boolean photoVisible = profileVisibilityService.isProfilePhotoVisible(user, viewerId);
-        return UserDto.fromEntity(user, photoVisible);
+        return PublicUserDto.fromEntity(user, photoVisible);
     }
 
     private static final int USER_SEARCH_LIMIT = 20;
@@ -66,7 +76,7 @@ public class UserService {
     // currentUserId excludes any user blocked in either direction from the results (search
     // privacy) -- enforced in the database query itself, not filtered afterward, so a blocked
     // pair's data never reaches this method's caller in the first place.
-    public List<UserDto> searchUsersByUsername(String username, Long currentUserId) {
+    public List<PublicUserDto> searchUsersByUsername(String username, Long currentUserId) {
         if (username == null || username.trim().isEmpty()) {
             return List.of();
         }
@@ -74,7 +84,7 @@ public class UserService {
                 username.trim(), currentUserId, org.springframework.data.domain.PageRequest.of(0, USER_SEARCH_LIMIT));
         Map<Long, Boolean> photoVisibility = profileVisibilityService.resolvePhotoVisibility(currentUserId, users);
         return users.stream()
-                .map(u -> UserDto.fromEntity(u, photoVisibility.getOrDefault(u.getId(), false)))
+                .map(u -> PublicUserDto.fromEntity(u, photoVisibility.getOrDefault(u.getId(), false)))
                 .collect(Collectors.toList());
     }
 
@@ -100,10 +110,6 @@ public class UserService {
                 throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_DISPLAY_NAME", "Display name cannot exceed 50 characters");
             }
             user.setDisplayName(newDisplayName);
-        }
-
-        if (updateDto.getProfileImageUrl() != null) {
-            user.setProfileImageUrl(updateDto.getProfileImageUrl());
         }
 
         if (updateDto.getProfilePhotoVisibility() != null) {

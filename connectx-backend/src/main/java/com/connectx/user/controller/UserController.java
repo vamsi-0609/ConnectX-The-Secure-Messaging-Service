@@ -2,6 +2,7 @@ package com.connectx.user.controller;
 
 import com.connectx.common.response.ApiResponse;
 import com.connectx.common.security.UserPrincipal;
+import com.connectx.user.dto.PublicUserDto;
 import com.connectx.user.dto.UserDto;
 import com.connectx.user.dto.UserProfileUpdateDto;
 import com.connectx.user.service.UserService;
@@ -24,24 +25,24 @@ public class UserController {
     }
 
     @GetMapping("/search")
-    public ResponseEntity<ApiResponse<List<UserDto>>> searchUsers(
+    public ResponseEntity<ApiResponse<List<PublicUserDto>>> searchUsers(
             @AuthenticationPrincipal UserPrincipal currentUser,
             @RequestParam("username") String username) {
-        List<UserDto> users = userService.searchUsersByUsername(username, currentUser.getId());
+        List<PublicUserDto> users = userService.searchUsersByUsername(username, currentUser.getId());
         return ResponseEntity.ok(ApiResponse.success("User search results", users));
     }
 
     @GetMapping("/me")
     public ResponseEntity<ApiResponse<UserDto>> getCurrentUser(@AuthenticationPrincipal UserPrincipal currentUser) {
-        UserDto userDto = userService.getUserById(currentUser.getId(), currentUser.getId());
+        UserDto userDto = userService.getOwnProfile(currentUser.getId());
         return ResponseEntity.ok(ApiResponse.success("Current user profile", userDto));
     }
 
     @GetMapping("/{userId}")
-    public ResponseEntity<ApiResponse<UserDto>> getUserById(
+    public ResponseEntity<ApiResponse<PublicUserDto>> getUserById(
             @AuthenticationPrincipal UserPrincipal currentUser,
             @PathVariable Long userId) {
-        UserDto userDto = userService.getUserById(userId, currentUser.getId());
+        PublicUserDto userDto = userService.getPublicProfile(userId, currentUser.getId());
         return ResponseEntity.ok(ApiResponse.success("User details", userDto));
     }
 
