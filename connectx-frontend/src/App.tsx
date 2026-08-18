@@ -638,45 +638,47 @@ export const App: React.FC = () => {
 
       setConversationPreviews(syncedPreviews);
 
-      setConversations(() => {
-        const byId = new Map<number, Conversation>();
+      const byId = new Map<number, Conversation>();
 
-        data.forEach((conv) => {
-          byId.set(conv.id, conv);
-          pinnedConversationsRef.current.delete(conv.id);
-        });
-
-        const pinnedCutoff = Date.now() - PINNED_CONVERSATION_MAX_AGE_MS;
-        pinnedConversationsRef.current.forEach(({ conv, pinnedAt }, id) => {
-          if (pinnedAt < pinnedCutoff) {
-            // Stopped coming back from the server a while ago for some reason other
-            // than an explicit delete/restore event — stop resurrecting it forever.
-            pinnedConversationsRef.current.delete(id);
-            return;
-          }
-          if (!byId.has(id)) {
-            byId.set(id, conv);
-          }
-        });
-
-        const activeConv = activeConversationRef.current;
-        if (activeConv) {
-          const existing = byId.get(activeConv.id);
-          byId.set(activeConv.id, {
-            ...(existing ?? activeConv),
-            ...activeConv,
-            members: activeConv.members?.length ? activeConv.members : existing?.members ?? activeConv.members,
-          });
-        }
-
-        return Array.from(byId.values()).sort((a, b) => {
-          const aMeta = getConversationListMeta(a, syncedPreviews[a.id], currentUser!.id);
-          const bMeta = getConversationListMeta(b, syncedPreviews[b.id], currentUser!.id);
-          return bMeta.sortTime - aMeta.sortTime;
-        });
+      data.forEach((conv) => {
+        byId.set(conv.id, conv);
+        pinnedConversationsRef.current.delete(conv.id);
       });
+
+      const pinnedCutoff = Date.now() - PINNED_CONVERSATION_MAX_AGE_MS;
+      pinnedConversationsRef.current.forEach(({ conv, pinnedAt }, id) => {
+        if (pinnedAt < pinnedCutoff) {
+          // Stopped coming back from the server a while ago for some reason other
+          // than an explicit delete/restore event — stop resurrecting it forever.
+          pinnedConversationsRef.current.delete(id);
+          return;
+        }
+        if (!byId.has(id)) {
+          byId.set(id, conv);
+        }
+      });
+
+      const activeConv = activeConversationRef.current;
+      if (activeConv) {
+        const existing = byId.get(activeConv.id);
+        byId.set(activeConv.id, {
+          ...(existing ?? activeConv),
+          ...activeConv,
+          members: activeConv.members?.length ? activeConv.members : existing?.members ?? activeConv.members,
+        });
+      }
+
+      const merged = Array.from(byId.values()).sort((a, b) => {
+        const aMeta = getConversationListMeta(a, syncedPreviews[a.id], currentUser!.id);
+        const bMeta = getConversationListMeta(b, syncedPreviews[b.id], currentUser!.id);
+        return bMeta.sortTime - aMeta.sortTime;
+      });
+
+      setConversations(merged);
+      return merged;
     } catch (err) {
       console.warn('[ConnectX] Failed to load conversations from network (preserving cached state):', err);
+      return undefined;
     }
   }, [currentUser]);
 
@@ -814,13 +816,16 @@ export const App: React.FC = () => {
     async (invitationId: number) => {
       const invitation = await groupApi.acceptInvitation(invitationId);
       setReceivedGroupInvitations((prev) => prev.filter((i) => i.id !== invitationId));
-      await loadConversations();
-      const joined = conversations.find((c) => c.id === invitation.groupId);
+      // Read loadConversations' own return value, not the `conversations` state closure --
+      // setConversations() only takes effect on the next render, so the closure would still see
+      // the pre-accept list here and this group would never auto-open.
+      const refreshed = await loadConversations();
+      const joined = refreshed?.find((c) => c.id === invitation.groupId);
       if (joined) {
         setActiveConversation(joined);
       }
     },
-    [conversations, loadConversations]
+    [loadConversations]
   );
 
   const handleRejectGroupInvitation = useCallback(async (invitationId: number) => {
@@ -2881,6 +2886,12 @@ export const App: React.FC = () => {
           onOpenGroupInvitations={() => {
             setGroupInvitationsScopeId(undefined);
             setShowGroupInvitationsModal(true);
+            // receivedGroupInvitations/sentGroupInvitations otherwise only ever load once, at
+            // currentUser mount -- there's no WS push for invitation create/accept/reject/cancel
+            // (unlike CONVERSATION_DELETED). Refetching every time this modal opens is the
+            // cheapest way to guarantee it never shows stale data, without inventing a new
+            // real-time mechanism.
+            loadGroupInvitations();
           }}
           pendingGroupInvitationCount={receivedGroupInvitations.length}
           onOpenProfile={handleOpenProfileMenu}
@@ -2979,6 +2990,7 @@ export const App: React.FC = () => {
                   onOpenInvitations={(groupId) => {
                     setGroupInvitationsScopeId(groupId);
                     setShowGroupInvitationsModal(true);
+                    loadGroupInvitations();
                   }}
                 />
               </React.Suspense>

@@ -114,35 +114,40 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
     }
   };
 
-  if (view === 'members') {
-    return (
-      <GroupMembersScreen
-        group={group}
-        currentUserId={currentUser.id}
-        onBack={() => setView('main')}
-        onOpenAddMembers={() => setShowAddMembers(true)}
-        onMembersChanged={handleMembersChanged}
-      />
-    );
-  }
-
-  if (view === 'settings') {
-    return (
-      <GroupSettingsScreen
-        group={group}
-        onBack={() => setView('main')}
-        onGroupUpdated={onGroupUpdated}
-        onOpenMembers={() => setView('members')}
-        onOpenInvitations={() => onOpenInvitations(group.id)}
-      />
-    );
-  }
-
   const previewMembers = members.slice(0, 3);
   const canAddMembers =
     group.currentUserRole === 'OWNER' || group.currentUserRole === 'ADMIN' || group.whoCanInvite === 'ALL_MEMBERS';
 
+  // AddMembersModal (and, on the main view, the leave/delete confirm dialogs) are rendered once,
+  // below, regardless of which sub-view is active -- they're full-screen overlays, not part of any
+  // one view's own layout. Previously each sub-view (members/settings) returned early, so opening
+  // "Add members" from the Members screen set showAddMembers but the modal keyed off it lived only
+  // in the 'main' view's JSX and never rendered; using view === 'members' / 'settings' as branches
+  // in a single return (instead of three separate early returns) fixes that without changing what
+  // each view itself renders.
   return (
+    <>
+      {view === 'members' && (
+        <GroupMembersScreen
+          group={group}
+          currentUserId={currentUser.id}
+          onBack={() => setView('main')}
+          onOpenAddMembers={() => setShowAddMembers(true)}
+          onMembersChanged={handleMembersChanged}
+        />
+      )}
+
+      {view === 'settings' && (
+        <GroupSettingsScreen
+          group={group}
+          onBack={() => setView('main')}
+          onGroupUpdated={onGroupUpdated}
+          onOpenMembers={() => setView('members')}
+          onOpenInvitations={() => onOpenInvitations(group.id)}
+        />
+      )}
+
+      {view === 'main' && (
     <div className="fixed inset-0 z-40 md:static md:inset-auto md:z-20 w-full md:w-80 h-full bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800/80 flex flex-col flex-shrink-0 transition-colors duration-300 animate-slide-right overflow-y-auto text-slate-900 dark:text-white select-none">
       <div className="h-16 px-4 border-b border-slate-200 dark:border-slate-800/80 flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -277,6 +282,8 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
           />
         )}
       </div>
+    </div>
+      )}
 
       {showAddMembers && (
         <AddMembersModal
@@ -305,6 +312,6 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
           onConfirm={handleConfirmDelete}
         />
       )}
-    </div>
+    </>
   );
 };
