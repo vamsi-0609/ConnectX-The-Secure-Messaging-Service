@@ -15,7 +15,13 @@ export const userApi = {
   // uploadProfilePhoto/removeProfilePhoto below, which the backend derives a safe internal path
   // for. Sending an arbitrary profileImageUrl would now be rejected by the backend anyway (the
   // field was removed from UserProfileUpdateDto as part of closing a JWT-exfiltration path).
-  updateProfile: (data: { username?: string; displayName?: string; status?: string; profilePhotoVisibility?: string }) =>
+  updateProfile: (data: {
+    username?: string;
+    displayName?: string;
+    status?: string;
+    profilePhotoVisibility?: string;
+    groupAddPrivacy?: string;
+  }) =>
     apiRequest<User>('/users/me', {
       method: 'PATCH',
       body: JSON.stringify(data),

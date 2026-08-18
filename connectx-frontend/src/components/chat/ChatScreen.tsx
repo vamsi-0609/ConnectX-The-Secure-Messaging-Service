@@ -1,12 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { X, Copy, Trash2, Forward, Star, SmilePlus, Pin, PinOff, CornerUpLeft, Pencil } from 'lucide-react';
-import { User, Message, ReplyTarget, Conversation, ConnectionRequestDto, RelationshipStatus } from '../../types';
+import { User, Message, ReplyTarget, Conversation, ConnectionRequestDto, RelationshipStatus, Group } from '../../types';
 import { ChatHeader } from './ChatHeader';
 import { MessageFeed } from './MessageFeed';
 import { MessageInput } from './MessageInput';
 import { ChatRelationshipGate } from './ChatRelationshipGate';
 import { ChatWallpaperBackground } from './ChatWallpaperBackground';
 import { ForwardMessageModal } from './ForwardMessageModal';
+import { GroupChatHeader } from '../group/GroupChatHeader';
+import { GroupComposerPlaceholder } from '../group/GroupComposerPlaceholder';
 import {
   ChatWallpaperSetting,
   getConversationWallpaper,
@@ -20,6 +22,12 @@ const QUICK_REACTIONS = ['❤️', '😂', '👍', '😮', '😢', '🔥'];
 
 interface ChatScreenProps {
   recipient: User | null;
+  // GROUP conversations render GroupChatHeader/GroupComposerPlaceholder instead of the DIRECT
+  // ChatHeader/MessageInput/ChatRelationshipGate trio -- `recipient`/`relationship`/`sentRequest`/
+  // `receivedRequest` below are simply unused (and meaningless) for a group. `group` is best-effort
+  // (App.tsx's groupInfoById cache) and may briefly be undefined right after opening a group.
+  isGroup?: boolean;
+  group?: Group | null;
   conversationId: number;
   messages: Message[];
   currentUserId: number;
@@ -102,6 +110,8 @@ interface ChatScreenProps {
 
 export const ChatScreen: React.FC<ChatScreenProps> = ({
   recipient,
+  isGroup = false,
+  group,
   conversationId,
   messages,
   currentUserId,
@@ -457,6 +467,13 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
               </button>
             </div>
           </div>
+        ) : isGroup ? (
+          <GroupChatHeader
+            group={group ?? null}
+            showInfoDrawer={showInfoDrawer}
+            onToggleInfoDrawer={onToggleInfoDrawer}
+            onBack={onBack}
+          />
         ) : (
           <ChatHeader
             recipient={recipient}
@@ -524,7 +541,9 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
         </div>
       </main>
 
-      {relationship === 'CONNECTED' ? (
+      {isGroup ? (
+        <GroupComposerPlaceholder group={group ?? null} />
+      ) : relationship === 'CONNECTED' ? (
         <footer className="chat-composer flex-shrink-0">
           <MessageInput
             conversationId={conversationId}

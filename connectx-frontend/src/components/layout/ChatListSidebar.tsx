@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Search, Plus, Lock, Trash2, Pin, PinOff, BellOff, Archive, ArchiveRestore, MailOpen, Mail, MoreVertical, UserPlus } from 'lucide-react';
-import { User, Conversation, ConversationPreview } from '../../types';
+import { Search, Plus, Lock, Trash2, Pin, PinOff, BellOff, Archive, ArchiveRestore, MailOpen, Mail, MoreVertical, UserPlus, Users, MessageCirclePlus } from 'lucide-react';
+import { User, Conversation, ConversationPreview, Group } from '../../types';
 import { formatConversationTime } from '../../utils/messageGroups';
 import {
   getConversationListMeta,
@@ -10,6 +10,7 @@ import {
 } from '../../utils/conversationList';
 import { UserAvatar } from '../common/UserAvatar';
 import { ConnectXLogo } from '../common/ConnectXLogo';
+import { GroupAvatar } from '../group/GroupAvatar';
 
 interface ChatListSidebarProps {
   currentUser: User;
@@ -17,11 +18,18 @@ interface ChatListSidebarProps {
   activeConversationId: number | null;
   unreadConversationIds?: Set<number>;
   conversationPreviews: Record<number, ConversationPreview>;
+  // GROUP conversations carry no name/avatar on the conversation list response itself (see
+  // groupInfoById's App.tsx-side loader) -- looked up here by conversation id, best-effort ("Group"
+  // is shown until it resolves).
+  groupInfoById?: Record<number, Group>;
   onSelectConversation: (conv: Conversation) => void;
   onOpenSearch: () => void;
+  onOpenCreateGroup?: () => void;
   onOpenProfile?: () => void;
   onOpenConnectionRequests?: () => void;
   pendingConnectionRequestCount?: number;
+  onOpenGroupInvitations?: () => void;
+  pendingGroupInvitationCount?: number;
   onDeleteConversation?: (conversationId: number) => void;
   onPinConversation?: (conversationId: number) => void;
   onUnpinConversation?: (conversationId: number) => void;
@@ -37,11 +45,15 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
   activeConversationId,
   unreadConversationIds,
   conversationPreviews,
+  groupInfoById = {},
   onSelectConversation,
   onOpenSearch,
+  onOpenCreateGroup,
   onOpenProfile,
   onOpenConnectionRequests,
   pendingConnectionRequestCount = 0,
+  onOpenGroupInvitations,
+  pendingGroupInvitationCount = 0,
   onDeleteConversation,
   onPinConversation,
   onUnpinConversation,
@@ -53,6 +65,7 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [showArchived, setShowArchived] = useState(false);
   const [openMenuId, setOpenMenuId] = useState<number | null>(null);
+  const [showNewMenu, setShowNewMenu] = useState(false);
 
   const getRecipient = (conv: Conversation): User | null => {
     if (!conv.members?.length) return null;
@@ -67,11 +80,16 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
 
   const filteredConversations = conversations
     .filter((conv) => {
-      const recipient = getRecipient(conv);
-      if (!recipient) return false;
-
       const isArchived = isConversationArchived(conv, currentUser.id);
       if (showArchived !== isArchived) return false;
+
+      if (conv.type === 'GROUP') {
+        const groupName = groupInfoById[conv.id]?.name || '';
+        return groupName.toLowerCase().includes(searchQuery.toLowerCase()) || !searchQuery.trim();
+      }
+
+      const recipient = getRecipient(conv);
+      if (!recipient) return false;
 
       const matchesSearch =
         recipient.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -129,14 +147,57 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
               </button>
             )}
 
-            <button
-              onClick={onOpenSearch}
-              className="w-9 h-9 flex items-center justify-center text-white bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 rounded-xl transition-colors shadow-sm"
-              title="New conversation"
-              aria-label="New conversation"
-            >
-              <Plus className="w-4 h-4" />
-            </button>
+            {onOpenGroupInvitations && (
+              <button
+                onClick={onOpenGroupInvitations}
+                className="relative w-9 h-9 flex items-center justify-center text-slate-500 dark:text-slate-300 bg-slate-100 dark:bg-slate-800/80 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl transition-colors"
+                title="Group invitations"
+                aria-label="Group invitations"
+              >
+                <Users className="w-4 h-4" />
+                {pendingGroupInvitationCount > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 flex items-center justify-center text-[10px] font-bold text-white bg-red-500 rounded-full">
+                    {pendingGroupInvitationCount > 9 ? '9+' : pendingGroupInvitationCount}
+                  </span>
+                )}
+              </button>
+            )}
+
+            <div className="relative">
+              <button
+                onClick={() => (onOpenCreateGroup ? setShowNewMenu((v) => !v) : onOpenSearch())}
+                className="w-9 h-9 flex items-center justify-center text-white bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 rounded-xl transition-colors shadow-sm"
+                title="New chat or group"
+                aria-label="New chat or group"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+              {showNewMenu && onOpenCreateGroup && (
+                <>
+                  <div className="fixed inset-0 z-20" onClick={() => setShowNewMenu(false)} />
+                  <div className="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-30 py-1 text-sm">
+                    <button
+                      onClick={() => {
+                        setShowNewMenu(false);
+                        onOpenSearch();
+                      }}
+                      className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                    >
+                      <MessageCirclePlus className="w-4 h-4" /> New chat
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowNewMenu(false);
+                        onOpenCreateGroup();
+                      }}
+                      className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200"
+                    >
+                      <Users className="w-4 h-4" /> New group
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
 
             {onOpenProfile && (
               <button
@@ -206,8 +267,11 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
           </div>
         ) : (
           filteredConversations.map((conv) => {
-            const recipient = getRecipient(conv);
-            if (!recipient) return null;
+            const isGroup = conv.type === 'GROUP';
+            const recipient = isGroup ? null : getRecipient(conv);
+            if (!isGroup && !recipient) return null;
+            const group = isGroup ? groupInfoById[conv.id] : undefined;
+            const rowName = isGroup ? group?.name || 'Group' : recipient!.displayName || recipient!.username;
             const isActive = conv.id === activeConversationId;
             const hasUnread =
               unreadConversationIds?.has(conv.id) || isConversationManuallyUnread(conv, currentUser.id);
@@ -234,7 +298,11 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
                   <span className="absolute left-0 top-0 bottom-0 w-[3px] bg-indigo-500 rounded-r-full" />
                 )}
 
-                <UserAvatar user={recipient} size="md" passive />
+                {isGroup ? (
+                  <GroupAvatar name={rowName} avatarUrl={group?.avatarUrl} size="md" />
+                ) : (
+                  <UserAvatar user={recipient!} size="md" passive />
+                )}
 
                 {/*
                   Layout: [Name on left, Timestamp anchored to rightmost edge]
@@ -249,7 +317,7 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
                           hasUnread ? 'text-slate-900 dark:text-white' : 'text-slate-800 dark:text-slate-100'
                         }`}
                       >
-                        {recipient.displayName || recipient.username}
+                        {rowName}
                       </h3>
                       {isPinned && (
                         <span className="inline-flex items-center p-0.5 text-indigo-500 dark:text-indigo-400 flex-shrink-0" title="Pinned chat">

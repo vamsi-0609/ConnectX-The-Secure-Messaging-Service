@@ -1,5 +1,9 @@
 export type ProfilePhotoVisibility = 'EVERYONE' | 'CONNECTIONS';
 
+// "Who can add me to a group?" -- account-level privacy, not per-group. Absent/undefined means
+// ANYONE (mirrors the backend's null-means-ANYONE convention for this exact field).
+export type GroupAddPrivacy = 'ANYONE' | 'CONNECTIONS' | 'NOBODY';
+
 export interface User {
   id: number;
   username: string;
@@ -14,6 +18,7 @@ export interface User {
   createdAt: string;
   // Absent/undefined on users created before this setting existed -- treat the same as EVERYONE.
   profilePhotoVisibility?: ProfilePhotoVisibility;
+  groupAddPrivacy?: GroupAddPrivacy;
 }
 
 export interface AuthResponse {
@@ -58,6 +63,10 @@ export interface ReplyTarget {
   previewText: string;
 }
 
+// OWNER/ADMIN/MEMBER for a GROUP conversation member; null/undefined for a DIRECT one (role only
+// ever applies to groups).
+export type GroupRole = 'OWNER' | 'ADMIN' | 'MEMBER';
+
 export interface ConversationMember {
   id: number;
   user: User;
@@ -70,6 +79,7 @@ export interface ConversationMember {
   archived?: boolean;
   archivedAt?: string;
   manuallyMarkedUnread?: boolean;
+  role?: GroupRole | null;
 }
 
 export type MessageType = 'TEXT' | 'IMAGE' | 'LOCATION' | 'DOCUMENT';
@@ -235,3 +245,53 @@ export type RelationshipStatus =
   | 'REQUEST_RECEIVED'
   | 'BLOCKED_BY_ME'
   | 'NOT_CONNECTED';
+
+// ── Groups ──────────────────────────────────────────────────────────────────
+// Mirrors the backend's GroupDto exactly. The backend remains the sole authority on every one of
+// these values (whoCanInvite/whoCanSendMessages/whoCanEditGroupInfo, currentUserRole) -- the
+// frontend only ever reads them to decide what UI to show, never to make an authorization
+// decision itself.
+export type WhoCanInvite = 'OWNER_ADMIN_ONLY' | 'ALL_MEMBERS';
+export type WhoCanSendMessages = 'EVERYONE' | 'ADMINS_ONLY';
+export type WhoCanEditGroupInfo = 'OWNER_ADMIN_ONLY' | 'ALL_MEMBERS';
+
+export interface Group {
+  id: number;
+  type: string;
+  name: string;
+  description?: string;
+  avatarUrl?: string;
+  whoCanInvite: WhoCanInvite;
+  whoCanSendMessages: WhoCanSendMessages;
+  whoCanEditGroupInfo: WhoCanEditGroupInfo;
+  createdByUserId: number;
+  // Absent/null if the current caller isn't an active member (shouldn't normally happen -- every
+  // group fetch is itself membership-gated server-side).
+  currentUserRole: GroupRole | null;
+  activeMemberCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type GroupInvitationStatus = 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'CANCELLED';
+
+export interface GroupInvitation {
+  id: number;
+  groupId: number;
+  groupName: string;
+  invitee: User;
+  invitedBy: User;
+  status: GroupInvitationStatus;
+  createdAt: string;
+  respondedAt?: string;
+}
+
+// "DIRECT_ADDED" = the target was added immediately (invitation is null); "INVITATION_SENT" = a
+// PENDING invitation was created instead (invitation is populated). A denied outcome never
+// reaches this shape -- it surfaces as a thrown ApiRequestError instead.
+export type CreateGroupInvitationOutcome = 'DIRECT_ADDED' | 'INVITATION_SENT';
+
+export interface CreateGroupInvitationResult {
+  outcome: CreateGroupInvitationOutcome;
+  invitation: GroupInvitation | null;
+}

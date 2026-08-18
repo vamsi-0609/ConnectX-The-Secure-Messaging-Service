@@ -26,6 +26,15 @@ const BlockedUsersModal = React.lazy(() =>
 const SettingsModal = React.lazy(() =>
   import('./components/profile/SettingsModal').then((m) => ({ default: m.SettingsModal }))
 );
+const CreateGroupModal = React.lazy(() =>
+  import('./components/group/CreateGroupModal').then((m) => ({ default: m.CreateGroupModal }))
+);
+const GroupContactInfoDrawer = React.lazy(() =>
+  import('./components/group/GroupContactInfoDrawer').then((m) => ({ default: m.GroupContactInfoDrawer }))
+);
+const GroupInvitationsModal = React.lazy(() =>
+  import('./components/group/GroupInvitationsModal').then((m) => ({ default: m.GroupInvitationsModal }))
+);
 import { useWebSocket } from './websocket/WebSocketContext';
 import { wsClient } from './websocket/WebSocketClient';
 import { conversationApi } from './api/conversationApi';
@@ -35,6 +44,7 @@ import { deviceApi } from './api/deviceApi';
 import { authApi } from './api/authApi';
 import { connectionApi } from './api/connectionApi';
 import { blockApi } from './api/blockApi';
+import { groupApi } from './api/groupApi';
 import { ApiRequestError } from './api/apiClient';
 import { getRelationshipStatus } from './utils/relationship';
 import { keyManager } from './crypto/keyManager';
@@ -70,7 +80,10 @@ import {
   AuthResponse,
   ConversationPreview,
   ConnectionRequestDto,
+  Group,
+  GroupInvitation,
 } from './types';
+import { groupErrorMessage } from './utils/groupErrorMessages';
 import { MessageSquare, Plus, Share2, X } from 'lucide-react';
 import {
   getConversationListMeta,
@@ -256,6 +269,20 @@ export const App: React.FC = () => {
   const [showBlockedUsersModal, setShowBlockedUsersModal] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showRequestsModal, setShowRequestsModal] = useState(false);
+
+  // ── Groups (UI foundation stage -- see docs/CONNECTX_GROUP_IMPLEMENTATION_STATE.md) ──────────
+  const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
+  const [showGroupInvitationsModal, setShowGroupInvitationsModal] = useState(false);
+  // Set only when the invitations modal is opened from within a specific group's Settings screen
+  // ("Pending invitations") -- scopes both tabs to that group. Undefined when opened from the
+  // sidebar's global entry point.
+  const [groupInvitationsScopeId, setGroupInvitationsScopeId] = useState<number | undefined>(undefined);
+  // GROUP conversations carry no name/avatar/settings on the conversation-list response itself
+  // (ConversationDto has no group fields) -- fetched lazily per group id and cached here, keyed
+  // by conversation id. Never authoritative for authorization, only for display.
+  const [groupInfoById, setGroupInfoById] = useState<Record<number, Group>>({});
+  const [receivedGroupInvitations, setReceivedGroupInvitations] = useState<GroupInvitation[]>([]);
+  const [sentGroupInvitations, setSentGroupInvitations] = useState<GroupInvitation[]>([]);
 
   // Connection/blocking relationship data -- loaded in bulk once on startup (see
   // loadRelationshipData below) and kept in sync locally after each action, so
@@ -692,6 +719,124 @@ export const App: React.FC = () => {
     }
   }, [currentUser, loadRelationshipData]);
 
+  // Same shape/rationale as loadRelationshipData above, for group invitations. A failure here is
+  // similarly non-fatal -- the group invitations badge/modal just starts empty until it succeeds.
+  const loadGroupInvitations = useCallback(async () => {
+    if (!currentUser) return;
+    try {
+      const [received, sent] = await Promise.all([
+        groupApi.getReceivedInvitations(),
+        groupApi.getSentInvitations(),
+      ]);
+      setReceivedGroupInvitations(received);
+      setSentGroupInvitations(sent);
+    } catch (err) {
+      console.warn('[ConnectX] Failed to load group invitations:', err);
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (currentUser) {
+      loadGroupInvitations();
+    }
+  }, [currentUser, loadGroupInvitations]);
+
+  // GROUP conversations carry no name/avatar on the conversation-list response (ConversationDto
+  // has no group fields) -- fetch each new GROUP conversation id's details exactly once and cache
+  // by id. Re-runs whenever `conversations` changes but only ever fetches ids not already cached,
+  // so this never re-fetches an already-resolved group's info on every render.
+  useEffect(() => {
+    const missingIds = conversations
+      .filter((c) => c.type === 'GROUP' && groupInfoById[c.id] === undefined)
+      .map((c) => c.id);
+    if (missingIds.length === 0) return;
+    let cancelled = false;
+    Promise.all(
+      missingIds.map((id) =>
+        groupApi
+          .getGroup(id)
+          .then((group) => [id, group] as const)
+          .catch(() => null)
+      )
+    ).then((results) => {
+      if (cancelled) return;
+      const updates: Record<number, Group> = {};
+      results.forEach((r) => {
+        if (r) updates[r[0]] = r[1];
+      });
+      if (Object.keys(updates).length > 0) {
+        setGroupInfoById((prev) => ({ ...prev, ...updates }));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversations]);
+
+  const handleGroupCreated = useCallback(
+    (group: Group) => {
+      setGroupInfoById((prev) => ({ ...prev, [group.id]: group }));
+      setShowCreateGroupModal(false);
+      if (!currentUser) return;
+      const stubConversation: Conversation = {
+        id: group.id,
+        type: 'GROUP',
+        createdAt: group.createdAt,
+        updatedAt: group.updatedAt,
+        members: [{ id: 0, user: currentUser, joinedAt: group.createdAt, role: 'OWNER' }],
+      };
+      upsertConversation(stubConversation);
+      setActiveConversation(stubConversation);
+      loadConversations();
+    },
+    [currentUser, upsertConversation, loadConversations]
+  );
+
+  const handleGroupUpdated = useCallback((group: Group) => {
+    setGroupInfoById((prev) => ({ ...prev, [group.id]: group }));
+  }, []);
+
+  const handleAcceptGroupInvitation = useCallback(
+    async (invitationId: number) => {
+      const invitation = await groupApi.acceptInvitation(invitationId);
+      setReceivedGroupInvitations((prev) => prev.filter((i) => i.id !== invitationId));
+      await loadConversations();
+      const joined = conversations.find((c) => c.id === invitation.groupId);
+      if (joined) {
+        setActiveConversation(joined);
+      }
+    },
+    [conversations, loadConversations]
+  );
+
+  const handleRejectGroupInvitation = useCallback(async (invitationId: number) => {
+    await groupApi.rejectInvitation(invitationId);
+    setReceivedGroupInvitations((prev) => prev.filter((i) => i.id !== invitationId));
+  }, []);
+
+  const handleCancelGroupInvitation = useCallback(async (invitationId: number) => {
+    await groupApi.cancelInvitation(invitationId);
+    setSentGroupInvitations((prev) => prev.filter((i) => i.id !== invitationId));
+  }, []);
+
+  const handleLeaveGroup = useCallback(
+    async (groupId: number) => {
+      await groupApi.leaveGroup(groupId);
+      setShowInfoDrawer(false);
+      if (activeConversationRef.current?.id === groupId) {
+        setActiveConversation(null);
+      }
+      setGroupInfoById((prev) => {
+        const next = { ...prev };
+        delete next[groupId];
+        return next;
+      });
+      await loadConversations();
+    },
+    [loadConversations]
+  );
+
   const handleSendConnectionRequest = useCallback(async (userId: number) => {
     try {
       const req = await connectionApi.sendRequest(userId);
@@ -853,7 +998,9 @@ export const App: React.FC = () => {
       showSearchModal ||
       showDeviceModal ||
       showBlockedUsersModal ||
-      showSettingsModal;
+      showSettingsModal ||
+      showCreateGroupModal ||
+      showGroupInvitationsModal;
 
     if (isSubScreen) {
       // Push a synthetic history entry so there is something to pop back to
@@ -861,15 +1008,32 @@ export const App: React.FC = () => {
         window.history.pushState({ connectxNav: true }, '');
       }
     }
-  }, [activeConversation, showProfileModal, showSearchModal, showDeviceModal, showBlockedUsersModal, showSettingsModal]);
+  }, [
+    activeConversation,
+    showProfileModal,
+    showSearchModal,
+    showDeviceModal,
+    showBlockedUsersModal,
+    showSettingsModal,
+    showCreateGroupModal,
+    showGroupInvitationsModal,
+  ]);
 
   useEffect(() => {
     const handlePopState = () => {
       if (isHandlingPopRef.current) return;
       isHandlingPopRef.current = true;
 
-      // Close the topmost screen in priority order
-      if (showSettingsModal) {
+      // Close the topmost screen in priority order. Note: GroupContactInfoDrawer's internal
+      // Members/Settings drill-down views are not part of this list yet -- the hardware/gesture
+      // back button currently closes the whole drawer rather than stepping back one drill-down
+      // level (see GroupContactInfoDrawer's own header back-arrow for in-drawer navigation). Noted
+      // as a follow-up rather than solved here, to keep this stage's App.tsx changes scoped.
+      if (showGroupInvitationsModal) {
+        setShowGroupInvitationsModal(false);
+      } else if (showCreateGroupModal) {
+        setShowCreateGroupModal(false);
+      } else if (showSettingsModal) {
         setShowSettingsModal(false);
       } else if (showBlockedUsersModal) {
         setShowBlockedUsersModal(false);
@@ -884,6 +1048,8 @@ export const App: React.FC = () => {
       }
       // Re-push so a second back still works if multiple layers are open
       const stillSubScreen =
+        showGroupInvitationsModal ||
+        showCreateGroupModal ||
         showSettingsModal ||
         showBlockedUsersModal ||
         showDeviceModal ||
@@ -899,7 +1065,16 @@ export const App: React.FC = () => {
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [activeConversation, showProfileModal, showSearchModal, showDeviceModal, showBlockedUsersModal, showSettingsModal]);
+  }, [
+    activeConversation,
+    showProfileModal,
+    showSearchModal,
+    showDeviceModal,
+    showBlockedUsersModal,
+    showSettingsModal,
+    showCreateGroupModal,
+    showGroupInvitationsModal,
+  ]);
 
   const decryptSingleMessage = useCallback(
     async (msg: Message, userId: number, peerUserId?: number | null): Promise<Message> => {
@@ -2593,6 +2768,9 @@ export const App: React.FC = () => {
       })
     : undefined;
 
+  const isActiveGroup = activeConversation?.type === 'GROUP';
+  const activeGroup = isActiveGroup && activeConversation ? groupInfoById[activeConversation.id] : undefined;
+
   return (
     <div className="app-shell flex flex-col bg-slate-100 dark:bg-[#090d16] transition-colors duration-300">
       {status !== 'CONNECTED' && (
@@ -2647,10 +2825,17 @@ export const App: React.FC = () => {
           activeConversationId={activeConversation?.id || null}
           unreadConversationIds={unreadConversationIds}
           conversationPreviews={conversationPreviews}
+          groupInfoById={groupInfoById}
           onSelectConversation={handleSelectConversation}
           onOpenSearch={() => setShowSearchModal(true)}
+          onOpenCreateGroup={() => setShowCreateGroupModal(true)}
           onOpenConnectionRequests={() => setShowRequestsModal(true)}
           pendingConnectionRequestCount={receivedRequestsByUserId.size}
+          onOpenGroupInvitations={() => {
+            setGroupInvitationsScopeId(undefined);
+            setShowGroupInvitationsModal(true);
+          }}
+          pendingGroupInvitationCount={receivedGroupInvitations.length}
           onOpenProfile={async () => {
             try {
               const freshUser = await userApi.getCurrentUser();
@@ -2681,6 +2866,8 @@ export const App: React.FC = () => {
             <ChatScreen
               key={activeConversation.id}
               recipient={getRecipientUser(activeConversation)}
+              isGroup={isActiveGroup}
+              group={activeGroup}
               conversationId={activeConversation.id}
               messages={messages}
               currentUserId={currentUser.id}
@@ -2741,7 +2928,24 @@ export const App: React.FC = () => {
               onUnblockUser={handleUnblockUser}
             />
 
-            {showInfoDrawer && (
+            {showInfoDrawer && isActiveGroup && (
+              <React.Suspense fallback={null}>
+                <GroupContactInfoDrawer
+                  group={activeGroup ?? null}
+                  currentUser={currentUser}
+                  onClose={() => setShowInfoDrawer(false)}
+                  onGroupUpdated={handleGroupUpdated}
+                  onUserUpdated={handleUserUpdated}
+                  onLeaveGroup={() => handleLeaveGroup(activeConversation.id)}
+                  onOpenInvitations={(groupId) => {
+                    setGroupInvitationsScopeId(groupId);
+                    setShowGroupInvitationsModal(true);
+                  }}
+                />
+              </React.Suspense>
+            )}
+
+            {showInfoDrawer && !isActiveGroup && (
               <React.Suspense fallback={null}>
                 <ContactInfoDrawer
                   recipient={infoDrawerRecipient}
@@ -2865,6 +3069,30 @@ export const App: React.FC = () => {
                 ? getRecipientUser(activeConversation)?.displayName || getRecipientUser(activeConversation)?.username || null
                 : null
             }
+          />
+        </React.Suspense>
+      )}
+
+      {showCreateGroupModal && (
+        <React.Suspense fallback={null}>
+          <CreateGroupModal
+            currentUserId={currentUser.id}
+            onClose={() => setShowCreateGroupModal(false)}
+            onCreated={handleGroupCreated}
+          />
+        </React.Suspense>
+      )}
+
+      {showGroupInvitationsModal && (
+        <React.Suspense fallback={null}>
+          <GroupInvitationsModal
+            onClose={() => setShowGroupInvitationsModal(false)}
+            receivedInvitations={receivedGroupInvitations}
+            sentInvitations={sentGroupInvitations}
+            onAccept={handleAcceptGroupInvitation}
+            onReject={handleRejectGroupInvitation}
+            onCancel={handleCancelGroupInvitation}
+            groupIdFilter={groupInvitationsScopeId}
           />
         </React.Suspense>
       )}
