@@ -56,6 +56,18 @@ public class ConversationMember {
     @Column(name = "manually_marked_unread", nullable = false)
     private boolean manuallyMarkedUnread = false;
 
+    // Both columns are additive from V1__connection_and_group_schema.sql and stay NULL for every
+    // DIRECT conversation member -- only meaningful once a member belongs to a GROUP conversation.
+    @Enumerated(EnumType.STRING)
+    @Column(name = "role", length = 20)
+    private GroupRole role;
+
+    // Plain user id rather than a User association (matches lastReadMessageId's convention on this
+    // same entity) -- the DB-level FK from the Stage 0B migration still enforces referential
+    // integrity; the app never needs to load the inviter's full User for this field.
+    @Column(name = "invited_by_user_id")
+    private Long invitedByUserId;
+
     @PrePersist
     protected void onCreate() {
         this.joinedAt = Instant.now();
@@ -170,5 +182,21 @@ public class ConversationMember {
 
     public void setManuallyMarkedUnread(boolean manuallyMarkedUnread) {
         this.manuallyMarkedUnread = manuallyMarkedUnread;
+    }
+
+    public GroupRole getRole() {
+        return role;
+    }
+
+    public void setRole(GroupRole role) {
+        this.role = role;
+    }
+
+    public Long getInvitedByUserId() {
+        return invitedByUserId;
+    }
+
+    public void setInvitedByUserId(Long invitedByUserId) {
+        this.invitedByUserId = invitedByUserId;
     }
 }

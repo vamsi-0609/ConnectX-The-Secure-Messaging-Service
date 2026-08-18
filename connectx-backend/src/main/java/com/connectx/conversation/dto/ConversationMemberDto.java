@@ -17,6 +17,8 @@ public class ConversationMemberDto {
     private boolean archived;
     private Instant archivedAt;
     private boolean manuallyMarkedUnread;
+    // NULL for DIRECT conversation members; OWNER/ADMIN/MEMBER for GROUP members.
+    private String role;
 
     public ConversationMemberDto() {}
 
@@ -39,6 +41,7 @@ public class ConversationMemberDto {
         dto.setArchived(member.isArchived());
         dto.setArchivedAt(member.getArchivedAt());
         dto.setManuallyMarkedUnread(member.isManuallyMarkedUnread());
+        dto.setRole(member.getRole() != null ? member.getRole().name() : null);
         return dto;
     }
 
@@ -128,5 +131,13 @@ public class ConversationMemberDto {
 
     public void setManuallyMarkedUnread(boolean manuallyMarkedUnread) {
         this.manuallyMarkedUnread = manuallyMarkedUnread;
+    }
+
+    public String getRole() {
+        return role;
+    }
+
+    public void setRole(String role) {
+        this.role = role;
     }
 }
