@@ -37,7 +37,40 @@ export class WebSocketClient {
           }
         }
       });
+
+      // PWA/tab resume recovery: when the app comes back to the foreground or
+      // network comes back, check the *actual* connection state and, only if it
+      // isn't CONNECTED, kick a reconnect. connect() itself is the de-dup guard
+      // (it no-ops while already CONNECTING/CONNECTED), so it's safe for all of
+      // these to fire together without creating multiple sockets.
+      const handleResume = () => this.checkConnectionOnResume();
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          handleResume();
+        }
+      });
+      window.addEventListener('focus', handleResume);
+      window.addEventListener('online', handleResume);
     }
+  }
+
+  /**
+   * Called on visibilitychange/focus/online. Not a blind reconnect: if we're
+   * already connected, this is a no-op. Otherwise it cancels any pending
+   * backoff timer and reconnects immediately instead of waiting it out.
+   */
+  public checkConnectionOnResume() {
+    if (!this.token || this.isIntentionalDisconnect) {
+      return;
+    }
+    if (this.status === 'CONNECTED') {
+      return;
+    }
+    if (this.reconnectTimer != null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.connect();
   }
 
   public setToken(token: string | null) {
@@ -53,8 +86,18 @@ export class WebSocketClient {
       return;
     }
 
-    if (this.stompClient && this.stompClient.active) {
+    // Guard on our own status, not stompClient.active: stompjs's `active` flag only
+    // flips to false via an explicit deactivate() call, so after any *unexpected*
+    // close (network drop, backgrounded tab, server restart) it stays permanently
+    // true even though the socket is dead — which previously made this guard block
+    // every future reconnect attempt forever once a single disconnect occurred.
+    if (this.status === 'CONNECTING' || this.status === 'CONNECTED') {
       return;
+    }
+
+    if (this.stompClient) {
+      this.stompClient.deactivate();
+      this.stompClient = null;
     }
 
     this.isIntentionalDisconnect = false;

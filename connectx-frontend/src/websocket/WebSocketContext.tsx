@@ -4,6 +4,7 @@ import { ConnectionStatus, WsEvent } from '../types';
 
 interface WebSocketContextType {
   status: ConnectionStatus;
+  isOffline: boolean;
   sendEvent: (event: WsEvent) => boolean;
   subscribe: (handler: (event: WsEvent) => void) => () => void;
   reconnect: () => void;
@@ -13,6 +14,9 @@ const WebSocketContext = createContext<WebSocketContextType | null>(null);
 
 export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [status, setStatus] = useState<ConnectionStatus>(wsClient.getStatus());
+  const [isOffline, setIsOffline] = useState<boolean>(
+    typeof navigator !== 'undefined' ? !navigator.onLine : false
+  );
 
   useEffect(() => {
     const token = localStorage.getItem('connectx_token');
@@ -25,8 +29,15 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setStatus(newStatus);
     });
 
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
     return () => {
       unsubscribe();
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
     };
   }, []);
 
@@ -47,7 +58,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   return (
-    <WebSocketContext.Provider value={{ status, sendEvent, subscribe, reconnect }}>
+    <WebSocketContext.Provider value={{ status, isOffline, sendEvent, subscribe, reconnect }}>
       {children}
     </WebSocketContext.Provider>
   );

@@ -274,7 +274,26 @@ export const App: React.FC = () => {
   // see the two useEffects below and public/sw.js's notificationclick handler).
   const [pendingConversationId, setPendingConversationId] = useState<number | null>(null);
 
-  const { subscribe, reconnect, status } = useWebSocket();
+  const { subscribe, reconnect, status, isOffline } = useWebSocket();
+
+  // Connection banner UX: distinguish first-ever connect from a reconnect-after-drop,
+  // and surface a manual retry action if auto-reconnect hasn't recovered after a while
+  // (installed PWAs don't have a normal browser refresh button to fall back on).
+  const hasConnectedOnceRef = useRef(false);
+  const [showConnectionRetry, setShowConnectionRetry] = useState(false);
+  useEffect(() => {
+    if (status === 'CONNECTED') {
+      hasConnectedOnceRef.current = true;
+      setShowConnectionRetry(false);
+      return;
+    }
+    if (isOffline) {
+      setShowConnectionRetry(false);
+      return;
+    }
+    const timer = setTimeout(() => setShowConnectionRetry(true), 10000);
+    return () => clearTimeout(timer);
+  }, [status, isOffline]);
 
   const activeConversationRef = useRef<Conversation | null>(null);
   const activeConversationIdRef = useRef<number | null>(null);
@@ -2529,7 +2548,23 @@ export const App: React.FC = () => {
       {status !== 'CONNECTED' && (
         <div className="flex-shrink-0 w-full bg-amber-500/15 dark:bg-amber-950/40 border-b border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs py-1 px-3 text-center font-medium flex items-center justify-center gap-2 select-none z-50">
           <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-          <span>Connecting to server...</span>
+          <span>
+            {isOffline
+              ? "You're offline"
+              : showConnectionRetry
+              ? 'Unable to connect'
+              : hasConnectedOnceRef.current
+              ? 'Reconnecting...'
+              : 'Connecting to server...'}
+          </span>
+          {showConnectionRetry && !isOffline && (
+            <button
+              onClick={() => reconnect()}
+              className="ml-1 underline underline-offset-2 hover:text-amber-800 dark:hover:text-amber-200"
+            >
+              Retry
+            </button>
+          )}
         </div>
       )}
       {pendingShare && !activeConversation && (
