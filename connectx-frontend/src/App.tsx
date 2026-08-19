@@ -214,6 +214,7 @@ function messageFromWsPayload(payload: Record<string, unknown>): Message {
     encryptionAlgorithm: payload.encryptionAlgorithm as string | undefined,
     ciphertext: (payload.ciphertext as string) || '',
     nonce: (payload.nonce as string) || '',
+    groupKeyVersion: (payload.groupKeyVersion as number | null | undefined) ?? undefined,
     sentAt: payload.sentAt as string,
     deletedForEveryone: false,
     replyToMessageId: payload.replyToMessageId as number | undefined,
@@ -296,6 +297,13 @@ export const App: React.FC = () => {
   // (ConversationDto has no group fields) -- fetched lazily per group id and cached here, keyed
   // by conversation id. Never authoritative for authorization, only for display.
   const [groupInfoById, setGroupInfoById] = useState<Record<number, Group>>({});
+  // Mirrors groupInfoById for synchronous access inside decryptSingleMessage (a useCallback that
+  // must not take groupInfoById as a dependency -- it's called from many effects/handlers whose
+  // own dependency arrays would otherwise need to churn every time any group's info refreshes).
+  const groupInfoByIdRef = useRef<Record<number, Group>>({});
+  useEffect(() => {
+    groupInfoByIdRef.current = groupInfoById;
+  }, [groupInfoById]);
   const [receivedGroupInvitations, setReceivedGroupInvitations] = useState<GroupInvitation[]>([]);
   const [sentGroupInvitations, setSentGroupInvitations] = useState<GroupInvitation[]>([]);
 
@@ -388,9 +396,13 @@ export const App: React.FC = () => {
 
   // Proactively resolves the current GROUP key for the open conversation, independent of send
   // permission -- a MEMBER under an ADMINS_ONLY policy never renders the composer (so never
-  // triggers ensureGroupKey via a send attempt) but must still be able to decrypt incoming
-  // messages. ensureGroupKey itself is cheap to call redundantly (checks the in-memory/IndexedDB
-  // cache first, dedupes concurrent calls per group), so this doesn't add per-message chatter.
+  // triggers key resolution via a send attempt) but must still be able to decrypt incoming
+  // messages. Passive only (resolveGroupKey, never mints) -- deliberately NOT ensureGroupKey:
+  // every client with the group open would otherwise race to self-elect as rotator whenever their
+  // key happens to be missing/stale, each minting a DIFFERENT key for the same version (confirmed
+  // via live multi-user testing). Rotation is triggered explicitly and deterministically instead,
+  // right where a membership change actually happens (accept invitation, remove member) -- see
+  // those call sites' own comments.
   useEffect(() => {
     if (!activeConversation || activeConversation.type !== 'GROUP' || !currentUser) {
       return;
@@ -399,7 +411,7 @@ export const App: React.FC = () => {
     if (!group) {
       return;
     }
-    groupKeyManager.ensureGroupKey(group, currentUser.id).catch(() => {});
+    groupKeyManager.resolveGroupKey(group, currentUser.id).catch(() => {});
   }, [activeConversation, groupInfoById, currentUser]);
 
   const conversationsRef = useRef<Conversation[]>([]);
@@ -842,8 +854,21 @@ export const App: React.FC = () => {
       if (joined) {
         setActiveConversation(joined);
       }
+      // Deterministic rotation trigger: accepting an invitation always rotates the group's key
+      // server-side (GroupInvitationService#acceptInvitation -> markKeyRotationRequired) -- THIS
+      // client, having just learned it's now an active member, is the one well-defined actor that
+      // should mint and distribute the new key, rather than leaving it to whichever other open
+      // client's passive check happens to notice first (which is exactly what caused multiple
+      // clients to mint different keys for the same version in live testing).
+      if (currentUser) {
+        const freshGroup = await groupApi.getGroup(invitation.groupId).catch(() => null);
+        if (freshGroup) {
+          setGroupInfoById((prev) => ({ ...prev, [invitation.groupId]: freshGroup }));
+          groupKeyManager.ensureGroupKey(freshGroup, currentUser.id).catch(() => {});
+        }
+      }
     },
-    [loadConversations]
+    [loadConversations, currentUser]
   );
 
   const handleRejectGroupInvitation = useCallback(async (invitationId: number) => {
@@ -1154,11 +1179,41 @@ export const App: React.FC = () => {
       if (msg.groupKeyVersion != null) {
         // GROUP TEXT message -- a single shared AES key per version, never per-peer ECDH.
         try {
-          const groupKey = await groupKeyManager.getKeyForVersion(msg.conversationId, msg.groupKeyVersion);
+          let group = groupInfoByIdRef.current[msg.conversationId];
+          // A message can never legitimately carry a groupKeyVersion AHEAD of what this client's
+          // cached group info shows -- if it does, the cache itself is what's stale (e.g. a missed
+          // GROUP_KEY_ROTATION_REQUIRED notification, most often a WS-reconnect race), not the
+          // message. Re-fetch fresh before deciding "current vs. historical", rather than trusting
+          // a cache that's demonstrably behind -- otherwise a perfectly current message gets
+          // wrongly treated as historical (cache-only lookup, no active resolution) and every
+          // member who missed that one notification is stuck on "Unable to decrypt message"
+          // forever, since nothing else ever re-checks. Found via live multi-user testing.
+          if (!group || group.keyVersion < msg.groupKeyVersion) {
+            const fresh = await groupApi.getGroup(msg.conversationId).catch(() => null);
+            if (fresh) {
+              group = fresh;
+              setGroupInfoById((prev) => ({ ...prev, [msg.conversationId]: fresh }));
+            }
+          }
+          // For a message encrypted under the group's CURRENT version, actively resolve the key
+          // (resolveGroupKey: cache -> fetch/unwrap own row -- passive only, never mints) rather
+          // than only reading whatever happens to already be cached -- this is what actually fixes
+          // the key being missing the FIRST time a member opens the group (nothing else forces
+          // resolution to finish before messages are decrypted; without this, a member could
+          // permanently see "Unable to decrypt message" for perfectly current messages simply
+          // because their key resolution hadn't completed yet by the time decryption ran, since
+          // nothing here previously retried once it did). Deliberately passive (never
+          // ensureGroupKey/mint) -- a reader has no business self-electing as rotator; see
+          // groupKeyManager's own doc for why that caused real cross-client key corruption. For a
+          // genuinely HISTORICAL (older) version, only ever read the cache -- never mint or fetch
+          // (Part 12: no historical-key retrieval).
+          const groupKey =
+            group && group.keyVersion <= msg.groupKeyVersion
+              ? await groupKeyManager.resolveGroupKey(group, userId)
+              : await groupKeyManager.getKeyForVersion(msg.conversationId, msg.groupKeyVersion);
           if (!groupKey) {
-            // Expected for a member who joined after this version was rotated away (Part 12: no
-            // historical-key fetch exists by design), or if this client hasn't caught up with the
-            // current version yet.
+            // Expected for a member who joined after this version was rotated away, or if this
+            // client's key resolution itself failed (network error, etc).
             return { ...msg, decryptionError: true };
           }
           const decrypted = await decryptWithGroupKey(groupKey, msg.ciphertext, msg.nonce);
@@ -1953,13 +2008,13 @@ export const App: React.FC = () => {
           .getGroup(rotatedGroupId)
           .then((freshGroup) => {
             setGroupInfoById((prev) => ({ ...prev, [rotatedGroupId]: freshGroup }));
-            // Proactively resolve the new key in the background if this group is the one
-            // currently open -- lets an eligible client self-elect as rotator right away rather
-            // than waiting for the next send attempt (pure liveness, see
-            // GroupService#markKeyRotationRequired's javadoc for the safety property this
-            // doesn't depend on).
+            // Passive-only warm-up if this group is the one currently open (never mints --
+            // ensureGroupKey is reserved for the specific deterministic trigger points that
+            // caused this rotation in the first place; every open client reacting to this
+            // notification by self-electing as rotator is exactly how multiple clients ended up
+            // minting different keys for the same version in live testing).
             if (activeConversationRef.current?.id === rotatedGroupId && currentUser) {
-              groupKeyManager.ensureGroupKey(freshGroup, currentUser.id).catch(() => {});
+              groupKeyManager.resolveGroupKey(freshGroup, currentUser.id).catch(() => {});
             }
           })
           .catch(() => {});

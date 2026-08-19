@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Users, X, Loader2, Camera } from 'lucide-react';
 import { groupApi } from '../../api/groupApi';
+import { groupKeyManager } from '../../crypto/groupKeyManager';
 import { Group, User } from '../../types';
 import { GroupAvatar } from './GroupAvatar';
 import { GroupMemberPicker } from './GroupMemberPicker';
@@ -37,7 +38,17 @@ export const CreateGroupModal: React.FC<CreateGroupModalProps> = ({ currentUserI
       // Best-effort: one member failing to be added must never undo the group that was already
       // created, so failures here are swallowed silently -- the owner can retry from "Add
       // members" inside the group afterward.
-      await Promise.allSettled(members.map((m) => groupApi.createInvitation(group.id, m.id)));
+      const results = await Promise.allSettled(members.map((m) => groupApi.createInvitation(group.id, m.id)));
+      const anyDirectAdd = results.some((r) => r.status === 'fulfilled' && r.value.outcome === 'DIRECT_ADDED');
+      if (anyDirectAdd) {
+        // Deterministic rotation trigger -- see AddMembersModal's identical comment. The creator
+        // (this actor) is already active and present, so THIS client mints and distributes the
+        // new key rather than leaving it to whichever other open client notices first.
+        const freshGroup = await groupApi.getGroup(group.id).catch(() => null);
+        if (freshGroup) {
+          groupKeyManager.ensureGroupKey(freshGroup, currentUserId).catch(() => {});
+        }
+      }
 
       onCreated(group);
     } catch (err) {

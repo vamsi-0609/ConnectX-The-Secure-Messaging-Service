@@ -89,78 +89,112 @@ async function distributeNewKey(groupId: number, currentUserId: number, key: Cry
   );
 }
 
+async function resolveInternal(group: Group, currentUserId: number, allowRotate: boolean): Promise<CryptoKey | null> {
+  const groupId = group.id;
+  const authoritativeVersion = group.keyVersion;
+
+  const cached = memoryCache.get(groupId);
+  if (cached && cached.keyVersion >= authoritativeVersion) {
+    return cached.key;
+  }
+
+  const inFlightKey = allowRotate ? groupId : -groupId - 1; // separate slot so a passive caller never blocks on / gets blocked by an active rotation, or vice versa
+  const existing = inFlight.get(inFlightKey);
+  if (existing) {
+    return existing;
+  }
+
+  const promise = (async (): Promise<CryptoKey | null> => {
+    try {
+      const cachedRaw = await cryptoStorage.getGroupKeyRaw(groupId, authoritativeVersion);
+      if (cachedRaw) {
+        const key = await importGroupKeyRaw(cachedRaw);
+        memoryCache.set(groupId, { keyVersion: authoritativeVersion, key });
+        return key;
+      }
+
+      const row = await groupApi.getMyGroupKey(groupId).catch(() => null);
+      if (row && row.keyVersion >= authoritativeVersion) {
+        const key = await unwrapRow(currentUserId, row);
+        if (key) {
+          const rawBase64 = await exportGroupKeyRaw(key);
+          await cryptoStorage.saveGroupKeyRaw(groupId, row.keyVersion, rawBase64);
+          memoryCache.set(groupId, { keyVersion: row.keyVersion, key });
+          return key;
+        }
+        // A row exists at the right version but couldn't be unwrapped (e.g. the wrapper's
+        // public key is unavailable) -- do NOT fall through to minting a replacement key here:
+        // other members may already hold a valid key for this exact version, and distributing a
+        // different one under the same version number would silently break decryption for them.
+        return null;
+      }
+
+      if (!allowRotate) {
+        return null;
+      }
+
+      // No usable row yet (never received one, or it's strictly behind the authoritative
+      // version) -- this client self-elects as rotator. Only reached via ensureGroupKey
+      // (allowRotate=true), called from a small, deterministic set of trigger points (see that
+      // function's own doc) specifically to avoid many clients racing to mint different keys for
+      // the same version -- confirmed as a real, observed failure mode via live multi-user
+      // testing (concurrent self-election from every client's passive "group opened" check) before
+      // this active/passive split existed.
+      const newKey = await generateGroupKey();
+      const latestGroup = await groupApi.getGroup(groupId).catch(() => group);
+      if (latestGroup.keyVersion > authoritativeVersion) {
+        // Someone else already advanced the version further while we were working --
+        // restart against the newer authoritative state instead of distributing a stale one.
+        return resolveInternal(latestGroup, currentUserId, true);
+      }
+      await distributeNewKey(groupId, currentUserId, newKey, latestGroup.keyVersion);
+      const rawBase64 = await exportGroupKeyRaw(newKey);
+      await cryptoStorage.saveGroupKeyRaw(groupId, latestGroup.keyVersion, rawBase64);
+      memoryCache.set(groupId, { keyVersion: latestGroup.keyVersion, key: newKey });
+      return newKey;
+    } catch (err) {
+      console.warn('[ConnectX Group E2EE] group key resolution failed:', err);
+      return null;
+    } finally {
+      inFlight.delete(inFlightKey);
+    }
+  })();
+
+  inFlight.set(inFlightKey, promise);
+  return promise;
+}
+
 export const groupKeyManager = {
   /**
-   * Resolves the group's CURRENT shared key for sending/receiving, or null if it genuinely isn't
-   * available yet (caller should show "Group security is being updated." and block sending --
-   * never send/read under a stale or missing key).
+   * Resolves the group's CURRENT shared key, minting and distributing a brand-new one if this
+   * client can't find any usable row (self-electing as rotator). Reserved for a small,
+   * deterministic set of call sites where exactly one client is expected to be the one doing this
+   * -- the member who just accepted an invitation, the actor who just removed/left a member, or a
+   * composer about to send (the last-resort case Part 6 describes: nobody else was positioned to
+   * rotate, so whoever needs to send next does). Do NOT call this from a passive
+   * "group is open/a message arrived" check -- use resolveGroupKey for that, which never mints.
+   * Calling this from many places at once is exactly how multiple clients each mint a DIFFERENT
+   * key for the same version, observed live before this split existed (see resolveInternal).
    */
   async ensureGroupKey(group: Group, currentUserId: number): Promise<CryptoKey | null> {
     if (!group) {
       return null;
     }
-    const groupId = group.id;
-    const authoritativeVersion = group.keyVersion;
+    return resolveInternal(group, currentUserId, true);
+  },
 
-    const cached = memoryCache.get(groupId);
-    if (cached && cached.keyVersion >= authoritativeVersion) {
-      return cached.key;
+  /**
+   * Passive-only resolution: cache -> own wrapped row -> unwrap. Never mints or distributes a new
+   * key. Use this for anything that isn't one of the deterministic rotation trigger points above
+   * (decrypting an incoming/loaded message, proactively warming the key when a group is opened to
+   * read). Returns null if no key is available yet -- callers should treat that as "not ready",
+   * not as license to become a rotator themselves.
+   */
+  async resolveGroupKey(group: Group, currentUserId: number): Promise<CryptoKey | null> {
+    if (!group) {
+      return null;
     }
-
-    const existing = inFlight.get(groupId);
-    if (existing) {
-      return existing;
-    }
-
-    const promise = (async (): Promise<CryptoKey | null> => {
-      try {
-        const cachedRaw = await cryptoStorage.getGroupKeyRaw(groupId, authoritativeVersion);
-        if (cachedRaw) {
-          const key = await importGroupKeyRaw(cachedRaw);
-          memoryCache.set(groupId, { keyVersion: authoritativeVersion, key });
-          return key;
-        }
-
-        const row = await groupApi.getMyGroupKey(groupId).catch(() => null);
-        if (row && row.keyVersion >= authoritativeVersion) {
-          const key = await unwrapRow(currentUserId, row);
-          if (key) {
-            const rawBase64 = await exportGroupKeyRaw(key);
-            await cryptoStorage.saveGroupKeyRaw(groupId, row.keyVersion, rawBase64);
-            memoryCache.set(groupId, { keyVersion: row.keyVersion, key });
-            return key;
-          }
-          // A row exists at the right version but couldn't be unwrapped (e.g. the wrapper's
-          // public key is unavailable) -- do NOT fall through to minting a replacement key here:
-          // other members may already hold a valid key for this exact version, and distributing a
-          // different one under the same version number would silently break decryption for them.
-          return null;
-        }
-
-        // No usable row yet (never received one, or it's strictly behind the authoritative
-        // version) -- this client self-elects as rotator.
-        const newKey = await generateGroupKey();
-        const latestGroup = await groupApi.getGroup(groupId).catch(() => group);
-        if (latestGroup.keyVersion > authoritativeVersion) {
-          // Someone else already advanced the version further while we were working --
-          // restart against the newer authoritative state instead of distributing a stale one.
-          return groupKeyManager.ensureGroupKey(latestGroup, currentUserId);
-        }
-        await distributeNewKey(groupId, currentUserId, newKey, latestGroup.keyVersion);
-        const rawBase64 = await exportGroupKeyRaw(newKey);
-        await cryptoStorage.saveGroupKeyRaw(groupId, latestGroup.keyVersion, rawBase64);
-        memoryCache.set(groupId, { keyVersion: latestGroup.keyVersion, key: newKey });
-        return newKey;
-      } catch (err) {
-        console.warn('[ConnectX Group E2EE] ensureGroupKey failed:', err);
-        return null;
-      } finally {
-        inFlight.delete(groupId);
-      }
-    })();
-
-    inFlight.set(groupId, promise);
-    return promise;
+    return resolveInternal(group, currentUserId, false);
   },
 
   /** Synchronous best-effort lookup for a specific (possibly historical) version -- used when

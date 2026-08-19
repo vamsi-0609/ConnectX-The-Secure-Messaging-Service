@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { UserPlus, X, Loader2, Check, XCircle, Clock } from 'lucide-react';
 import { groupApi } from '../../api/groupApi';
+import { groupKeyManager } from '../../crypto/groupKeyManager';
 import { Group, User } from '../../types';
 import { GroupMemberPicker } from './GroupMemberPicker';
 import { UserAvatar } from '../common/UserAvatar';
@@ -37,9 +38,13 @@ export const AddMembersModal: React.FC<AddMembersModalProps> = ({
     const initial: ResultState[] = picked.map((user) => ({ user, status: 'pending', message: '' }));
     setResults(initial);
 
+    let anyDirectAdd = false;
     for (const user of picked) {
       try {
         const result = await groupApi.createInvitation(group.id, user.id);
+        if (result.outcome === 'DIRECT_ADDED') {
+          anyDirectAdd = true;
+        }
         setResults((prev) =>
           prev!.map((r) => (r.user.id === user.id ? { ...r, status: 'ok', message: addMemberOutcomeMessage(result.outcome) } : r))
         );
@@ -50,6 +55,16 @@ export const AddMembersModal: React.FC<AddMembersModalProps> = ({
       }
     }
     setSubmitting(false);
+    if (anyDirectAdd) {
+      // Deterministic rotation trigger: a DIRECT_ADDED member (already connected, no accept step)
+      // still rotates the group's key server-side immediately -- the inviter (this actor) is
+      // already active and present, so THIS client mints and distributes the new key rather than
+      // leaving it to whichever other open client's passive check happens to notice first.
+      const freshGroup = await groupApi.getGroup(group.id).catch(() => null);
+      if (freshGroup) {
+        groupKeyManager.ensureGroupKey(freshGroup, currentUserId).catch(() => {});
+      }
+    }
     onDone();
   };
 

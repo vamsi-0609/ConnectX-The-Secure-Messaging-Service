@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowLeft, Search, MoreVertical, UserPlus, Loader2 } from 'lucide-react';
 import { groupApi } from '../../api/groupApi';
+import { groupKeyManager } from '../../crypto/groupKeyManager';
 import { ConversationMember, Group, GroupRole } from '../../types';
 import { UserAvatar } from '../common/UserAvatar';
 import { ROLE_LABEL } from '../../utils/groupLabels';
@@ -87,6 +88,16 @@ export const GroupMembersScreen: React.FC<GroupMembersScreenProps> = ({
     if (!removeTarget) return;
     await runAction(removeTarget, () => groupApi.removeMember(group.id, removeTarget.user.id));
     setRemoveTarget(null);
+    // Deterministic rotation trigger: removal always rotates the group's key server-side
+    // (GroupService#endMembership -> markKeyRotationRequired) -- the ACTOR performing the removal
+    // is already active and present right now, so THIS client mints and distributes the new key
+    // rather than leaving it to whichever other open client's passive check happens to notice
+    // first (multiple such clients minting different keys for the same version is a real failure
+    // mode confirmed via live multi-user testing).
+    const freshGroup = await groupApi.getGroup(group.id).catch(() => null);
+    if (freshGroup) {
+      groupKeyManager.ensureGroupKey(freshGroup, currentUserId).catch(() => {});
+    }
   };
 
   const handleConfirmTransfer = async () => {

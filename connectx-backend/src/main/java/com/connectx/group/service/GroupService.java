@@ -17,6 +17,7 @@ import com.connectx.group.entity.WhoCanInvite;
 import com.connectx.group.entity.WhoCanSendMessages;
 import com.connectx.group.repository.ChatGroupRepository;
 import com.connectx.group.repository.GroupInvitationRepository;
+import com.connectx.common.util.AfterCommitExecutor;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
 import com.connectx.user.service.ProfileVisibilityService;
@@ -54,6 +55,7 @@ public class GroupService {
     private final ProfileVisibilityService profileVisibilityService;
     private final GroupAuthorizationService groupAuthorizationService;
     private final SimpMessagingTemplate messagingTemplate;
+    private final AfterCommitExecutor afterCommitExecutor;
 
     public GroupService(ConversationRepository conversationRepository,
                          ConversationMemberRepository conversationMemberRepository,
@@ -62,7 +64,8 @@ public class GroupService {
                          UserRepository userRepository,
                          ProfileVisibilityService profileVisibilityService,
                          GroupAuthorizationService groupAuthorizationService,
-                         SimpMessagingTemplate messagingTemplate) {
+                         SimpMessagingTemplate messagingTemplate,
+                         AfterCommitExecutor afterCommitExecutor) {
         this.conversationRepository = conversationRepository;
         this.conversationMemberRepository = conversationMemberRepository;
         this.chatGroupRepository = chatGroupRepository;
@@ -71,6 +74,7 @@ public class GroupService {
         this.profileVisibilityService = profileVisibilityService;
         this.groupAuthorizationService = groupAuthorizationService;
         this.messagingTemplate = messagingTemplate;
+        this.afterCommitExecutor = afterCommitExecutor;
     }
 
     @Transactional
@@ -321,16 +325,32 @@ public class GroupService {
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "Group not found"));
         chatGroup.setKeyVersion(chatGroup.getKeyVersion() + 1);
         chatGroupRepository.save(chatGroup);
+        int newVersion = chatGroup.getKeyVersion();
 
         List<ConversationMember> activeMembers = conversationMemberRepository
                 .findByConversationIdAndDeletedAtIsNullWithUsers(groupId);
-        WsEvent rotationEvent = WsEvent.of("GROUP_KEY_ROTATION_REQUIRED",
-                Map.of("conversationId", groupId, "keyVersion", chatGroup.getKeyVersion()));
-        for (ConversationMember member : activeMembers) {
-            if (member.getUser() != null) {
-                messagingTemplate.convertAndSendToUser(member.getUser().getUsername(), "/queue/messages", rotationEvent);
+        List<String> usernames = activeMembers.stream()
+                .filter(m -> m.getUser() != null)
+                .map(m -> m.getUser().getUsername())
+                .collect(Collectors.toList());
+
+        // Deliberately deferred until the surrounding transaction actually COMMITS (matching
+        // MessageService's established convention for every WS broadcast it sends) rather than
+        // fired synchronously mid-transaction: the whole point of this notification is "go
+        // re-fetch the group, its keyVersion just changed" -- sending it before the UPDATE is even
+        // flushed/committed means a receiving client's immediate re-fetch can race the write and
+        // observe the OLD version, silently discarding the notification's entire purpose. Found via
+        // live multi-user testing: the sender's own client kept re-reading a stale keyVersion and
+        // failing every group-message send with GROUP_KEY_VERSION_MISMATCH even after retrying,
+        // because the "rotation happened, go refetch" signal always arrived before the row was
+        // actually committed.
+        afterCommitExecutor.runAfterCommit(() -> {
+            WsEvent rotationEvent = WsEvent.of("GROUP_KEY_ROTATION_REQUIRED",
+                    Map.of("conversationId", groupId, "keyVersion", newVersion));
+            for (String username : usernames) {
+                messagingTemplate.convertAndSendToUser(username, "/queue/messages", rotationEvent);
             }
-        }
+        });
     }
 
     /**
