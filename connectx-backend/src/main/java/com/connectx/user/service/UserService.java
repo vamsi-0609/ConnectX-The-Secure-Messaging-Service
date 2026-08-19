@@ -14,6 +14,7 @@ import com.connectx.user.repository.UserRepository;
 import com.connectx.user.storage.ProfileImageStorage;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -240,18 +241,44 @@ public class UserService {
         return new com.connectx.user.dto.UserIdentityKeyDto(user.getMasterPublicKey(), user.getMasterPrivateKey());
     }
 
-    @Transactional
+    /**
+     * Create-only. The account's master E2EE identity keypair (deviceSession.ts's "Account Master
+     * Identity Sync") is the single shared secret every one of the user's devices must converge on
+     * -- every DIRECT message and every Group key ever wrapped for this user is wrapped against
+     * whatever public key is stored here. Once established, it must never be silently overwritten:
+     * a device that (incorrectly, e.g. after a transient GET /me/identity-key failure it mistook
+     * for "no key exists yet") tries to push a freshly-generated keypair here must get back the
+     * EXISTING key unchanged, not have its own key accepted -- otherwise every other already-
+     * registered device (and every group key already wrapped for this user) is silently orphaned,
+     * with no error and no way to recover short of every message re-encrypting from scratch.
+     * deviceSession.ts's sync-down path reconciles its local vault against whatever this method
+     * actually returns, so a caller that raced or mis-detected "first device" still converges onto
+     * the correct shared key instead of diverging from it.
+     * <p>
+     * Locks the user row first (mirrors ConversationService#createOrGetDirectConversation's
+     * identical pessimistic-write + READ_COMMITTED pattern) so two devices racing to initialize the
+     * very first identity key for a brand-new account can't both pass the "not yet established"
+     * check and each write their own -- the second to acquire the lock re-reads under it and sees
+     * the first's already-committed key.
+     */
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public com.connectx.user.dto.UserIdentityKeyDto saveIdentityKey(Long userId, com.connectx.user.dto.UserIdentityKeyDto dto) {
-        User user = userRepository.findById(userId)
+        User user = userRepository.findByIdForUpdate(userId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "USER_NOT_FOUND", "User was not found"));
 
-        if (dto.getMasterPublicKey() != null && !dto.getMasterPublicKey().isBlank()) {
-            user.setMasterPublicKey(dto.getMasterPublicKey());
+        boolean alreadyEstablished = user.getMasterPublicKey() != null && !user.getMasterPublicKey().isBlank()
+                && user.getMasterPrivateKey() != null && !user.getMasterPrivateKey().isBlank();
+
+        if (!alreadyEstablished) {
+            if (dto.getMasterPublicKey() != null && !dto.getMasterPublicKey().isBlank()) {
+                user.setMasterPublicKey(dto.getMasterPublicKey());
+            }
+            if (dto.getMasterPrivateKey() != null && !dto.getMasterPrivateKey().isBlank()) {
+                user.setMasterPrivateKey(dto.getMasterPrivateKey());
+            }
+            userRepository.save(user);
         }
-        if (dto.getMasterPrivateKey() != null && !dto.getMasterPrivateKey().isBlank()) {
-            user.setMasterPrivateKey(dto.getMasterPrivateKey());
-        }
-        userRepository.save(user);
+
         return new com.connectx.user.dto.UserIdentityKeyDto(user.getMasterPublicKey(), user.getMasterPrivateKey());
     }
 }

@@ -73,15 +73,37 @@ export async function ensureLocalCryptoDevice(user: User): Promise<void> {
       masterPublicKeyBase64 = generated.publicKeyBase64;
     }
 
-    // Export private key to PKCS#8 and backup master key bundle to user's backend account
+    // Export private key to PKCS#8 and back up the master key bundle to the user's backend account.
+    // saveIdentityKey is create-only server-side (UserService#saveIdentityKey): if the account
+    // already has an established master key -- e.g. this branch was reached wrongly because step 1
+    // above merely FAILED to fetch it (network blip) rather than it genuinely not existing yet --
+    // the response is that EXISTING key, not the one just generated here. Reconciling against the
+    // response (rather than trusting what was just generated) is what makes this self-correcting
+    // instead of permanently diverging this device's identity from every other one already
+    // registered, however this branch was reached. Deliberately not caught-and-swallowed like
+    // before: a failure here must abort key setup entirely (the outer try/catch below logs it and a
+    // future app load retries) rather than let this device register itself against a key the server
+    // never actually accepted.
     const pkcs8Base64 = await keyManager.exportPrivateKey(masterPrivateKeyObj);
-    if (pkcs8Base64 && masterPublicKeyBase64) {
-      await userApi.saveIdentityKey({
-        masterPublicKey: masterPublicKeyBase64,
-        masterPrivateKey: pkcs8Base64,
-      }).catch((err) => {
-        console.warn('[ConnectX E2EE] Failed to backup master identity key bundle to server:', err);
-      });
+    if (!pkcs8Base64 || !masterPublicKeyBase64) {
+      throw new Error('Failed to export the generated E2EE keypair.');
+    }
+
+    const saved = await userApi.saveIdentityKey({
+      masterPublicKey: masterPublicKeyBase64,
+      masterPrivateKey: pkcs8Base64,
+    });
+
+    if (saved.masterPublicKey && saved.masterPrivateKey && saved.masterPublicKey !== masterPublicKeyBase64) {
+      console.info(
+        `[ConnectX E2EE] Account #${user.id} already has an established master key from another device -- adopting it instead of the one just generated here.`
+      );
+      const existingPrivateKeyObj = await keyManager.importPrivateKeyFromPKCS8(saved.masterPrivateKey);
+      if (!existingPrivateKeyObj) {
+        throw new Error("Failed to import the account's existing master private key.");
+      }
+      await keyManager.saveKeyVault(user.id, existingPrivateKeyObj, saved.masterPublicKey);
+      masterPublicKeyBase64 = saved.masterPublicKey;
     }
 
     // Register active device on server
