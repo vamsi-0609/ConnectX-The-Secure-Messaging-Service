@@ -394,13 +394,15 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
 
   const reactionEntries = Object.entries(reactionGroups);
 
-  // WhatsApp/Telegram-style group identity: the name sits once above the first bubble of a
-  // consecutive run from the same sender, and the small avatar sits once at the bottom of that
-  // same run (aligned with its last bubble) -- never repeated on every message in between. Never
-  // shown for the viewer's own messages ("Do NOT show my own name repeatedly").
+  // WhatsApp/Telegram-style group identity: the name AND the avatar both anchor to the first
+  // bubble of a consecutive run from the same sender -- not the name on the first bubble and the
+  // avatar on the last one (that was the original bug: for a 2+ message run the avatar visually
+  // detached from the name, appearing beside a later bubble instead). Neither repeats on every
+  // message in between, and neither is ever shown for the viewer's own messages ("Do NOT show my
+  // own name repeatedly").
   const showGroupSenderInfo = isGroup && !isSelf;
   const showGroupSenderName = showGroupSenderInfo && !isGroupedWithPrev;
-  const showGroupSenderAvatar = showGroupSenderInfo && !isGroupedWithNext;
+  const showGroupSenderAvatar = showGroupSenderInfo && !isGroupedWithPrev;
   const groupSenderDisplayName = senderUser?.displayName || senderUser?.username || message.senderUsername || 'Member';
 
   return (
