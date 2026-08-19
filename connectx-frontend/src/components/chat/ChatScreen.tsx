@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { X, Copy, Trash2, Forward, Star, SmilePlus, Pin, PinOff, CornerUpLeft, Pencil } from 'lucide-react';
-import { User, Message, ReplyTarget, Conversation, ConnectionRequestDto, RelationshipStatus, Group } from '../../types';
+import { User, Message, ReplyTarget, Conversation, ConnectionRequestDto, RelationshipStatus, Group, ConversationMember } from '../../types';
 import { ChatHeader } from './ChatHeader';
 import { MessageFeed } from './MessageFeed';
 import { MessageInput } from './MessageInput';
@@ -34,6 +34,11 @@ interface ChatScreenProps {
   // (App.tsx's groupInfoById cache) and may briefly be undefined right after opening a group.
   isGroup?: boolean;
   group?: Group | null;
+  // Active member list for the open GROUP conversation (App.tsx's groupMembersById cache) --
+  // used only to resolve a message's sender display name/avatar in MessageFeed/MessageBubble.
+  // Undefined until the cache has fetched it at least once; MessageBubble falls back to the
+  // message's own senderUsername when a sender id isn't found here.
+  groupMembers?: ConversationMember[];
   conversationId: number;
   messages: Message[];
   currentUserId: number;
@@ -118,6 +123,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   recipient,
   isGroup = false,
   group,
+  groupMembers,
   conversationId,
   messages,
   currentUserId,
@@ -526,6 +532,8 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
           <MessageFeed
             messages={messages}
             currentUserId={currentUserId}
+            isGroup={isGroup}
+            groupMembers={groupMembers}
             showRawCiphertext={showRawCiphertext}
             hasMore={hasMore}
             isLoadingOlder={isLoadingOlder}

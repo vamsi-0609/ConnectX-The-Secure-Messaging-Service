@@ -5,6 +5,7 @@ import com.connectx.common.security.UserPrincipal;
 import com.connectx.conversation.dto.ConversationMemberDto;
 import com.connectx.group.dto.CreateGroupRequestDto;
 import com.connectx.group.dto.GroupDto;
+import com.connectx.group.dto.UpdateGroupInfoRequestDto;
 import com.connectx.group.dto.UpdateGroupSettingsRequestDto;
 import com.connectx.group.service.GroupService;
 import jakarta.validation.Valid;
@@ -57,6 +58,19 @@ public class GroupController {
             @RequestBody UpdateGroupSettingsRequestDto dto) {
         GroupDto group = groupService.updateSettings(currentUser.getId(), groupId, dto);
         return ResponseEntity.ok(ApiResponse.success("Group settings updated", group));
+    }
+
+    // Name/description editing -- deliberately a separate route from /settings above: this is
+    // gated by who_can_edit_group_info (GroupService#updateGroupInfo -> GroupAuthorizationService
+    // #requireCanEditGroupInfo, OWNER/ADMIN or ALL_MEMBERS depending on the group's own setting),
+    // not the owner-only rule /settings itself uses to change that policy.
+    @PatchMapping("/{groupId}/info")
+    public ResponseEntity<ApiResponse<GroupDto>> updateGroupInfo(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long groupId,
+            @RequestBody UpdateGroupInfoRequestDto dto) {
+        GroupDto group = groupService.updateGroupInfo(currentUser.getId(), groupId, dto);
+        return ResponseEntity.ok(ApiResponse.success("Group info updated", group));
     }
 
     // Group photo upload/removal. Authorization is entirely GroupService#uploadAvatar/removeAvatar

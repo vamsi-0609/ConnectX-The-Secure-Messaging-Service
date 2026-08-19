@@ -20,13 +20,14 @@ import {
   CheckCircle2,
   Circle,
 } from 'lucide-react';
-import { Message } from '../../types';
+import { Message, User } from '../../types';
 import { ImageMessageContent } from './ImageMessageContent';
 import { LocationMessageContent } from './LocationMessageContent';
 import { DocumentMessageContent } from './DocumentMessageContent';
 import { getGoogleMapsLink } from '../../utils/googleMaps';
 import { saveImageToGallery } from '../../utils/saveMedia';
 import { linkifyText } from '../../utils/linkify';
+import { UserAvatar } from '../common/UserAvatar';
 
 const QUICK_REACTIONS = ['❤️', '😂', '👍', '😮', '😢', '🔥'];
 const EDIT_WINDOW_MS = 15 * 60 * 1000;
@@ -96,6 +97,13 @@ interface MessageBubbleProps {
   message: Message;
   isSelf: boolean;
   currentUserId?: number;
+  // GROUP conversations only. isGroup gates rendering the sender name/avatar at all; senderUser
+  // is the resolved member (from MessageFeed's senderById lookup, itself built from the already-
+  // loaded group member list -- never fetched per-message). Undefined when the sender isn't a
+  // currently-cached member (e.g. history from someone who's since left); the name then falls
+  // back to the message's own senderUsername, which the backend always populates.
+  isGroup?: boolean;
+  senderUser?: User;
   isGroupedWithPrev: boolean;
   isGroupedWithNext: boolean;
   showRawCiphertext: boolean;
@@ -121,6 +129,8 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
   message,
   isSelf,
   currentUserId,
+  isGroup = false,
+  senderUser,
   isGroupedWithPrev,
   isGroupedWithNext,
   showRawCiphertext,
@@ -384,16 +394,25 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
 
   const reactionEntries = Object.entries(reactionGroups);
 
+  // WhatsApp/Telegram-style group identity: the name sits once above the first bubble of a
+  // consecutive run from the same sender, and the small avatar sits once at the bottom of that
+  // same run (aligned with its last bubble) -- never repeated on every message in between. Never
+  // shown for the viewer's own messages ("Do NOT show my own name repeatedly").
+  const showGroupSenderInfo = isGroup && !isSelf;
+  const showGroupSenderName = showGroupSenderInfo && !isGroupedWithPrev;
+  const showGroupSenderAvatar = showGroupSenderInfo && !isGroupedWithNext;
+  const groupSenderDisplayName = senderUser?.displayName || senderUser?.username || message.senderUsername || 'Member';
+
   return (
     <div
       id={`message-${message.id}`}
-      className={`flex items-center gap-2 ${isSelf ? 'justify-end' : 'justify-start'} ${marginClass} group relative`}
+      className={`flex items-end gap-2 ${isSelf ? 'justify-end' : 'justify-start'} ${marginClass} group relative`}
     >
       {selectionMode && message.id > 0 && (
         <button
           type="button"
           onClick={() => onToggleSelect?.(message)}
-          className="flex-shrink-0 p-0.5 rounded-full transition-transform active:scale-90"
+          className="flex-shrink-0 p-0.5 rounded-full transition-transform active:scale-90 self-center"
           aria-label={isSelected ? 'Deselect message' : 'Select message'}
         >
           {isSelected ? (
@@ -403,13 +422,34 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
           )}
         </button>
       )}
-      <div
+      {showGroupSenderInfo && (
+        <div className="w-6 h-6 flex-shrink-0 self-end">
+          {showGroupSenderAvatar &&
+            (senderUser ? (
+              <UserAvatar user={senderUser} size="xs" viewable={false} passive className="!w-6 !h-6 text-[10px]" />
+            ) : (
+              <div
+                className="w-6 h-6 rounded-full bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-[10px] font-semibold text-white select-none"
+                aria-hidden
+              >
+                {groupSenderDisplayName.charAt(0).toUpperCase()}
+              </div>
+            ))}
+        </div>
+      )}
+      <div className={`flex flex-col max-w-[85%] md:max-w-[70%] lg:max-w-[65%] ${isSelf ? 'items-end' : 'items-start'}`}>
+        {showGroupSenderName && (
+          <span className="text-[11px] md:text-xs font-semibold text-violet-400 dark:text-violet-300 mb-0.5 px-1 truncate max-w-full select-none">
+            {groupSenderDisplayName}
+          </span>
+        )}
+        <div
         onPointerDown={handleBubblePointerDown}
         onPointerUp={handleBubblePointerUpOrLeave}
         onPointerLeave={handleBubblePointerUpOrLeave}
         onPointerCancel={handleBubblePointerUpOrLeave}
         onClick={handleBubbleClick}
-        className={`relative max-w-[85%] md:max-w-[70%] lg:max-w-[65%] transition-all ${selectionMode ? 'cursor-pointer' : ''} ${
+        className={`relative transition-all ${selectionMode ? 'cursor-pointer' : ''} ${
           isSelected ? 'ring-2 ring-indigo-500 rounded-2xl' : isPinned ? 'ring-1 ring-amber-400/50 rounded-2xl' : ''
         } ${
           isImageMessage || isDocMessage
@@ -845,6 +885,7 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
             </>,
             document.body
           )}
+      </div>
       </div>
     </div>
   );

@@ -36,6 +36,15 @@ export const groupApi = {
       body: JSON.stringify(settings),
     }),
 
+  // Name/description -- gated by who_can_edit_group_info (OWNER/ADMIN or ALL_MEMBERS depending on
+  // the group's own setting), unlike updateSettings above which is always owner-only. A field left
+  // out of `info` is left untouched server-side; an explicit empty description clears it.
+  updateInfo: (groupId: number, info: { name?: string; description?: string }) =>
+    apiRequest<Group>(`/groups/${groupId}/info`, {
+      method: 'PATCH',
+      body: JSON.stringify(info),
+    }),
+
   changeRole: (groupId: number, userId: number, role: 'ADMIN' | 'MEMBER') =>
     apiRequest<ConversationMember>(`/groups/${groupId}/members/${userId}/role`, {
       method: 'PATCH',

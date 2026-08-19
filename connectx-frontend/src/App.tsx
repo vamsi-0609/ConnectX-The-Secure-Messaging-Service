@@ -84,6 +84,7 @@ import {
   ConnectionRequestDto,
   Group,
   GroupInvitation,
+  ConversationMember,
 } from './types';
 import { groupErrorMessage } from './utils/groupErrorMessages';
 import { MessageSquare, Plus, Share2, X } from 'lucide-react';
@@ -304,6 +305,21 @@ export const App: React.FC = () => {
   useEffect(() => {
     groupInfoByIdRef.current = groupInfoById;
   }, [groupInfoById]);
+  // Active member list per GROUP conversation id -- the "safest existing source" for resolving a
+  // message's sender display name/avatar in the group message feed (MessageBubble) without an
+  // HTTP request per message. Fetched lazily once per group id (mirrors groupInfoById's identical
+  // pattern right below) and refreshed on demand via refreshGroupMembers wherever membership might
+  // have changed. Never authoritative for anything -- purely display, exactly like groupInfoById.
+  const [groupMembersById, setGroupMembersById] = useState<Record<number, ConversationMember[]>>({});
+  const refreshGroupMembers = useCallback(async (groupId: number) => {
+    try {
+      const members = await groupApi.getGroupMembers(groupId);
+      setGroupMembersById((prev) => ({ ...prev, [groupId]: members }));
+    } catch {
+      // best-effort -- MessageBubble falls back to the message's own senderUsername when a
+      // sender id isn't found in the cached member list.
+    }
+  }, []);
   const [receivedGroupInvitations, setReceivedGroupInvitations] = useState<GroupInvitation[]>([]);
   const [sentGroupInvitations, setSentGroupInvitations] = useState<GroupInvitation[]>([]);
 
@@ -819,6 +835,36 @@ export const App: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversations]);
 
+  // Same fetch-once-per-id shape as the groupInfoById effect above, for the member list instead.
+  useEffect(() => {
+    const missingIds = conversations
+      .filter((c) => c.type === 'GROUP' && groupMembersById[c.id] === undefined)
+      .map((c) => c.id);
+    if (missingIds.length === 0) return;
+    let cancelled = false;
+    Promise.all(
+      missingIds.map((id) =>
+        groupApi
+          .getGroupMembers(id)
+          .then((members) => [id, members] as const)
+          .catch(() => null)
+      )
+    ).then((results) => {
+      if (cancelled) return;
+      const updates: Record<number, ConversationMember[]> = {};
+      results.forEach((r) => {
+        if (r) updates[r[0]] = r[1];
+      });
+      if (Object.keys(updates).length > 0) {
+        setGroupMembersById((prev) => ({ ...prev, ...updates }));
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversations]);
+
   const handleGroupCreated = useCallback(
     (group: Group) => {
       setGroupInfoById((prev) => ({ ...prev, [group.id]: group }));
@@ -838,9 +884,17 @@ export const App: React.FC = () => {
     [currentUser, upsertConversation, loadConversations]
   );
 
-  const handleGroupUpdated = useCallback((group: Group) => {
-    setGroupInfoById((prev) => ({ ...prev, [group.id]: group }));
-  }, []);
+  const handleGroupUpdated = useCallback(
+    (group: Group) => {
+      setGroupInfoById((prev) => ({ ...prev, [group.id]: group }));
+      // Best-effort refresh -- covers GROUP_INFO_UPDATED (settings/avatar/name/description) and
+      // any explicit membership action (add/remove/role change/invitation accept) that already
+      // routes through this same callback, so the sender-name/avatar lookup in the message feed
+      // doesn't go stale until next reload.
+      refreshGroupMembers(group.id);
+    },
+    [refreshGroupMembers]
+  );
 
   const handleAcceptGroupInvitation = useCallback(
     async (invitationId: number) => {
@@ -2027,7 +2081,7 @@ export const App: React.FC = () => {
         groupApi
           .getGroup(updatedGroupId)
           .then((freshGroup) => {
-            setGroupInfoById((prev) => ({ ...prev, [updatedGroupId]: freshGroup }));
+            handleGroupUpdated(freshGroup);
           })
           .catch(() => {});
       } else if (event.type === 'CONVERSATION_CLEARED') {
@@ -2956,6 +3010,7 @@ export const App: React.FC = () => {
 
   const isActiveGroup = activeConversation?.type === 'GROUP';
   const activeGroup = isActiveGroup && activeConversation ? groupInfoById[activeConversation.id] : undefined;
+  const activeGroupMembers = isActiveGroup && activeConversation ? groupMembersById[activeConversation.id] : undefined;
 
   return (
     <div className="app-shell flex flex-col bg-slate-100 dark:bg-[#090d16] transition-colors duration-300">
@@ -3052,6 +3107,7 @@ export const App: React.FC = () => {
               recipient={getRecipientUser(activeConversation)}
               isGroup={isActiveGroup}
               group={activeGroup}
+              groupMembers={activeGroupMembers}
               conversationId={activeConversation.id}
               messages={messages}
               currentUserId={currentUser.id}

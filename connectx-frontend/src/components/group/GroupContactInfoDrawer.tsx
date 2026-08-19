@@ -10,6 +10,7 @@ import {
   ChevronRight,
   Loader2,
   UserPlus,
+  Pencil,
 } from 'lucide-react';
 import { groupApi } from '../../api/groupApi';
 import { ConversationMember, Group, User } from '../../types';
@@ -22,7 +23,14 @@ import { GroupSettingsScreen } from './GroupSettingsScreen';
 import { AddMembersModal } from './AddMembersModal';
 import { LeaveGroupConfirmDialog } from './LeaveGroupConfirmDialog';
 import { DeleteGroupConfirmDialog } from './DeleteGroupConfirmDialog';
+import { EditGroupModal } from './EditGroupModal';
 import { SettingsRow, SettingsSectionLabel } from '../common/SettingsPrimitives';
+
+// Mirrors GroupAuthorizationService#requireCanEditGroupInfo exactly (OWNER_ADMIN_ONLY -> only
+// OWNER/ADMIN; ALL_MEMBERS -> any active member) -- UI-only, the backend re-enforces this
+// identically and independently on every PATCH/avatar request regardless of what this returns.
+const canEditGroupInfo = (group: Group): boolean =>
+  group.whoCanEditGroupInfo === 'ALL_MEMBERS' || group.currentUserRole === 'OWNER' || group.currentUserRole === 'ADMIN';
 
 interface GroupContactInfoDrawerProps {
   group: Group | null;
@@ -53,6 +61,7 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
   const [leaving, setLeaving] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [showEditGroup, setShowEditGroup] = useState(false);
 
   const refreshMembers = async (groupId: number) => {
     setLoadingMembers(true);
@@ -179,6 +188,15 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
                 </p>
               )}
             </div>
+            {canEditGroupInfo(group) && (
+              <button
+                type="button"
+                onClick={() => setShowEditGroup(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/20 transition-colors"
+              >
+                <Pencil className="w-3.5 h-3.5" /> Edit
+              </button>
+            )}
           </div>
 
           {/* Members Section */}
@@ -279,6 +297,10 @@ export const GroupContactInfoDrawer: React.FC<GroupContactInfoDrawerProps> = ({
             )}
           </div>
         </div>
+      )}
+
+      {showEditGroup && (
+        <EditGroupModal group={group} onClose={() => setShowEditGroup(false)} onGroupUpdated={onGroupUpdated} />
       )}
 
       {showAddMembers && (

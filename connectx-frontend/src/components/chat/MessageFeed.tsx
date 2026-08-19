@@ -1,12 +1,16 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { ChevronDown, Lock } from 'lucide-react';
 import { MessageBubble } from './MessageBubble';
-import { Message } from '../../types';
+import { ConversationMember, Message, User } from '../../types';
 import { buildMessageGroups } from '../../utils/messageGroups';
 
 interface MessageFeedProps {
   messages: Message[];
   currentUserId: number;
+  // GROUP conversations only -- see ChatScreen's own comment on the identically-named prop it
+  // forwards these two from.
+  isGroup?: boolean;
+  groupMembers?: ConversationMember[];
   showRawCiphertext: boolean;
   hasMore?: boolean;
   isLoadingOlder?: boolean;
@@ -29,6 +33,8 @@ interface MessageFeedProps {
 export const MessageFeed: React.FC<MessageFeedProps> = ({
   messages,
   currentUserId,
+  isGroup = false,
+  groupMembers,
   showRawCiphertext,
   hasMore = false,
   isLoadingOlder = false,
@@ -71,6 +77,15 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
     }
     return map;
   }, [messages]);
+
+  // userId -> User, for resolving a GROUP message's sender display name/avatar without a
+  // per-message HTTP request. Built from the already-loaded (and cached at the App.tsx level)
+  // group member list, never fetched here.
+  const senderById = useMemo(() => {
+    const map = new Map<number, User>();
+    (groupMembers || []).forEach((m) => map.set(m.user.id, m.user));
+    return map;
+  }, [groupMembers]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     const container = scrollContainerRef.current;
@@ -243,6 +258,8 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
                     message={item.message}
                     isSelf={item.isSelf}
                     currentUserId={currentUserId}
+                    isGroup={isGroup}
+                    senderUser={isGroup ? senderById.get(item.message.senderUserId) : undefined}
                     isGroupedWithPrev={item.isGroupedWithPrev}
                     isGroupedWithNext={item.isGroupedWithNext}
                     showRawCiphertext={showRawCiphertext}

@@ -10,6 +10,7 @@ import com.connectx.conversation.repository.ConversationMemberRepository;
 import com.connectx.conversation.repository.ConversationRepository;
 import com.connectx.group.dto.CreateGroupRequestDto;
 import com.connectx.group.dto.GroupDto;
+import com.connectx.group.dto.UpdateGroupInfoRequestDto;
 import com.connectx.group.dto.UpdateGroupSettingsRequestDto;
 import com.connectx.group.entity.ChatGroup;
 import com.connectx.group.entity.WhoCanEditGroupInfo;
@@ -169,6 +170,37 @@ public class GroupService {
 
         long activeMemberCount = conversationMemberRepository.countByConversationIdAndDeletedAtIsNull(groupId);
         return buildGroupDto(chatGroup.getConversation(), chatGroup, activeMemberCount, GroupRole.OWNER);
+    }
+
+    /**
+     * Editable group "profile" fields (name/description) -- gated by who_can_edit_group_info
+     * (requireCanEditGroupInfo: OWNER/ADMIN or ALL_MEMBERS depending on the group's own setting),
+     * deliberately NOT requireOwner -- unlike the three policy ENUMs in updateSettings, which only
+     * the owner may ever change, "who may edit the group's name/description/photo" is itself
+     * configurable per-group and already fully enforced by requireCanEditGroupInfo (the same check
+     * uploadAvatar/removeAvatar use, since a group's name/description are exactly as much "info" as
+     * its avatar). Both fields optional and independently validated/applied, all within one
+     * transaction, mirroring updateSettings' all-or-nothing contract.
+     */
+    @Transactional
+    public GroupDto updateGroupInfo(Long actorUserId, Long groupId, UpdateGroupInfoRequestDto dto) {
+        ChatGroup chatGroup = groupAuthorizationService.requireCanEditGroupInfo(actorUserId, groupId);
+
+        if (dto.getName() != null) {
+            chatGroup.setName(validateName(dto.getName()));
+        }
+        if (dto.getDescription() != null) {
+            chatGroup.setDescription(validateDescription(dto.getDescription()));
+        }
+
+        chatGroupRepository.save(chatGroup);
+        notifyGroupInfoChanged(groupId);
+
+        long activeMemberCount = conversationMemberRepository.countByConversationIdAndDeletedAtIsNull(groupId);
+        GroupRole viewerRole = conversationMemberRepository.findByConversationIdAndUserId(groupId, actorUserId)
+                .map(ConversationMember::getRole)
+                .orElse(null);
+        return buildGroupDto(chatGroup.getConversation(), chatGroup, activeMemberCount, viewerRole);
     }
 
     /**
