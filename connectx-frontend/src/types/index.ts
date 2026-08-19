@@ -197,7 +197,8 @@ export interface WsEvent<T = any> {
     | 'CONVERSATION_CLEARED'
     | 'TYPING_INDICATOR'
     | 'PRESENCE_UPDATE'
-    | 'GROUP_KEY_ROTATION_REQUIRED';
+    | 'GROUP_KEY_ROTATION_REQUIRED'
+    | 'GROUP_INFO_UPDATED';
   requestId?: string;
   payload: T;
 }

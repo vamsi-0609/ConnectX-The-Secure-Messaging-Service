@@ -164,7 +164,13 @@ export const GroupMembersScreen: React.FC<GroupMembersScreenProps> = ({
               {section.members.map((member) => {
                 const isSelf = member.user.id === currentUserId;
                 const targetRole = member.role ?? 'MEMBER';
-                const showMenuTrigger = !isSelf && targetRole !== 'OWNER' && (viewerRole === 'OWNER' || viewerRole === 'ADMIN');
+                // Must mirror GroupMemberActionsMenu's own canChangeRole/canRemove/
+                // canTransferOwnership exactly -- an ADMIN viewer has zero permitted actions
+                // against a fellow ADMIN (promote/demote/transfer are OWNER-only, and ADMIN may
+                // only remove a plain MEMBER), so showing the trigger there opened a dropdown
+                // that always rendered null: a dead "..." button with no visible cause.
+                const showMenuTrigger =
+                  !isSelf && targetRole !== 'OWNER' && (viewerRole === 'OWNER' || (viewerRole === 'ADMIN' && targetRole === 'MEMBER'));
                 return (
                   <div
                     key={member.id}

@@ -64,6 +64,7 @@ connectx:
   upload:
     profile-dir: ${CONNECTX_PROFILE_UPLOAD_DIR:uploads/profiles}
     media-dir: ${CONNECTX_MEDIA_UPLOAD_DIR:uploads/media}
+    group-dir: ${CONNECTX_GROUP_UPLOAD_DIR:uploads/groups}
   mail:
     from: ${CONNECTX_MAIL_FROM:vamsi8202@gmail.com}
   push:

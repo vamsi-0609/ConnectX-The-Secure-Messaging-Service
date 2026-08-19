@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Users } from 'lucide-react';
 import { resolveProfileImageUrl } from '../../utils/profileImage';
 
@@ -32,14 +32,27 @@ const ICON_SIZE: Record<AvatarSize, string> = {
 
 export const GroupAvatar: React.FC<GroupAvatarProps> = ({ name, avatarUrl, size = 'md', className = '' }) => {
   const imageUrl = resolveProfileImageUrl(avatarUrl ?? undefined);
+  // Mirrors UserAvatar's identical onError fallback -- without it, a stale/removed/still-
+  // propagating avatar URL (e.g. right after a key/photo change, or a deleted file) rendered a
+  // permanently broken image icon instead of falling back to the decorative Users icon.
+  const [imageError, setImageError] = useState(false);
+
+  useEffect(() => {
+    setImageError(false);
+  }, [avatarUrl]);
 
   return (
     <div
       className={`rounded-full overflow-hidden bg-gradient-to-tr from-emerald-500 to-teal-500 flex items-center justify-center font-semibold text-white flex-shrink-0 select-none ${SIZE_CLASSES[size]} ${className}`}
       aria-hidden
     >
-      {imageUrl ? (
-        <img src={imageUrl} alt={name} className="w-full h-full object-cover pointer-events-none" />
+      {imageUrl && !imageError ? (
+        <img
+          src={imageUrl}
+          alt={name}
+          className="w-full h-full object-cover pointer-events-none"
+          onError={() => setImageError(true)}
+        />
       ) : (
         <Users className={ICON_SIZE[size]} />
       )}

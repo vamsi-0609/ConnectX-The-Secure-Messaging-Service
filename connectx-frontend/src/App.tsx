@@ -2018,6 +2018,18 @@ export const App: React.FC = () => {
             }
           })
           .catch(() => {});
+      } else if (event.type === 'GROUP_INFO_UPDATED') {
+        // Owner changed a setting or the group's photo -- re-fetch so an already-open client
+        // (e.g. a MEMBER whose composer availability depends on who_can_send_messages) reflects
+        // it immediately rather than only on next reload/reopen. No key material involved, so
+        // unlike GROUP_KEY_ROTATION_REQUIRED this never touches groupKeyManager.
+        const updatedGroupId = event.payload.conversationId as number;
+        groupApi
+          .getGroup(updatedGroupId)
+          .then((freshGroup) => {
+            setGroupInfoById((prev) => ({ ...prev, [updatedGroupId]: freshGroup }));
+          })
+          .catch(() => {});
       } else if (event.type === 'CONVERSATION_CLEARED') {
         const targetConvId = event.payload.conversationId as number;
         conversationCache.removeConversation(targetConvId);

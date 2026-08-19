@@ -35,6 +35,12 @@ const GROUP_ERROR_MESSAGES: Record<string, string> = {
   FORBIDDEN: "You don't have permission to do that.",
   KEY_VERSION_MISMATCH: 'Please update the app and try again.',
   NETWORK_ERROR: "Couldn't reach ConnectX. Check your connection and try again.",
+  EDIT_NOT_PERMITTED: "You don't have permission to edit this group's info.",
+  INVALID_IMAGE: "That file isn't a valid image.",
+  INVALID_IMAGE_TYPE: 'Only JPG, PNG, and WEBP images are allowed.',
+  IMAGE_TOO_LARGE: 'Group photo must be 15 MB or smaller.',
+  IMAGE_STORE_FAILED: "Couldn't upload the group photo.",
+  IMAGE_DELETE_FAILED: "Couldn't remove the group photo.",
 };
 
 export function groupErrorMessage(err: unknown, fallback = 'Something went wrong. Please try again.'): string {

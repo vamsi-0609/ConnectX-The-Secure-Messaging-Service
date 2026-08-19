@@ -8,6 +8,7 @@ import com.connectx.conversation.entity.ConversationType;
 import com.connectx.conversation.entity.GroupRole;
 import com.connectx.conversation.repository.ConversationMemberRepository;
 import com.connectx.group.entity.ChatGroup;
+import com.connectx.group.entity.WhoCanEditGroupInfo;
 import com.connectx.group.entity.WhoCanInvite;
 import com.connectx.group.entity.WhoCanSendMessages;
 import com.connectx.group.repository.ChatGroupRepository;
@@ -223,6 +224,25 @@ public class GroupAuthorizationService {
     @Transactional(readOnly = true)
     public boolean canManageMembers(Long userId, Long groupId) {
         return hasActiveRole(userId, groupId, GroupRole.OWNER, GroupRole.ADMIN);
+    }
+
+    /**
+     * The throwing gate for the group avatar upload/remove endpoints -- the first actual
+     * enforcement of {@code who_can_edit_group_info} (Stage 4 only established/validated the
+     * setting itself; no edit endpoint existed until now). {@code OWNER_ADMIN_ONLY} (the default)
+     * restricts to OWNER/ADMIN; {@code ALL_MEMBERS} permits any active member. Same shape as
+     * {@link #requireCanSendMessage}'s who_can_send_messages check.
+     */
+    @Transactional(readOnly = true)
+    public ChatGroup requireCanEditGroupInfo(Long userId, Long groupId) {
+        ChatGroup chatGroup = requireActiveMember(userId, groupId);
+        if (chatGroup.getWhoCanEditGroupInfo() == WhoCanEditGroupInfo.OWNER_ADMIN_ONLY) {
+            GroupRole role = activeRoleOrNull(userId, groupId);
+            if (role != GroupRole.OWNER && role != GroupRole.ADMIN) {
+                throw new ApiException(HttpStatus.FORBIDDEN, "EDIT_NOT_PERMITTED", "You don't have permission to edit this group's info");
+            }
+        }
+        return chatGroup;
     }
 
     @Transactional(readOnly = true)

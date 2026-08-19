@@ -17,6 +17,7 @@ import com.connectx.group.entity.WhoCanInvite;
 import com.connectx.group.entity.WhoCanSendMessages;
 import com.connectx.group.repository.ChatGroupRepository;
 import com.connectx.group.repository.GroupInvitationRepository;
+import com.connectx.group.storage.GroupImageStorage;
 import com.connectx.common.util.AfterCommitExecutor;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
@@ -28,6 +29,7 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.Instant;
 import java.util.List;
@@ -56,6 +58,7 @@ public class GroupService {
     private final GroupAuthorizationService groupAuthorizationService;
     private final SimpMessagingTemplate messagingTemplate;
     private final AfterCommitExecutor afterCommitExecutor;
+    private final GroupImageStorage groupImageStorage;
 
     public GroupService(ConversationRepository conversationRepository,
                          ConversationMemberRepository conversationMemberRepository,
@@ -65,7 +68,8 @@ public class GroupService {
                          ProfileVisibilityService profileVisibilityService,
                          GroupAuthorizationService groupAuthorizationService,
                          SimpMessagingTemplate messagingTemplate,
-                         AfterCommitExecutor afterCommitExecutor) {
+                         AfterCommitExecutor afterCommitExecutor,
+                         GroupImageStorage groupImageStorage) {
         this.conversationRepository = conversationRepository;
         this.conversationMemberRepository = conversationMemberRepository;
         this.chatGroupRepository = chatGroupRepository;
@@ -75,6 +79,7 @@ public class GroupService {
         this.groupAuthorizationService = groupAuthorizationService;
         this.messagingTemplate = messagingTemplate;
         this.afterCommitExecutor = afterCommitExecutor;
+        this.groupImageStorage = groupImageStorage;
     }
 
     @Transactional
@@ -160,9 +165,85 @@ public class GroupService {
         }
 
         chatGroupRepository.save(chatGroup);
+        notifyGroupInfoChanged(groupId);
 
         long activeMemberCount = conversationMemberRepository.countByConversationIdAndDeletedAtIsNull(groupId);
         return buildGroupDto(chatGroup.getConversation(), chatGroup, activeMemberCount, GroupRole.OWNER);
+    }
+
+    /**
+     * Tells every currently-active member's already-open client to re-fetch this group's info --
+     * the counterpart to {@link #markKeyRotationRequired} for non-key-material changes (settings,
+     * avatar). Without this, a member with the group open when who_can_send_messages flips to
+     * ADMINS_ONLY keeps seeing (and being able to type into) the real composer until they happen
+     * to reload; the server-side send check was never bypassed by this (MessageService
+     * re-validates authoritatively on every send), but the client stayed stale and confusing --
+     * found via live multi-user testing switching a setting while another member had the group
+     * open. Deferred until commit for the identical reason markKeyRotationRequired's notification
+     * is: a receiver's immediate refetch must not race the still-in-flight UPDATE.
+     */
+    private void notifyGroupInfoChanged(Long groupId) {
+        List<ConversationMember> activeMembers = conversationMemberRepository
+                .findByConversationIdAndDeletedAtIsNullWithUsers(groupId);
+        List<String> usernames = activeMembers.stream()
+                .filter(m -> m.getUser() != null)
+                .map(m -> m.getUser().getUsername())
+                .collect(Collectors.toList());
+
+        afterCommitExecutor.runAfterCommit(() -> {
+            WsEvent infoChangedEvent = WsEvent.of("GROUP_INFO_UPDATED", Map.of("conversationId", groupId));
+            for (String username : usernames) {
+                messagingTemplate.convertAndSendToUser(username, "/queue/messages", infoChangedEvent);
+            }
+        });
+    }
+
+    /**
+     * Group photo upload. Gated by {@code who_can_edit_group_info} (requireCanEditGroupInfo),
+     * never a hardcoded owner-only rule -- a group's avatar is part of its "info" exactly like
+     * name/description would be. Reuses GroupImageStorage (a completely separate storage root and
+     * URL namespace from the per-user ProfileImageStorage) so a group avatar can never resolve to,
+     * or overwrite, a user's profile photo. Cache-busts with a query-string timestamp, mirroring
+     * UserService#uploadProfilePhoto, so a client that already cached the old avatar URL (e.g. the
+     * conversation list, fetched before this upload) is forced to refetch once it receives the new
+     * URL over WS/HTTP rather than silently keeping a stale image.
+     */
+    @Transactional
+    public GroupDto uploadAvatar(Long actorUserId, Long groupId, MultipartFile file) {
+        groupAuthorizationService.requireCanEditGroupInfo(actorUserId, groupId);
+
+        ChatGroup chatGroup = chatGroupRepository.findById(groupId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "Group not found"));
+
+        String publicPath = groupImageStorage.store(groupId, file);
+        chatGroup.setAvatarUrl(publicPath + "?v=" + System.currentTimeMillis());
+        chatGroupRepository.save(chatGroup);
+        notifyGroupInfoChanged(groupId);
+
+        long activeMemberCount = conversationMemberRepository.countByConversationIdAndDeletedAtIsNull(groupId);
+        GroupRole viewerRole = conversationMemberRepository.findByConversationIdAndUserId(groupId, actorUserId)
+                .map(ConversationMember::getRole)
+                .orElse(null);
+        return buildGroupDto(chatGroup.getConversation(), chatGroup, activeMemberCount, viewerRole);
+    }
+
+    @Transactional
+    public GroupDto removeAvatar(Long actorUserId, Long groupId) {
+        groupAuthorizationService.requireCanEditGroupInfo(actorUserId, groupId);
+
+        ChatGroup chatGroup = chatGroupRepository.findById(groupId)
+                .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "Group not found"));
+
+        groupImageStorage.delete(groupId);
+        chatGroup.setAvatarUrl(null);
+        chatGroupRepository.save(chatGroup);
+        notifyGroupInfoChanged(groupId);
+
+        long activeMemberCount = conversationMemberRepository.countByConversationIdAndDeletedAtIsNull(groupId);
+        GroupRole viewerRole = conversationMemberRepository.findByConversationIdAndUserId(groupId, actorUserId)
+                .map(ConversationMember::getRole)
+                .orElse(null);
+        return buildGroupDto(chatGroup.getConversation(), chatGroup, activeMemberCount, viewerRole);
     }
 
     private <E extends Enum<E>> E parseEnum(Class<E> enumType, String rawValue, String fieldName) {

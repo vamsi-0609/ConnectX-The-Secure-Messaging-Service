@@ -60,6 +60,7 @@ public class SecurityConfig {
                         .requestMatchers(
                                 "/api/v1/auth/**",
                                 "/api/v1/profile-images/**",
+                                "/api/v1/group-images/**",
                                 "/ws/**",
                                 "/h2-console/**",
                                 "/favicon.ico",

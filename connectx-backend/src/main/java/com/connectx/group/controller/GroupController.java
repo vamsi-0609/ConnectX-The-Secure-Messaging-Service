@@ -8,9 +8,11 @@ import com.connectx.group.dto.GroupDto;
 import com.connectx.group.dto.UpdateGroupSettingsRequestDto;
 import com.connectx.group.service.GroupService;
 import jakarta.validation.Valid;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 
@@ -55,6 +57,27 @@ public class GroupController {
             @RequestBody UpdateGroupSettingsRequestDto dto) {
         GroupDto group = groupService.updateSettings(currentUser.getId(), groupId, dto);
         return ResponseEntity.ok(ApiResponse.success("Group settings updated", group));
+    }
+
+    // Group photo upload/removal. Authorization is entirely GroupService#uploadAvatar/removeAvatar
+    // -> GroupAuthorizationService#requireCanEditGroupInfo -- nothing here decides or duplicates
+    // that check. Serving the stored image back is GroupImageController's job, a deliberately
+    // separate route/namespace from these two mutating endpoints.
+    @PostMapping(value = "/{groupId}/avatar", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiResponse<GroupDto>> uploadAvatar(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long groupId,
+            @RequestPart("file") MultipartFile file) {
+        GroupDto group = groupService.uploadAvatar(currentUser.getId(), groupId, file);
+        return ResponseEntity.ok(ApiResponse.success("Group photo updated", group));
+    }
+
+    @DeleteMapping("/{groupId}/avatar")
+    public ResponseEntity<ApiResponse<GroupDto>> removeAvatar(
+            @AuthenticationPrincipal UserPrincipal currentUser,
+            @PathVariable Long groupId) {
+        GroupDto group = groupService.removeAvatar(currentUser.getId(), groupId);
+        return ResponseEntity.ok(ApiResponse.success("Group photo removed", group));
     }
 
     // Groups Stage 7: owner-only. Authorization is entirely GroupService#deleteGroup ->

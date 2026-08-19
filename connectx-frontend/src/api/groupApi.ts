@@ -1,4 +1,4 @@
-import { apiRequest } from './apiClient';
+import { apiRequest, uploadRequest } from './apiClient';
 import { ConversationMember, CreateGroupInvitationResult, Group, GroupInvitation, GroupMemberKeyPayload } from '../types';
 
 export const groupApi = {
@@ -9,6 +9,21 @@ export const groupApi = {
     }),
 
   getGroup: (groupId: number) => apiRequest<Group>(`/groups/${groupId}`),
+
+  // Group photo -- deliberately its own endpoint namespace (/groups/{id}/avatar,
+  // /group-images/{id}), never the per-user profile-photo API. See utils/groupImage.ts for
+  // client-side validation and CreateGroupModal for the upload-after-create flow (a group has no
+  // id to upload against until POST /groups has already returned one).
+  uploadAvatar: (groupId: number, file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return uploadRequest<Group>(`/groups/${groupId}/avatar`, formData);
+  },
+
+  removeAvatar: (groupId: number) =>
+    apiRequest<Group>(`/groups/${groupId}/avatar`, {
+      method: 'DELETE',
+    }),
 
   getGroupMembers: (groupId: number) => apiRequest<ConversationMember[]>(`/groups/${groupId}/members`),
 
