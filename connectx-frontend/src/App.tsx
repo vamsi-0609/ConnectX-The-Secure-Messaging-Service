@@ -212,6 +212,7 @@ function messageFromWsPayload(payload: Record<string, unknown>): Message {
     locationLabel: payload.locationLabel as string | undefined,
     mimeType: payload.mimeType as string | undefined,
     fileSizeBytes: payload.fileSizeBytes as number | undefined,
+    mediaNonce: payload.mediaNonce as string | undefined,
     encryptionAlgorithm: payload.encryptionAlgorithm as string | undefined,
     ciphertext: (payload.ciphertext as string) || '',
     nonce: (payload.nonce as string) || '',
@@ -1217,7 +1218,16 @@ export const App: React.FC = () => {
 
   const decryptSingleMessage = useCallback(
     async (msg: Message, userId: number, peerUserId?: number | null): Promise<Message> => {
-      if (msg.messageType === 'IMAGE' || msg.messageType === 'LOCATION') {
+      // LOCATION never carries a ciphertext. IMAGE/DOCUMENT only need to skip here when there's
+      // nothing to decrypt -- a DIRECT image/document (plaintext caption/filename, ciphertext
+      // always "") or a GROUP image/document with no caption at all. A GROUP image/document WITH
+      // an encrypted caption (Part 9 hardening stage) must fall through to the same group-key
+      // decryption below TEXT already uses, so its caption ends up in decryptedContent exactly
+      // like a text message's plaintext does.
+      if (
+        msg.messageType === 'LOCATION' ||
+        ((msg.messageType === 'IMAGE' || msg.messageType === 'DOCUMENT') && !msg.ciphertext)
+      ) {
         return { ...msg, decryptionError: false };
       }
 
@@ -1381,10 +1391,7 @@ export const App: React.FC = () => {
         }
         const activeConv = activeConversationRef.current;
         const peerUserId = activeConv ? getOtherParticipant(activeConv, currentUser!.id)?.id : undefined;
-        const processed =
-          pinned.messageType === 'IMAGE' || pinned.messageType === 'LOCATION' || pinned.messageType === 'DOCUMENT'
-            ? pinned
-            : await decryptSingleMessage(pinned, currentUser!.id, peerUserId);
+        const processed = await decryptSingleMessage(pinned, currentUser!.id, peerUserId);
         if (requestSeq === pinnedMessageRequestSeqRef.current && activeConversationIdRef.current === conversationId) {
           setPinnedMessage(processed);
         }
@@ -1583,10 +1590,10 @@ export const App: React.FC = () => {
             // 2. Decrypt & process message
             const newMsg = messageFromWsPayload(payload as Record<string, unknown>);
             const peerUserId = getOtherParticipant(currentActive, currentUser.id)?.id;
-            const processedMsg =
-              newMsg.messageType === 'IMAGE' || newMsg.messageType === 'LOCATION' || newMsg.messageType === 'DOCUMENT'
-                ? newMsg
-                : await decryptSingleMessage(newMsg, currentUser.id, peerUserId);
+            // decryptSingleMessage internally no-ops for LOCATION and for any IMAGE/DOCUMENT with
+            // no ciphertext (DIRECT media) -- always routing through it here is what lets a GROUP
+            // image/document's encrypted caption actually get decrypted on live WS delivery.
+            const processedMsg = await decryptSingleMessage(newMsg, currentUser.id, peerUserId);
 
             // The user may have switched to a different conversation while this was
             // decrypting — re-check the LIVE ref (not the `currentActive` snapshot from
@@ -1673,10 +1680,7 @@ export const App: React.FC = () => {
             if (!matched) {
               const newMsg = messageFromWsPayload(payload as Record<string, unknown>);
               const peerUserId = getOtherParticipant(currentActive, currentUser.id)?.id;
-              const processedMsg =
-                newMsg.messageType === 'IMAGE' || newMsg.messageType === 'LOCATION' || newMsg.messageType === 'DOCUMENT'
-                  ? newMsg
-                  : await decryptSingleMessage(newMsg, currentUser.id, peerUserId);
+              const processedMsg = await decryptSingleMessage(newMsg, currentUser.id, peerUserId);
 
               // Same re-check as the peer-message branch above: don't let a slow
               // decrypt apply this update to whichever conversation is now active.
@@ -1717,12 +1721,7 @@ export const App: React.FC = () => {
               : payload.senderUserId;
 
           const backgroundMsg = messageFromWsPayload(payload as Record<string, unknown>);
-          const processedMsg =
-            backgroundMsg.messageType === 'IMAGE' ||
-            backgroundMsg.messageType === 'LOCATION' ||
-            backgroundMsg.messageType === 'DOCUMENT'
-              ? backgroundMsg
-              : await decryptSingleMessage(backgroundMsg, currentUser.id, peerUserId);
+          const processedMsg = await decryptSingleMessage(backgroundMsg, currentUser.id, peerUserId);
 
           const preview = previewFromMessage(processedMsg);
           updatePreviewIfNewer(conversationId, preview);
@@ -2240,10 +2239,15 @@ export const App: React.FC = () => {
     clientTempId?: string
   ) => {
     if (!activeConversation || !currentUser) return;
-    const peer = getOtherParticipant(activeConversation, currentUser.id);
-    if (!peer || !canMessageRecipient(peer.id)) {
-      console.warn('[ConnectX] Blocked optimistic image insert: current relationship does not permit messaging.');
-      return;
+    // DIRECT's relationship preflight (see canMessageRecipient's own comment) has no GROUP
+    // equivalent -- ChatScreen already hides the composer entirely unless the viewer is an active
+    // member permitted to send, so there is nothing further to check here for a group.
+    if (activeConversation.type === 'DIRECT') {
+      const peer = getOtherParticipant(activeConversation, currentUser.id);
+      if (!peer || !canMessageRecipient(peer.id)) {
+        console.warn('[ConnectX] Blocked optimistic image insert: current relationship does not permit messaging.');
+        return;
+      }
     }
     const tempIdStr = clientTempId || `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -2255,7 +2259,11 @@ export const App: React.FC = () => {
       senderUsername: currentUser.username,
       messageType: 'IMAGE',
       mediaId,
-      caption,
+      // The sender already has the real plaintext caption in hand (about to be encrypted, for a
+      // GROUP send) -- shown immediately via decryptedContent exactly like an optimistic TEXT
+      // message does, never waiting on a round trip through its own encrypted copy.
+      caption: activeConversation.type === 'GROUP' ? undefined : caption,
+      decryptedContent: activeConversation.type === 'GROUP' ? caption : undefined,
       mimeType,
       encryptionAlgorithm: 'NONE',
       ciphertext: '',
@@ -2297,10 +2305,12 @@ export const App: React.FC = () => {
     clientTempId?: string
   ) => {
     if (!activeConversation || !currentUser) return;
-    const peer = getOtherParticipant(activeConversation, currentUser.id);
-    if (!peer || !canMessageRecipient(peer.id)) {
-      console.warn('[ConnectX] Blocked optimistic document insert: current relationship does not permit messaging.');
-      return;
+    if (activeConversation.type === 'DIRECT') {
+      const peer = getOtherParticipant(activeConversation, currentUser.id);
+      if (!peer || !canMessageRecipient(peer.id)) {
+        console.warn('[ConnectX] Blocked optimistic document insert: current relationship does not permit messaging.');
+        return;
+      }
     }
     const tempIdStr = clientTempId || `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -2312,7 +2322,10 @@ export const App: React.FC = () => {
       senderUsername: currentUser.username,
       messageType: 'DOCUMENT',
       mediaId,
-      caption: filename,
+      // Filename is stored via the same caption/ciphertext field as an image caption -- see that
+      // handler's identical comment on why the sender's own optimistic bubble uses decryptedContent.
+      caption: activeConversation.type === 'GROUP' ? undefined : filename,
+      decryptedContent: activeConversation.type === 'GROUP' ? filename : undefined,
       mimeType,
       fileSizeBytes,
       encryptionAlgorithm: 'NONE',
@@ -3204,6 +3217,13 @@ export const App: React.FC = () => {
                   onCancelRequest={handleCancelConnectionRequest}
                   onAcceptRequest={handleAcceptConnectionRequest}
                   onRejectRequest={handleRejectConnectionRequest}
+                  isMuted={Boolean(
+                    activeConversation?.isMuted ||
+                      (activeConversation?.mutedUntil &&
+                        new Date(activeConversation.mutedUntil).getTime() > Date.now())
+                  )}
+                  onMuteChat={handleMuteChat}
+                  onUnmuteChat={handleUnmuteChat}
                 />
               </React.Suspense>
             )}

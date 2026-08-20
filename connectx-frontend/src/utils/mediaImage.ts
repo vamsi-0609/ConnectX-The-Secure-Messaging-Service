@@ -17,4 +17,7 @@ export interface MediaUploadResponse {
   conversationId: number;
   mimeType: string;
   fileSizeBytes: number;
+  // GROUP E2EE media only -- present iff this upload was encrypted (see MediaService#uploadConversationMedia).
+  nonce?: string;
+  groupKeyVersion?: number;
 }

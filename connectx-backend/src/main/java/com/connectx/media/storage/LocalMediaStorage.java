@@ -86,6 +86,38 @@ public class LocalMediaStorage implements MediaStorage {
         return new StoredMediaFile(storageKey, contentType, file.getSize());
     }
 
+    // Opaque encrypted extension, deliberately never derived from the claimed mimeType/filename --
+    // see MediaStorage#storeEncrypted's javadoc for why the claim is never trusted for anything
+    // storage- or serving-relevant.
+    private static final String ENCRYPTED_EXTENSION = "enc";
+
+    @Override
+    public StoredMediaFile storeEncrypted(String storageKey, MultipartFile file, String claimedMimeType) {
+        validateUpload(file);
+
+        String contentType = normalizeContentType(claimedMimeType);
+        if (!ALLOWED_MIME_TYPES.contains(contentType)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "UNSUPPORTED_MEDIA_TYPE",
+                    "File type '" + contentType + "' is not supported");
+        }
+        // No matchesSignature/magic-number check here -- the bytes are ciphertext, not the claimed
+        // type's real content, and the server has no key to inspect what they actually are. That is
+        // the entire point of end-to-end encryption, not an oversight.
+
+        Path target = resolveStoragePath(storageKey, ENCRYPTED_EXTENSION);
+
+        try {
+            Files.createDirectories(target.getParent());
+            try (InputStream inputStream = file.getInputStream()) {
+                Files.copy(inputStream, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException ex) {
+            throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "MEDIA_STORE_FAILED", "Failed to store media file");
+        }
+
+        return new StoredMediaFile(storageKey, contentType, file.getSize());
+    }
+
     @Override
     public Resource load(String storageKey, String mimeType) {
         Path mediaPath = resolveExistingPath(storageKey, mimeType);

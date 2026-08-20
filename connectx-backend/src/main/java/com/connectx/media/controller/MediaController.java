@@ -23,12 +23,22 @@ public class MediaController {
         this.mediaService = mediaService;
     }
 
+    // `nonce`/`groupKeyVersion`/`mimeType` are optional form fields, populated only for a GROUP
+    // upload of already-client-side-encrypted bytes (see MediaService#uploadConversationMedia for
+    // the full contract) -- absent/null for every DIRECT upload, unchanged from before this stage.
     @PostMapping(value = "/conversations/{conversationId}/media", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<ApiResponse<MediaUploadResponseDto>> uploadConversationMedia(
             @AuthenticationPrincipal UserPrincipal currentUser,
             @PathVariable Long conversationId,
-            @RequestPart("file") MultipartFile file) {
-        MediaUploadResponseDto response = mediaService.uploadConversationMedia(currentUser.getId(), conversationId, file);
+            @RequestPart("file") MultipartFile file,
+            @RequestParam(value = "nonce", required = false) String nonce,
+            @RequestParam(value = "groupKeyVersion", required = false) String groupKeyVersion,
+            @RequestParam(value = "mimeType", required = false) String mimeType) {
+        Integer parsedKeyVersion = (groupKeyVersion != null && !groupKeyVersion.isBlank())
+                ? Integer.valueOf(groupKeyVersion)
+                : null;
+        MediaUploadResponseDto response = mediaService.uploadConversationMedia(
+                currentUser.getId(), conversationId, file, nonce, parsedKeyVersion, mimeType);
         return ResponseEntity.ok(ApiResponse.success("Media uploaded successfully", response));
     }
 
@@ -39,6 +49,22 @@ public class MediaController {
         MessageMedia media = mediaService.getMediaEntityForUser(currentUser.getId(), mediaId);
         Resource resource = mediaService.getMediaForUser(currentUser.getId(), mediaId);
         String filename = media.getOriginalFilename() != null ? media.getOriginalFilename() : "document";
+
+        boolean isEncrypted = media.getGroupKeyVersion() != null;
+        if (isEncrypted) {
+            // GROUP E2EE media: the bytes served here are ciphertext, not the claimed type's real
+            // content -- the server cannot verify what they actually decrypt to (that's the whole
+            // point of E2EE). Always served as an opaque, forced-download binary regardless of the
+            // claimed mimeType, so a browser can never be tricked into directly rendering untrusted
+            // bytes inline; the app only ever renders the DECRYPTED result, client-side, after a
+            // successful (authenticated) AES-GCM decrypt. See LocalMediaStorage#storeEncrypted.
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CACHE_CONTROL, "private, max-age=3600")
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + ".enc\"")
+                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                    .body(resource);
+        }
+
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, "private, max-age=3600")
                 .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename + "\"")

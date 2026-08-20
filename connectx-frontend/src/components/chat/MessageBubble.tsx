@@ -20,7 +20,7 @@ import {
   CheckCircle2,
   Circle,
 } from 'lucide-react';
-import { Message, User } from '../../types';
+import { Group, Message, User } from '../../types';
 import { ImageMessageContent } from './ImageMessageContent';
 import { LocationMessageContent } from './LocationMessageContent';
 import { DocumentMessageContent } from './DocumentMessageContent';
@@ -103,6 +103,10 @@ interface MessageBubbleProps {
   // currently-cached member (e.g. history from someone who's since left); the name then falls
   // back to the message's own senderUsername, which the backend always populates.
   isGroup?: boolean;
+  // GROUP media only -- passed through to ImageMessageContent/DocumentMessageContent so they can
+  // resolve the decryption key for an encrypted image/document. Best-effort/possibly briefly
+  // undefined, exactly like every other `group` prop copy threaded down from ChatScreen.
+  group?: Group | null;
   senderUser?: User;
   isGroupedWithPrev: boolean;
   isGroupedWithNext: boolean;
@@ -130,6 +134,7 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
   isSelf,
   currentUserId,
   isGroup = false,
+  group,
   senderUser,
   isGroupedWithPrev,
   isGroupedWithNext,
@@ -439,7 +444,7 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
             ))}
         </div>
       )}
-      <div className={`flex flex-col max-w-[85%] md:max-w-[70%] lg:max-w-[65%] ${isSelf ? 'items-end' : 'items-start'}`}>
+      <div className={`flex flex-col max-w-[85%] md:max-w-[70%] lg:max-w-[65%] min-w-0 ${isSelf ? 'items-end' : 'items-start'}`}>
         {showGroupSenderName && (
           <span className="text-[11px] md:text-xs font-semibold text-violet-400 dark:text-violet-300 mb-0.5 px-1 truncate max-w-full select-none">
             {groupSenderDisplayName}
@@ -451,7 +456,7 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
         onPointerLeave={handleBubblePointerUpOrLeave}
         onPointerCancel={handleBubblePointerUpOrLeave}
         onClick={handleBubbleClick}
-        className={`relative transition-all ${selectionMode ? 'cursor-pointer' : ''} ${
+        className={`relative transition-all max-w-full min-w-0 ${selectionMode ? 'cursor-pointer' : ''} ${
           isSelected ? 'ring-2 ring-indigo-500 rounded-2xl' : isPinned ? 'ring-1 ring-amber-400/50 rounded-2xl' : ''
         } ${
           isImageMessage || isDocMessage
@@ -469,8 +474,8 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
       >
         {message.forwarded && !isImageMessage && !isDocMessage && (
           <div className={`flex items-center gap-1 text-[11px] italic mb-1 select-none ${isSelf ? 'text-indigo-100/70' : 'text-slate-400'}`}>
-            <Forward className="w-3 h-3" />
-            <span>Forwarded</span>
+            <Forward className="w-3 h-3 flex-shrink-0" />
+            <span className="truncate">Forwarded</span>
           </div>
         )}
         {/* Reply Quote Card if this message is replying to another message */}
@@ -486,16 +491,16 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
           return (
             <div
               onClick={() => onScrollToMessage?.(message.replyToMessageId!)}
-              className="mb-1.5 p-2 rounded-lg bg-black/25 hover:bg-black/35 active:scale-[0.98] border-l-4 border-indigo-400 cursor-pointer text-xs transition-all select-none"
+              className="mb-1.5 p-2 rounded-lg bg-black/25 hover:bg-black/35 active:scale-[0.98] border-l-4 border-indigo-400 cursor-pointer text-xs transition-all select-none max-w-full min-w-0 overflow-hidden"
               role="button"
               tabIndex={0}
               title="Click to view quoted message"
             >
-              <div className="font-semibold text-indigo-300 dark:text-indigo-200 truncate flex items-center gap-1">
-                <CornerUpLeft className="w-3 h-3" />
-                <span>{message.replyToSenderUsername || 'User'}</span>
+              <div className="font-semibold text-indigo-300 dark:text-indigo-200 truncate flex items-center gap-1 min-w-0">
+                <CornerUpLeft className="w-3 h-3 flex-shrink-0" />
+                <span className="truncate">{message.replyToSenderUsername || 'User'}</span>
               </div>
-              <div className="text-slate-200/90 truncate mt-0.5">
+              <div className="text-slate-200/90 truncate mt-0.5 min-w-0">
                 {message.replyToDeleted ? (
                   <span className="italic text-slate-400">This message was deleted</span>
                 ) : quotedType === 'IMAGE' ? (
@@ -530,10 +535,14 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
             mediaId={message.mediaId}
             mimeType={message.mimeType}
             localMediaUrl={message.localMediaUrl}
-            caption={message.caption}
+            caption={message.decryptedContent || message.caption}
             isSelf={isSelf}
             formattedTime={formattedTime}
             status={renderStatus()}
+            group={group}
+            currentUserId={currentUserId}
+            mediaGroupKeyVersion={message.groupKeyVersion}
+            mediaNonce={message.mediaNonce}
           />
         ) : message.messageType === 'LOCATION' ? (
           <LocationMessageContent
@@ -547,10 +556,14 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
             mediaId={message.mediaId}
             mimeType={message.mimeType}
             fileSizeBytes={message.fileSizeBytes}
-            caption={message.caption}
+            caption={message.decryptedContent || message.caption}
             isSelf={isSelf}
             formattedTime={formattedTime}
             status={renderStatus()}
+            group={group}
+            currentUserId={currentUserId}
+            mediaGroupKeyVersion={message.groupKeyVersion}
+            mediaNonce={message.mediaNonce}
           />
         ) : message.decryptionError ? (
           <div className="flex items-start gap-1.5 text-rose-300 text-xs select-none">

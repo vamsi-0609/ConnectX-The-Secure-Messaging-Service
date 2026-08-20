@@ -35,6 +35,18 @@ public class MessageMedia {
     @Column(name = "original_filename", length = 255)
     private String originalFilename;
 
+    // GROUP E2EE media only (Part 9 hardening stage) -- both null for every DIRECT media row
+    // (unencrypted, unchanged) and for every GROUP media row uploaded before this stage. The
+    // AES-GCM nonce used to encrypt the file bytes themselves under the group's shared key at
+    // version `groupKeyVersion` -- distinct from any nonce protecting an accompanying caption
+    // (that one lives on Message.nonce, reusing the same field TEXT messages already use).
+    // Never a plaintext key; the server never sees anything but ciphertext bytes + this nonce.
+    @Column(name = "nonce", length = 100)
+    private String nonce;
+
+    @Column(name = "group_key_version")
+    private Integer groupKeyVersion;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -109,5 +121,21 @@ public class MessageMedia {
 
     public void setCreatedAt(Instant createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public String getNonce() {
+        return nonce;
+    }
+
+    public void setNonce(String nonce) {
+        this.nonce = nonce;
+    }
+
+    public Integer getGroupKeyVersion() {
+        return groupKeyVersion;
+    }
+
+    public void setGroupKeyVersion(Integer groupKeyVersion) {
+        this.groupKeyVersion = groupKeyVersion;
     }
 }

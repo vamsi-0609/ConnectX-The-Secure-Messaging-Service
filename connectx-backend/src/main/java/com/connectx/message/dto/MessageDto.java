@@ -41,6 +41,15 @@ public class MessageDto {
     private String pinnedByUsername;
     private boolean starred;
 
+    // GROUP E2EE media only (Part 9 hardening stage) -- the AES-GCM nonce the FILE bytes
+    // themselves were encrypted under (distinct from `nonce` above, which for an IMAGE/DOCUMENT
+    // message instead protects the optional encrypted caption). Null for DIRECT media and for
+    // every GROUP media message sent before this stage. Not settable from MessageMedia inside
+    // fromEntity itself -- Message.mediaId is a plain Long, not a JPA relationship -- so callers
+    // that already look up the linked MessageMedia for mimeType/fileSizeBytes set this the same
+    // way, right after fromEntity returns.
+    private String mediaNonce;
+
     public MessageDto() {}
 
     public static MessageDto fromEntity(Message message) {
@@ -75,9 +84,18 @@ public class MessageDto {
         if (message.isDeletedForEveryone()) {
             dto.setCiphertext("[This message was deleted]");
             dto.setNonce("");
-        } else if (dto.getMessageType() == MessageType.IMAGE || dto.getMessageType() == MessageType.LOCATION || dto.getMessageType() == MessageType.DOCUMENT) {
+        } else if (dto.getMessageType() == MessageType.LOCATION) {
+            // LOCATION never carries a ciphertext -- lat/lng/label are its own plain fields.
             dto.setCiphertext("");
             dto.setNonce("");
+        } else if (dto.getMessageType() == MessageType.IMAGE || dto.getMessageType() == MessageType.DOCUMENT) {
+            // GROUP media (Part 9 hardening stage): an IMAGE/DOCUMENT message MAY carry an
+            // encrypted caption in these same fields (see MessageService#sendMessage) -- must pass
+            // through, not be blanked, or the caption ciphertext would never reach the client that
+            // needs to decrypt it. Stays "" for DIRECT and for any GROUP media sent with no caption,
+            // exactly as before this stage (message.getCiphertext() is "" in both those cases).
+            dto.setCiphertext(message.getCiphertext() != null ? message.getCiphertext() : "");
+            dto.setNonce(message.getNonce() != null ? message.getNonce() : "");
         } else {
             dto.setCiphertext(message.getCiphertext());
             dto.setNonce(message.getNonce());
@@ -392,5 +410,13 @@ public class MessageDto {
 
     public void setStarred(boolean starred) {
         this.starred = starred;
+    }
+
+    public String getMediaNonce() {
+        return mediaNonce;
+    }
+
+    public void setMediaNonce(String mediaNonce) {
+        this.mediaNonce = mediaNonce;
     }
 }

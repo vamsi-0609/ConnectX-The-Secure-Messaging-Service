@@ -16,7 +16,7 @@ import {
   Check,
 } from 'lucide-react';
 import { encryptMessage } from '../../crypto/encryption';
-import { encryptWithGroupKey } from '../../crypto/groupCrypto';
+import { encryptWithGroupKey, encryptBytesWithGroupKey } from '../../crypto/groupCrypto';
 import { groupKeyManager } from '../../crypto/groupKeyManager';
 import { keyManager } from '../../crypto/keyManager';
 import { deviceApi } from '../../api/deviceApi';
@@ -33,6 +33,31 @@ import { activityGuard } from '../../utils/activityGuard';
 import { ApiRequestError } from '../../api/apiClient';
 
 const TYPING_IDLE_MS = 3000;
+
+// Shared by every send path (text, image, document) so a user never sees a raw backend error code
+// or crypto term (Part 13: "Never expose technical errors such as AES/ECDH/keyVersion/wrappedKey/
+// nonce/HTTP 409/403"). Pure translation only -- side effects like invalidating a stale cached
+// group key stay at each call site, right where the group/conversationId context already is.
+function friendlySendErrorMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : 'Unknown error';
+  if (
+    message.includes('NO_ACTIVE_CRYPTO_DEVICE') ||
+    message.includes('active cryptographic devices') ||
+    message.includes("hasn't activated secure messaging")
+  ) {
+    return "This user hasn't activated secure messaging yet.";
+  }
+  if (err instanceof ApiRequestError && err.code === 'NOT_CONNECTED') {
+    return "You're no longer connected with this user. Send a new connection request to message them again.";
+  }
+  if (message === 'GROUP_KEY_UNAVAILABLE' || message === 'GROUP_INFO_UNAVAILABLE') {
+    return 'Group security is being updated. Please try again shortly.';
+  }
+  if (err instanceof ApiRequestError && err.code === 'GROUP_KEY_VERSION_MISMATCH') {
+    return 'Group security was just updated. Please try again.';
+  }
+  return message;
+}
 
 interface MessageInputProps {
   conversationId: number;
@@ -109,6 +134,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const [sharingLocation, setSharingLocation] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
   const [showMediaMenu, setShowMediaMenu] = useState(false);
+  const [showGroupMediaMilestoneModal, setShowGroupMediaMilestoneModal] = useState(false);
 
   // Multi-file batch modal state
   const [showBatchModal, setShowBatchModal] = useState(false);
@@ -123,6 +149,17 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const typingIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const closeMediaMenu = () => setShowMediaMenu(false);
+
+  useEffect(() => {
+    if (!showGroupMediaMilestoneModal) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowGroupMediaMilestoneModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showGroupMediaMilestoneModal]);
 
   const stopTyping = () => {
     if (typingIdleTimerRef.current) {
@@ -178,9 +215,13 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     if (!initialSharedMedia) return;
     const { images, docs } = initialSharedMedia;
     if (images.length > 0 || docs.length > 0) {
-      setPendingImages(images);
-      setPendingDocs(docs);
-      setShowBatchModal(true);
+      if (isGroup) {
+        setShowGroupMediaMilestoneModal(true);
+      } else {
+        setPendingImages(images);
+        setPendingDocs(docs);
+        setShowBatchModal(true);
+      }
     }
     onSharedMediaConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -225,22 +266,68 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     setUploadStatus(`Uploading image ${file.name}...`);
 
     try {
-      const uploadResponse = await mediaApi.uploadImage(conversationId, file);
-      await messageApi.sendMessage({
-        conversationId,
-        messageType: 'IMAGE',
-        mediaId: uploadResponse.mediaId,
-        caption,
-        replyToMessageId: replyToId,
-      });
+      let mediaId: number;
+      let mimeType: string;
 
-      onOptimisticImageMessage(
-        uploadResponse.mediaId,
-        caption,
-        localPreviewUrl,
-        uploadResponse.mimeType,
-        replyToId
-      );
+      if (isGroup) {
+        if (!group) {
+          throw new Error('GROUP_INFO_UNAVAILABLE');
+        }
+        // Same deterministic rotation-trigger call site TEXT already uses for a GROUP send --
+        // never a passive resolveGroupKey here (see groupKeyManager's own doc on why).
+        const groupKey = await groupKeyManager.ensureGroupKey(group, currentUserId);
+        if (!groupKey) {
+          throw new Error('GROUP_KEY_UNAVAILABLE');
+        }
+
+        setUploadStatus(`Encrypting image ${file.name}...`);
+        const plaintextBytes = await file.arrayBuffer();
+        const encryptedFile = await encryptBytesWithGroupKey(groupKey, plaintextBytes);
+
+        setUploadStatus(`Uploading image ${file.name}...`);
+        const uploadResponse = await mediaApi.uploadEncryptedGroupMedia(
+          conversationId,
+          encryptedFile.ciphertext,
+          encryptedFile.nonce,
+          group.keyVersion,
+          file.type,
+          file.name
+        );
+        mediaId = uploadResponse.mediaId;
+        mimeType = uploadResponse.mimeType;
+
+        let captionCiphertext: string | undefined;
+        let captionNonce: string | undefined;
+        if (caption) {
+          const encryptedCaption = await encryptWithGroupKey(groupKey, caption);
+          captionCiphertext = encryptedCaption.ciphertext;
+          captionNonce = encryptedCaption.nonce;
+        }
+
+        await messageApi.sendMessage({
+          conversationId,
+          messageType: 'IMAGE',
+          mediaId,
+          encryptionAlgorithm: 'AES-256-GCM',
+          ciphertext: captionCiphertext,
+          nonce: captionNonce,
+          groupKeyVersion: group.keyVersion,
+          replyToMessageId: replyToId,
+        });
+      } else {
+        const uploadResponse = await mediaApi.uploadImage(conversationId, file);
+        mediaId = uploadResponse.mediaId;
+        mimeType = uploadResponse.mimeType;
+        await messageApi.sendMessage({
+          conversationId,
+          messageType: 'IMAGE',
+          mediaId,
+          caption,
+          replyToMessageId: replyToId,
+        });
+      }
+
+      onOptimisticImageMessage(mediaId, caption, localPreviewUrl, mimeType, replyToId);
       onMessageSent?.();
       setText('');
       if (textareaRef.current) {
@@ -250,7 +337,10 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     } catch (err: unknown) {
       URL.revokeObjectURL(localPreviewUrl);
       console.error('[ConnectX] Image message failure:', err);
-      const message = err instanceof Error ? err.message : 'Unknown error';
+      if (err instanceof ApiRequestError && err.code === 'GROUP_KEY_VERSION_MISMATCH' && group) {
+        groupKeyManager.invalidate(group.id);
+      }
+      const message = friendlySendErrorMessage(err);
       alert(`Failed to send image ${file.name}: ` + message);
       throw err instanceof Error ? err : new Error(message);
     } finally {
@@ -271,22 +361,64 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     setUploadStatus(`Uploading document ${filename}...`);
 
     try {
-      const uploadResponse = await mediaApi.uploadMediaFile(conversationId, file);
-      await messageApi.sendMessage({
-        conversationId,
-        messageType: 'DOCUMENT',
-        mediaId: uploadResponse.mediaId,
-        caption: filename,
-        replyToMessageId: replyToId,
-      });
+      let mediaId: number;
+      let mimeType: string;
+      let fileSizeBytes: number;
 
-      onOptimisticDocumentMessage(
-        uploadResponse.mediaId,
-        filename,
-        uploadResponse.mimeType,
-        uploadResponse.fileSizeBytes,
-        replyToId
-      );
+      if (isGroup) {
+        if (!group) {
+          throw new Error('GROUP_INFO_UNAVAILABLE');
+        }
+        const groupKey = await groupKeyManager.ensureGroupKey(group, currentUserId);
+        if (!groupKey) {
+          throw new Error('GROUP_KEY_UNAVAILABLE');
+        }
+
+        setUploadStatus(`Encrypting file ${filename}...`);
+        const plaintextBytes = await file.arrayBuffer();
+        const encryptedFile = await encryptBytesWithGroupKey(groupKey, plaintextBytes);
+
+        setUploadStatus(`Uploading document ${filename}...`);
+        const uploadResponse = await mediaApi.uploadEncryptedGroupMedia(
+          conversationId,
+          encryptedFile.ciphertext,
+          encryptedFile.nonce,
+          group.keyVersion,
+          file.type || 'application/octet-stream',
+          filename
+        );
+        mediaId = uploadResponse.mediaId;
+        mimeType = uploadResponse.mimeType;
+        fileSizeBytes = uploadResponse.fileSizeBytes;
+
+        // Filename rides in the same field an image caption would -- see sendImageFile's identical
+        // encrypt-the-caption step.
+        const encryptedName = await encryptWithGroupKey(groupKey, filename);
+        await messageApi.sendMessage({
+          conversationId,
+          messageType: 'DOCUMENT',
+          mediaId,
+          encryptionAlgorithm: 'AES-256-GCM',
+          ciphertext: encryptedName.ciphertext,
+          nonce: encryptedName.nonce,
+          groupKeyVersion: group.keyVersion,
+          replyToMessageId: replyToId,
+        });
+      } else {
+        const uploadResponse = await mediaApi.uploadMediaFile(conversationId, file);
+        mediaId = uploadResponse.mediaId;
+        mimeType = uploadResponse.mimeType;
+        fileSizeBytes = uploadResponse.fileSizeBytes;
+        await messageApi.sendMessage({
+          conversationId,
+          messageType: 'DOCUMENT',
+          mediaId,
+          caption: filename,
+          replyToMessageId: replyToId,
+        });
+      }
+
+      onOptimisticDocumentMessage(mediaId, filename, mimeType, fileSizeBytes, replyToId);
       onMessageSent?.();
       setText('');
       if (textareaRef.current) {
@@ -295,7 +427,10 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       onCancelReply?.();
     } catch (err: unknown) {
       console.error('[ConnectX] Document message failure:', err);
-      const message = err instanceof Error ? err.message : 'Unknown error';
+      if (err instanceof ApiRequestError && err.code === 'GROUP_KEY_VERSION_MISMATCH' && group) {
+        groupKeyManager.invalidate(group.id);
+      }
+      const message = friendlySendErrorMessage(err);
       alert(`Failed to send file ${filename}: ` + message);
       throw err instanceof Error ? err : new Error(message);
     } finally {
@@ -440,27 +575,13 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       // The optimistic bubble inserted above must not linger looking "sent" once the backend has
       // actually rejected it (e.g. NOT_CONNECTED) -- remove it before surfacing the error.
       onOptimisticMessageFailed?.(clientTempId);
-      let message = err instanceof Error ? err.message : 'Unknown error';
-      if (
-        message.includes('NO_ACTIVE_CRYPTO_DEVICE') ||
-        message.includes('active cryptographic devices') ||
-        message.includes("hasn't activated secure messaging")
-      ) {
-        message = "This user hasn't activated secure messaging yet.";
-      } else if (err instanceof ApiRequestError && err.code === 'NOT_CONNECTED') {
-        message = "You're no longer connected with this user. Send a new connection request to message them again.";
-      } else if (message === 'GROUP_KEY_UNAVAILABLE' || message === 'GROUP_INFO_UNAVAILABLE') {
-        message = 'Group security is being updated. Please try again shortly.';
-      } else if (err instanceof ApiRequestError && err.code === 'GROUP_KEY_VERSION_MISMATCH') {
+      if (err instanceof ApiRequestError && err.code === 'GROUP_KEY_VERSION_MISMATCH' && group) {
         // This client's cached key fell behind a rotation mid-flight -- drop it so the next
         // attempt re-fetches/re-derives the current one instead of retrying with the same stale
         // key indefinitely.
-        if (group) {
-          groupKeyManager.invalidate(group.id);
-        }
-        message = 'Group security was just updated. Please try sending again.';
+        groupKeyManager.invalidate(group.id);
       }
-      alert(message);
+      alert(friendlySendErrorMessage(err));
       // Restore unsent text on failure
       setText(content);
     } finally {
@@ -494,7 +615,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   };
 
   const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    if (isGroup || !e.clipboardData) return;
+    if (!e.clipboardData) return;
 
     const items = Array.from(e.clipboardData.items);
     const imageItem = items.find((item) => item.type.startsWith('image/'));
@@ -607,12 +728,12 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
   return (
     <>
-      <div className="flex-shrink-0 border-t border-slate-200/80 dark:border-slate-800/80 bg-white dark:bg-[#0f172a] px-3 py-2 md:py-3 md:px-8 lg:px-12 xl:px-16 transition-all select-none">
+      <div className="relative w-full px-2.5 sm:px-4 md:px-6 py-2 sm:py-3 bg-white/95 dark:bg-[#0a0e1a]/95 backdrop-blur-sm border-t border-slate-200/90 dark:border-slate-800/80 select-none flex-shrink-0 z-20">
         {/* Reply Preview Bar */}
         {replyTarget && (
-          <div className="max-w-3xl mx-auto mb-2 md:max-w-none md:mx-0 flex items-center justify-between gap-3 p-2.5 bg-indigo-500/10 dark:bg-indigo-950/40 border-l-4 border-indigo-500 rounded-r-xl text-xs animate-pop-in">
+          <div className="w-full mb-2 flex items-center justify-between gap-3 p-2.5 bg-violet-500/10 dark:bg-violet-950/40 border-l-4 border-violet-600 dark:border-violet-500 rounded-r-xl text-xs animate-pop-in">
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5 font-bold text-indigo-600 dark:text-indigo-400">
+              <div className="flex items-center gap-1.5 font-bold text-violet-600 dark:text-violet-400">
                 <CornerUpLeft className="w-3.5 h-3.5" />
                 <span>Replying to {replyTarget.senderUsername}</span>
               </div>
@@ -623,7 +744,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             <button
               type="button"
               onClick={onCancelReply}
-              className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg hover:bg-slate-200/50 dark:hover:bg-slate-800 transition-colors"
+              className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg hover:bg-slate-200/50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
               aria-label="Cancel reply"
             >
               <X className="w-4 h-4" />
@@ -633,7 +754,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
         {/* Edit Preview Bar */}
         {editTarget && (
-          <div className="max-w-3xl mx-auto mb-2 md:max-w-none md:mx-0 flex items-center justify-between gap-3 p-2.5 bg-amber-500/10 dark:bg-amber-950/30 border-l-4 border-amber-500 rounded-r-xl text-xs animate-pop-in">
+          <div className="w-full mb-2 flex items-center justify-between gap-3 p-2.5 bg-amber-500/10 dark:bg-amber-950/30 border-l-4 border-amber-500 rounded-r-xl text-xs animate-pop-in">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5 font-bold text-amber-600 dark:text-amber-400">
                 <Pencil className="w-3.5 h-3.5" />
@@ -643,7 +764,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             <button
               type="button"
               onClick={onCancelEdit}
-              className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg hover:bg-slate-200/50 dark:hover:bg-slate-800 transition-colors"
+              className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg hover:bg-slate-200/50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
               aria-label="Cancel edit"
             >
               <X className="w-4 h-4" />
@@ -652,8 +773,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         )}
 
         {uploadStatus && (
-          <div className="max-w-3xl mx-auto mb-2 md:max-w-none md:mx-0">
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-indigo-500/10 text-indigo-500 text-xs font-medium">
+          <div className="w-full mb-2">
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-violet-500/10 text-violet-600 dark:text-violet-400 text-xs font-medium">
               {uploading || sharingLocation ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
               ) : (
@@ -666,7 +787,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
         <form
           onSubmit={handleSendText}
-          className="max-w-3xl mx-auto flex items-end gap-1.5 md:gap-2 md:max-w-none md:mx-0"
+          className="w-full flex items-center gap-1.5 sm:gap-2 min-w-0"
         >
           <input
             ref={fileInputRef}
@@ -684,43 +805,49 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             onChange={handleDocSelected}
           />
 
-          <div className={`relative flex-shrink-0 mb-1 ${isGroup ? 'invisible pointer-events-none' : ''}`}>
+          <div className="relative flex-shrink-0 flex items-center justify-center">
             <button
               type="button"
-              onClick={() => setShowMediaMenu((open) => !open)}
-              disabled={busy || !!editTarget || isGroup}
-              className="p-2.5 md:p-3 text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-300 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors disabled:opacity-50"
+              onClick={() => {
+                if (isGroup) {
+                  setShowGroupMediaMilestoneModal(true);
+                } else {
+                  setShowMediaMenu((open) => !open);
+                }
+              }}
+              disabled={busy || !!editTarget}
+              className="w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center text-slate-500 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800/60 active:scale-95 transition-all disabled:opacity-50 cursor-pointer"
               aria-label="Open media options"
-              aria-expanded={showMediaMenu}
-              aria-haspopup="menu"
+              aria-expanded={isGroup ? showGroupMediaMilestoneModal : showMediaMenu}
+              aria-haspopup={isGroup ? 'dialog' : 'menu'}
             >
               {uploading || sharingLocation ? (
-                <Loader2 className="w-5 h-5 md:w-[22px] md:h-[22px] animate-spin" />
+                <Loader2 className="w-5 h-5 animate-spin" />
               ) : (
-                <Paperclip className="w-5 h-5 md:w-[22px] md:h-[22px]" />
+                <Paperclip className="w-5 h-5" />
               )}
             </button>
 
-            {showMediaMenu && !editTarget && (
+            {showMediaMenu && !editTarget && !isGroup && (
               <>
-                <div className="fixed inset-0 z-20" onClick={closeMediaMenu} aria-hidden="true" />
+                <div className="fixed inset-0 z-40" onClick={closeMediaMenu} aria-hidden="true" />
                 <div
                   role="menu"
-                  className="absolute bottom-full left-0 mb-2 z-30 w-52 bg-slate-900 border border-slate-700 rounded-xl shadow-xl p-1.5 text-sm"
+                  className="absolute bottom-full left-0 mb-2 z-50 w-52 max-w-[calc(100vw-2rem)] bg-white/95 dark:bg-[#0c101c]/95 border border-slate-200/90 dark:border-slate-800/90 rounded-xl shadow-xl p-1.5 text-xs sm:text-sm backdrop-blur-sm animate-pop-in select-none"
                 >
                   <button
                     type="button"
                     role="menuitem"
                     onClick={handleOpenCamera}
                     disabled={busy}
-                    className="w-full text-left px-3 py-2.5 hover:bg-slate-800 rounded-lg flex items-center gap-3 text-slate-100 disabled:opacity-50"
+                    className="w-full text-left px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800/70 rounded-lg flex items-center gap-3 text-slate-800 dark:text-slate-100 disabled:opacity-50 cursor-pointer transition-colors"
                   >
-                    <span className="flex h-9 w-9 items-center justify-center rounded-full bg-indigo-500/15 text-indigo-300">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-violet-500/15 text-violet-600 dark:text-violet-300 flex-shrink-0">
                       <Camera className="w-4 h-4" />
                     </span>
-                    <span>
+                    <span className="min-w-0">
                       <span className="block font-medium">Camera</span>
-                      <span className="block text-[11px] text-slate-400">Take a photo</span>
+                      <span className="block text-[10px] sm:text-[11px] text-slate-400">Take a photo</span>
                     </span>
                   </button>
 
@@ -729,14 +856,14 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                     role="menuitem"
                     onClick={handleOpenImagePicker}
                     disabled={busy}
-                    className="w-full text-left px-3 py-2.5 hover:bg-slate-800 rounded-lg flex items-center gap-3 text-slate-100 disabled:opacity-50"
+                    className="w-full text-left px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800/70 rounded-lg flex items-center gap-3 text-slate-800 dark:text-slate-100 disabled:opacity-50 cursor-pointer transition-colors"
                   >
-                    <span className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-300">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 flex-shrink-0">
                       <ImageIcon className="w-4 h-4" />
                     </span>
-                    <span>
+                    <span className="min-w-0">
                       <span className="block font-medium">Image</span>
-                      <span className="block text-[11px] text-slate-400">Choose images (max 10)</span>
+                      <span className="block text-[10px] sm:text-[11px] text-slate-400">Choose images (max 10)</span>
                     </span>
                   </button>
 
@@ -745,38 +872,40 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                     role="menuitem"
                     onClick={handleOpenDocPicker}
                     disabled={busy}
-                    className="w-full text-left px-3 py-2.5 hover:bg-slate-800 rounded-lg flex items-center gap-3 text-slate-100 disabled:opacity-50"
+                    className="w-full text-left px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800/70 rounded-lg flex items-center gap-3 text-slate-800 dark:text-slate-100 disabled:opacity-50 cursor-pointer transition-colors"
                   >
-                    <span className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-300 flex-shrink-0">
                       <FileText className="w-4 h-4" />
                     </span>
-                    <span>
+                    <span className="min-w-0">
                       <span className="block font-medium">Document</span>
-                      <span className="block text-[11px] text-slate-400">Share files (max 5)</span>
+                      <span className="block text-[10px] sm:text-[11px] text-slate-400">Share files (max 5)</span>
                     </span>
                   </button>
 
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={handleShareLocation}
-                    disabled={busy}
-                    className="w-full text-left px-3 py-2.5 hover:bg-slate-800 rounded-lg flex items-center gap-3 text-slate-100 disabled:opacity-50"
-                  >
-                    <span className="flex h-9 w-9 items-center justify-center rounded-full bg-rose-500/15 text-rose-300">
-                      <MapPin className="w-4 h-4" />
-                    </span>
-                    <span>
-                      <span className="block font-medium">Location</span>
-                      <span className="block text-[11px] text-slate-400">Share current place</span>
-                    </span>
-                  </button>
+                  {!isGroup && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={handleShareLocation}
+                      disabled={busy}
+                      className="w-full text-left px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800/70 rounded-lg flex items-center gap-3 text-slate-800 dark:text-slate-100 disabled:opacity-50 cursor-pointer transition-colors"
+                    >
+                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-rose-500/15 text-rose-600 dark:text-rose-300 flex-shrink-0">
+                        <MapPin className="w-4 h-4" />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block font-medium">Location</span>
+                        <span className="block text-[10px] sm:text-[11px] text-slate-400">Share current place</span>
+                      </span>
+                    </button>
+                  )}
                 </div>
               </>
             )}
           </div>
 
-          <div className="relative flex-1 min-w-0">
+          <div className="relative flex-1 min-w-0 flex items-center">
             <textarea
               ref={textareaRef}
               rows={1}
@@ -795,25 +924,25 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                   ? `Reply to @${replyTarget.senderUsername}...`
                   : 'Type a message...'
               }
-              className="w-full pl-4 md:pl-5 pr-10 md:pr-12 py-2.5 md:py-3 bg-slate-100 dark:bg-slate-900/90 border border-slate-200 dark:border-slate-700/80 rounded-2xl text-sm md:text-[15px] text-slate-900 dark:text-white placeholder-slate-400 outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 transition-all resize-none max-h-36 overflow-y-auto leading-relaxed select-text"
+              className="w-full pl-3.5 sm:pl-4 pr-8 sm:pr-9 py-2.5 sm:py-3 bg-slate-100/90 dark:bg-slate-900/80 border border-slate-200/90 dark:border-slate-800/80 rounded-2xl text-sm sm:text-[15px] text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 outline-none focus:border-violet-500/60 focus:ring-1 focus:ring-violet-500/30 transition-all resize-none max-h-32 sm:max-h-36 overflow-y-auto leading-relaxed select-text block"
             />
-            <Lock className="w-3.5 h-3.5 md:w-4 md:h-4 absolute right-3.5 md:right-4 bottom-3.5 text-pink-400/70 pointer-events-none" />
+            <Lock className="w-3.5 h-3.5 absolute right-3.5 top-1/2 -translate-y-1/2 text-violet-500/60 dark:text-violet-400/50 pointer-events-none" />
           </div>
 
-          <div className="flex-shrink-0 mb-1">
+          <div className="flex-shrink-0 flex items-center justify-center">
             {text.trim() ? (
               <button
                 type="submit"
                 disabled={busy || submittingEdit}
-                className="p-2.5 md:p-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white rounded-full shadow-md shadow-indigo-600/25 transition-all flex items-center justify-center"
+                className="w-9 h-9 sm:w-10 sm:h-10 bg-violet-600 hover:bg-violet-500 active:scale-95 disabled:opacity-60 text-white rounded-full shadow-sm hover:shadow-md hover:shadow-violet-600/25 transition-all flex items-center justify-center cursor-pointer"
                 aria-label={editTarget ? 'Save edit' : 'Send message'}
               >
                 {sending || submittingEdit ? (
-                  <Loader2 className="w-5 h-5 md:w-[22px] md:h-[22px] animate-spin" />
+                  <Loader2 className="w-5 h-5 animate-spin" />
                 ) : editTarget ? (
-                  <Check className="w-5 h-5 md:w-[22px] md:h-[22px]" />
+                  <Check className="w-5 h-5" />
                 ) : (
-                  <Send className="w-5 h-5 md:w-[22px] md:h-[22px]" />
+                  <Send className="w-5 h-5" />
                 )}
               </button>
             ) : (
@@ -821,10 +950,10 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 type="button"
                 onClick={() => alert('Voice messages are scheduled for a future milestone.')}
                 disabled={!!editTarget}
-                className="p-2.5 md:p-3 text-slate-500 dark:text-slate-400 hover:text-indigo-500 dark:hover:text-indigo-300 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors disabled:opacity-40"
+                className="w-9 h-9 sm:w-10 sm:h-10 text-slate-500 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors disabled:opacity-40 flex items-center justify-center cursor-pointer"
                 aria-label="Record voice message"
               >
-                <Mic className="w-5 h-5 md:w-[22px] md:h-[22px]" />
+                <Mic className="w-5 h-5" />
               </button>
             )}
           </div>
@@ -845,6 +974,44 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           onClose={() => setShowBatchModal(false)}
           onSendBatch={handleSendBatch}
         />
+      )}
+
+      {/* Group Media Future Milestone Modal */}
+      {showGroupMediaMilestoneModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in select-none"
+          onClick={() => setShowGroupMediaMilestoneModal(false)}
+        >
+          <div
+            className="w-full max-w-sm bg-white dark:bg-[#0c101c] border border-slate-200/90 dark:border-slate-800/90 rounded-2xl shadow-2xl p-6 text-center animate-pop-in relative overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Subtle violet top glow */}
+            <div className="absolute -top-12 left-1/2 -translate-x-1/2 w-36 h-36 bg-violet-500/10 dark:bg-violet-500/20 rounded-full blur-2xl pointer-events-none" />
+
+            <div className="relative z-10 flex flex-col items-center">
+              <div className="w-14 h-14 rounded-2xl bg-violet-500/10 dark:bg-violet-500/15 border border-violet-500/20 text-violet-600 dark:text-violet-400 flex items-center justify-center mb-4 shadow-sm">
+                <ImagePlus className="w-6 h-6" />
+              </div>
+
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white tracking-tight">
+                Group Media
+              </h3>
+
+              <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 mt-2 leading-relaxed max-w-xs">
+                Group media sharing is planned for a future ConnectX milestone.
+              </p>
+
+              <button
+                type="button"
+                onClick={() => setShowGroupMediaMilestoneModal(false)}
+                className="mt-6 w-full py-2.5 px-4 rounded-xl bg-violet-600 hover:bg-violet-500 active:scale-[0.98] text-white text-xs sm:text-sm font-semibold shadow-md shadow-violet-600/20 transition-all cursor-pointer"
+              >
+                Got it
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

@@ -124,6 +124,10 @@ export interface Message {
   caption?: string;
   mimeType?: string;
   fileSizeBytes?: number;
+  // GROUP TEXT/IMAGE/DOCUMENT only -- the file's own AES-GCM nonce, distinct from `nonce` above
+  // (which for an encrypted GROUP image/document instead protects the optional caption). Absent
+  // for DIRECT media and for GROUP media sent before the media-encryption stage.
+  mediaNonce?: string;
   latitude?: number;
   longitude?: number;
   locationLabel?: string;

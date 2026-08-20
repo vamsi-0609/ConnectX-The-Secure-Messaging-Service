@@ -1,15 +1,18 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { ChevronDown, Lock } from 'lucide-react';
 import { MessageBubble } from './MessageBubble';
-import { ConversationMember, Message, User } from '../../types';
+import { ConversationMember, Group, Message, User } from '../../types';
 import { buildMessageGroups } from '../../utils/messageGroups';
 
 interface MessageFeedProps {
   messages: Message[];
   currentUserId: number;
-  // GROUP conversations only -- see ChatScreen's own comment on the identically-named prop it
-  // forwards these two from.
+  // GROUP conversations only -- see ChatScreen's own comment on the identically-named props it
+  // forwards these from. `group` is needed by MessageBubble only to resolve a GROUP media
+  // message's decryption key (ImageMessageContent/DocumentMessageContent) -- best-effort, may be
+  // briefly undefined right after opening a group, exactly like ChatScreen's own copy.
   isGroup?: boolean;
+  group?: Group | null;
   groupMembers?: ConversationMember[];
   showRawCiphertext: boolean;
   hasMore?: boolean;
@@ -34,6 +37,7 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
   messages,
   currentUserId,
   isGroup = false,
+  group,
   groupMembers,
   showRawCiphertext,
   hasMore = false,
@@ -259,6 +263,7 @@ export const MessageFeed: React.FC<MessageFeedProps> = ({
                     isSelf={item.isSelf}
                     currentUserId={currentUserId}
                     isGroup={isGroup}
+                    group={isGroup ? group : undefined}
                     senderUser={isGroup ? senderById.get(item.message.senderUserId) : undefined}
                     isGroupedWithPrev={item.isGroupedWithPrev}
                     isGroupedWithNext={item.isGroupedWithNext}

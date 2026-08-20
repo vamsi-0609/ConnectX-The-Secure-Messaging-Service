@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import { Loader2, FileText, Download, ExternalLink, FileArchive, File as FileIcon } from 'lucide-react';
 import { mediaApi } from '../../api/mediaApi';
+import { resolveGroupMediaKey } from '../../crypto/groupMediaKey';
+import { decryptBytesWithGroupKey } from '../../crypto/groupCrypto';
+import { Group } from '../../types';
 
 interface DocumentMessageContentProps {
   mediaId?: number;
@@ -10,6 +13,11 @@ interface DocumentMessageContentProps {
   isSelf: boolean;
   formattedTime?: string;
   status?: React.ReactNode;
+  // GROUP E2EE media only -- see ImageMessageContent's identical props for the full contract.
+  group?: Group | null;
+  currentUserId?: number;
+  mediaGroupKeyVersion?: number;
+  mediaNonce?: string;
 }
 
 function formatBytes(bytes?: number): string {
@@ -46,19 +54,46 @@ export const DocumentMessageContent: React.FC<DocumentMessageContentProps> = ({
   isSelf,
   formattedTime,
   status,
+  group,
+  currentUserId,
+  mediaGroupKeyVersion,
+  mediaNonce,
 }) => {
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
 
   const filename = caption || 'Document';
   const badgeInfo = getFileBadge(mimeType, filename);
+  const isEncrypted = !!(group && currentUserId != null && mediaGroupKeyVersion != null && mediaNonce);
+
+  const getDecryptedBlob = async (): Promise<Blob> => {
+    const rawBlob = await mediaApi.getMediaBlob(mediaId!);
+    if (!isEncrypted) {
+      return rawBlob;
+    }
+    const groupKey = await resolveGroupMediaKey(group!, mediaGroupKeyVersion!, currentUserId!);
+    if (!groupKey) {
+      throw new Error('GROUP_KEY_UNAVAILABLE');
+    }
+    const ciphertext = await rawBlob.arrayBuffer();
+    const decryptedBytes = await decryptBytesWithGroupKey(groupKey, ciphertext, mediaNonce!);
+    return new Blob([decryptedBytes], { type: mimeType || 'application/octet-stream' });
+  };
 
   const handleOpen = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!mediaId || loading || downloading) return;
     setLoading(true);
     try {
-      const url = await mediaApi.getMediaObjectUrl(mediaId);
+      const url = isEncrypted
+        ? await mediaApi.getDecryptedGroupMediaObjectUrl(mediaId, mimeType || 'application/octet-stream', async (ciphertext) => {
+            const groupKey = await resolveGroupMediaKey(group!, mediaGroupKeyVersion!, currentUserId!);
+            if (!groupKey) {
+              throw new Error('GROUP_KEY_UNAVAILABLE');
+            }
+            return decryptBytesWithGroupKey(groupKey, ciphertext, mediaNonce!);
+          })
+        : await mediaApi.getMediaObjectUrl(mediaId);
       window.open(url, '_blank');
     } catch {
       alert('Failed to open document');
@@ -72,7 +107,7 @@ export const DocumentMessageContent: React.FC<DocumentMessageContentProps> = ({
     if (!mediaId || loading || downloading) return;
     setDownloading(true);
     try {
-      const blob = await mediaApi.getMediaBlob(mediaId);
+      const blob = await getDecryptedBlob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;

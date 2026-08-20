@@ -81,3 +81,39 @@ export async function decryptWithGroupKey(groupKey: CryptoKey, ciphertextBase64:
   );
   return new TextDecoder('utf-8').decode(decryptedBuffer);
 }
+
+export interface GroupEncryptedBytesResult {
+  ciphertext: ArrayBuffer;
+  nonce: string;
+}
+
+/**
+ * GROUP media (Part 9 hardening stage): byte-identical AES-GCM parameters to
+ * encryptWithGroupKey/decryptWithGroupKey above (same key type, same 12-byte random IV, no AAD) --
+ * the only difference is skipping the UTF-8 text round-trip so arbitrary binary content (image/
+ * video/file bytes) can be encrypted directly without first being (mis)treated as a string. The
+ * ciphertext is returned as raw bytes, not base64 -- callers upload it directly as a Blob/file part
+ * rather than inflating it ~33% through base64 first; the small nonce still travels as base64
+ * alongside it (mirrors how MessageMedia.nonce is stored/transmitted).
+ */
+export async function encryptBytesWithGroupKey(groupKey: CryptoKey, plaintext: ArrayBuffer): Promise<GroupEncryptedBytesResult> {
+  const subtle = getSubtleCrypto();
+  if (!subtle) {
+    throw new Error('Web Crypto API (SubtleCrypto) is unavailable in this environment.');
+  }
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await subtle.encrypt({ name: 'AES-GCM', iv }, groupKey, plaintext);
+  return {
+    ciphertext,
+    nonce: arrayBufferToBase64(iv.buffer),
+  };
+}
+
+export async function decryptBytesWithGroupKey(groupKey: CryptoKey, ciphertext: ArrayBuffer, nonceBase64: string): Promise<ArrayBuffer> {
+  const subtle = getSubtleCrypto();
+  if (!subtle) {
+    throw new Error('Web Crypto API (SubtleCrypto) is unavailable in this environment.');
+  }
+  const ivBuffer = base64ToArrayBuffer(nonceBase64);
+  return subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(ivBuffer) }, groupKey, ciphertext);
+}

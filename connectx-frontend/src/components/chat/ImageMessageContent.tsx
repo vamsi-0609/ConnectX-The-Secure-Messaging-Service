@@ -3,6 +3,9 @@ import { Loader2, ImageOff, ZoomIn } from 'lucide-react';
 import { mediaApi } from '../../api/mediaApi';
 import { ImageViewerModal } from '../common/ImageViewerModal';
 import { saveImageToGallery } from '../../utils/saveMedia';
+import { resolveGroupMediaKey } from '../../crypto/groupMediaKey';
+import { decryptBytesWithGroupKey } from '../../crypto/groupCrypto';
+import { Group } from '../../types';
 
 interface ImageMessageContentProps {
   mediaId?: number;
@@ -12,6 +15,13 @@ interface ImageMessageContentProps {
   isSelf: boolean;
   formattedTime?: string;
   status?: React.ReactNode;
+  // GROUP E2EE media only -- all four present together iff this image needs client-side
+  // decryption before it can be displayed. Absent for DIRECT (unencrypted, unchanged) and for the
+  // sender's own optimistic bubble (localMediaUrl already points at the real plaintext file).
+  group?: Group | null;
+  currentUserId?: number;
+  mediaGroupKeyVersion?: number;
+  mediaNonce?: string;
 }
 
 export const ImageMessageContent: React.FC<ImageMessageContentProps> = ({
@@ -22,12 +32,18 @@ export const ImageMessageContent: React.FC<ImageMessageContentProps> = ({
   isSelf,
   formattedTime,
   status,
+  group,
+  currentUserId,
+  mediaGroupKeyVersion,
+  mediaNonce,
 }) => {
   const [imageUrl, setImageUrl] = useState<string | null>(localMediaUrl ?? null);
   const [loading, setLoading] = useState(!localMediaUrl && !!mediaId);
   const [error, setError] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  const isEncrypted = !!(group && currentUserId != null && mediaGroupKeyVersion != null && mediaNonce);
 
   useEffect(() => {
     if (localMediaUrl) {
@@ -47,8 +63,17 @@ export const ImageMessageContent: React.FC<ImageMessageContentProps> = ({
     setLoading(true);
     setError(false);
 
-    mediaApi
-      .getMediaObjectUrl(mediaId)
+    const load = isEncrypted
+      ? mediaApi.getDecryptedGroupMediaObjectUrl(mediaId, mimeType || 'image/jpeg', async (ciphertext) => {
+          const groupKey = await resolveGroupMediaKey(group!, mediaGroupKeyVersion!, currentUserId!);
+          if (!groupKey) {
+            throw new Error('GROUP_KEY_UNAVAILABLE');
+          }
+          return decryptBytesWithGroupKey(groupKey, ciphertext, mediaNonce!);
+        })
+      : mediaApi.getMediaObjectUrl(mediaId);
+
+    load
       .then((url) => {
         if (!cancelled) {
           setImageUrl(url);
@@ -65,7 +90,7 @@ export const ImageMessageContent: React.FC<ImageMessageContentProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [mediaId, localMediaUrl]);
+  }, [mediaId, localMediaUrl, isEncrypted, mimeType, group, currentUserId, mediaGroupKeyVersion, mediaNonce]);
 
   const handleSave = async () => {
     setSaving(true);

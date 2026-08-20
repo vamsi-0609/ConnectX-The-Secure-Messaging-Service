@@ -366,73 +366,77 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
   };
 
   return (
-    <div className="chat-screen flex flex-1 min-h-0 min-w-0 flex-col bg-white dark:bg-[#0f172a]">
-      <header className="chat-header flex-shrink-0">
+    <div className="chat-screen flex flex-1 min-h-0 min-w-0 flex-col bg-white dark:bg-[#080b12] relative overflow-hidden h-full">
+      <header className="chat-header flex-shrink-0 z-20">
         {selectionMode ? (
-          <div className="h-[60px] min-h-[60px] md:h-[68px] md:min-h-[68px] px-2 md:px-6 border-b border-slate-200/80 dark:border-slate-800/80 bg-white dark:bg-[#0f172a] flex items-center justify-between select-none">
+          <div className="h-[56px] sm:h-[60px] md:h-[68px] min-h-[56px] sm:min-h-[60px] md:min-h-[68px] px-2.5 sm:px-4 md:px-6 border-b border-slate-200/90 dark:border-slate-800/80 bg-white/95 dark:bg-[#0a0e1a]/95 backdrop-blur-sm flex items-center justify-between select-none">
             <div className="flex items-center gap-2 min-w-0">
               <button
                 onClick={handleExitSelectionMode}
-                className="p-2 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white rounded-lg transition-colors"
+                className="w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800/70 active:scale-95 transition-all cursor-pointer"
                 aria-label="Cancel selection"
               >
                 <X className="w-5 h-5" />
               </button>
-              <span className="font-semibold text-slate-900 dark:text-white text-sm">
+              <span className="font-bold text-slate-900 dark:text-white text-sm sm:text-base">
                 {selectedMessageIds.size} selected
               </span>
             </div>
-            <div className="flex items-center gap-0.5 md:gap-1">
+            <div className="flex items-center gap-0.5 sm:gap-1">
               {singleSelected && (
                 <button
                   onClick={handleReplySelected}
-                  className="p-2 md:p-2.5 text-slate-500 dark:text-slate-400 hover:text-indigo-500 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors"
+                  className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 flex items-center justify-center text-slate-500 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800/70 active:scale-95 transition-all cursor-pointer"
                   aria-label="Reply"
                   title="Reply"
                 >
-                  <CornerUpLeft className="w-5 h-5" />
+                  <CornerUpLeft className="w-4 h-4 sm:w-5 sm:h-5" />
                 </button>
               )}
               {singleSelectedEditable && (
                 <button
                   onClick={handleEditSelected}
-                  className="p-2 md:p-2.5 text-slate-500 dark:text-slate-400 hover:text-indigo-500 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors"
+                  className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 flex items-center justify-center text-slate-500 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800/70 active:scale-95 transition-all cursor-pointer"
                   aria-label="Edit"
                   title="Edit"
                 >
-                  <Pencil className="w-5 h-5" />
+                  <Pencil className="w-4 h-4 sm:w-5 sm:h-5" />
                 </button>
               )}
               {singleSelected && (
                 <button
                   onClick={handleTogglePinSelected}
-                  className="p-2 md:p-2.5 text-slate-500 dark:text-slate-400 hover:text-amber-500 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors"
+                  className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 flex items-center justify-center text-slate-500 dark:text-slate-400 hover:text-amber-500 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800/70 active:scale-95 transition-all cursor-pointer"
                   aria-label={singleSelected.pinnedAt ? 'Unpin' : 'Pin'}
                   title={singleSelected.pinnedAt ? 'Unpin' : 'Pin'}
                 >
-                  {singleSelected.pinnedAt ? <PinOff className="w-5 h-5" /> : <Pin className="w-5 h-5" />}
+                  {singleSelected.pinnedAt ? (
+                    <PinOff className="w-4 h-4 sm:w-5 sm:h-5" />
+                  ) : (
+                    <Pin className="w-4 h-4 sm:w-5 sm:h-5" />
+                  )}
                 </button>
               )}
               <div className="relative">
                 <button
                   onClick={() => setShowBulkReactPicker((v) => !v)}
                   disabled={selectedMessages.length === 0}
-                  className="p-2 md:p-2.5 text-slate-500 dark:text-slate-400 hover:text-amber-500 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors disabled:opacity-40"
+                  className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 flex items-center justify-center text-slate-500 dark:text-slate-400 hover:text-amber-500 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800/70 active:scale-95 transition-all disabled:opacity-40 cursor-pointer"
                   aria-label="React"
                   title="React"
                 >
-                  <SmilePlus className="w-5 h-5" />
+                  <SmilePlus className="w-4 h-4 sm:w-5 sm:h-5" />
                 </button>
                 {showBulkReactPicker && (
                   <>
-                    <div className="fixed inset-0 z-40" onClick={() => setShowBulkReactPicker(false)} />
-                    <div className="absolute right-0 top-full mt-1 z-50 flex items-center gap-0.5 bg-slate-900 border border-slate-700 rounded-full py-1.5 px-2 shadow-2xl animate-pop-in">
+                    <div className="fixed inset-0 z-30" onClick={() => setShowBulkReactPicker(false)} />
+                    <div className="absolute right-0 top-full mt-1.5 z-40 flex items-center gap-1 bg-white/95 dark:bg-[#0c101c]/95 border border-slate-200/90 dark:border-slate-800/90 rounded-full py-1.5 px-2 shadow-2xl animate-pop-in backdrop-blur-sm">
                       {QUICK_REACTIONS.map((emoji) => (
                         <button
                           key={emoji}
                           type="button"
                           onClick={() => handleBulkReact(emoji)}
-                          className="hover:scale-125 active:scale-90 transition-transform text-xl w-9 h-9 flex items-center justify-center rounded-full hover:bg-slate-800"
+                          className="hover:scale-125 active:scale-90 transition-transform text-lg sm:text-xl w-8 h-8 sm:w-9 sm:h-9 flex items-center justify-center rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
                         >
                           {emoji}
                         </button>
@@ -444,38 +448,38 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
               <button
                 onClick={handleBulkStar}
                 disabled={selectedMessages.length === 0}
-                className="p-2 md:p-2.5 text-slate-500 dark:text-slate-400 hover:text-amber-500 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors disabled:opacity-40"
+                className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 flex items-center justify-center text-slate-500 dark:text-slate-400 hover:text-amber-500 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800/70 active:scale-95 transition-all disabled:opacity-40 cursor-pointer"
                 aria-label="Star"
                 title="Star"
               >
-                <Star className="w-5 h-5" />
+                <Star className="w-4 h-4 sm:w-5 sm:h-5" />
               </button>
               <button
                 onClick={handleForwardSelected}
                 disabled={selectedMessages.length === 0}
-                className="p-2 md:p-2.5 text-slate-500 dark:text-slate-400 hover:text-indigo-500 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors disabled:opacity-40"
+                className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 flex items-center justify-center text-slate-500 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800/70 active:scale-95 transition-all disabled:opacity-40 cursor-pointer"
                 aria-label="Forward"
                 title="Forward"
               >
-                <Forward className="w-5 h-5" />
+                <Forward className="w-4 h-4 sm:w-5 sm:h-5" />
               </button>
               <button
                 onClick={handleBulkCopy}
                 disabled={selectedMessages.length === 0}
-                className="hidden sm:flex p-2 md:p-2.5 text-slate-500 dark:text-slate-400 hover:text-indigo-500 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors disabled:opacity-40"
+                className="hidden sm:flex w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 items-center justify-center text-slate-500 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800/70 active:scale-95 transition-all disabled:opacity-40 cursor-pointer"
                 aria-label="Copy"
                 title="Copy"
               >
-                <Copy className="w-5 h-5" />
+                <Copy className="w-4 h-4 sm:w-5 sm:h-5" />
               </button>
               <button
                 onClick={handleBulkDelete}
                 disabled={selectedMessages.length === 0}
-                className="p-2 md:p-2.5 text-slate-500 dark:text-slate-400 hover:text-rose-500 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors disabled:opacity-40"
+                className="w-8 h-8 sm:w-9 sm:h-9 md:w-10 md:h-10 flex items-center justify-center text-slate-500 dark:text-slate-400 hover:text-rose-500 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800/70 active:scale-95 transition-all disabled:opacity-40 cursor-pointer"
                 aria-label="Delete"
                 title="Delete"
               >
-                <Trash2 className="w-5 h-5" />
+                <Trash2 className="w-4 h-4 sm:w-5 sm:h-5" />
               </button>
             </div>
           </div>
@@ -533,6 +537,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
             messages={messages}
             currentUserId={currentUserId}
             isGroup={isGroup}
+            group={group}
             groupMembers={groupMembers}
             showRawCiphertext={showRawCiphertext}
             hasMore={hasMore}
@@ -557,7 +562,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
 
       {isGroup ? (
         group && group.currentUserRole && canSendInGroup(group) ? (
-          <footer className="chat-composer flex-shrink-0">
+          <footer className="chat-composer relative z-30 flex-shrink-0">
             <MessageInput
               conversationId={conversationId}
               isGroup
@@ -580,7 +585,7 @@ export const ChatScreen: React.FC<ChatScreenProps> = ({
           <GroupComposerPlaceholder group={group ?? null} />
         )
       ) : relationship === 'CONNECTED' ? (
-        <footer className="chat-composer flex-shrink-0">
+        <footer className="chat-composer relative z-30 flex-shrink-0">
           <MessageInput
             conversationId={conversationId}
             recipientUserId={recipient?.id || 0}

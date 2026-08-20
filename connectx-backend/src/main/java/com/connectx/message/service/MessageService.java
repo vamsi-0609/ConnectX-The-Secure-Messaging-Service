@@ -168,11 +168,38 @@ public class MessageService {
         MessageType messageType = dto.getMessageType() != null ? dto.getMessageType() : MessageType.TEXT;
         MessageMedia linkedMedia = null;
 
+        // GROUP media (Part 9 hardening stage): the caption is optional, but when a GROUP sender
+        // supplies one it must already be encrypted client-side under the group's current shared
+        // key -- exactly the same ciphertext/nonce/groupKeyVersion contract TEXT already enforces
+        // below, just conditional on a caption actually being present (an image with no caption has
+        // nothing here to encrypt or validate). The media FILE's own encryption was already
+        // validated separately at upload time (MediaService#uploadConversationMedia); this only
+        // covers the caption riding alongside it in this same Message row.
+        boolean hasEncryptedCaption = dto.getCiphertext() != null && !dto.getCiphertext().isBlank();
+
         if (messageType == MessageType.IMAGE || messageType == MessageType.DOCUMENT) {
             if (dto.getMediaId() == null) {
                 throw new ApiException(HttpStatus.BAD_REQUEST, "MEDIA_REQUIRED", "Media ID is required for image/document messages");
             }
             linkedMedia = mediaService.getMediaForMessageSend(currentUserId, conversation.getId(), dto.getMediaId());
+
+            if (groupForSend != null) {
+                if (hasEncryptedCaption) {
+                    if (dto.getNonce() == null || dto.getNonce().isBlank()) {
+                        throw new ApiException(HttpStatus.BAD_REQUEST, "NONCE_REQUIRED", "Nonce is required when a caption ciphertext is provided");
+                    }
+                    if (dto.getGroupKeyVersion() == null || dto.getGroupKeyVersion() != groupForSend.getKeyVersion()) {
+                        throw new ApiException(HttpStatus.CONFLICT, "GROUP_KEY_VERSION_MISMATCH",
+                                "Your group encryption key is out of date");
+                    }
+                } else if (dto.getCaption() != null && !dto.getCaption().isBlank()) {
+                    // A GROUP sender's client must never fall back to a plaintext caption -- this
+                    // would silently defeat the encryption Part 9 exists to guarantee. Reject rather
+                    // than silently store it, so a client-side bug fails loudly instead of leaking.
+                    throw new ApiException(HttpStatus.BAD_REQUEST, "PLAINTEXT_CAPTION_NOT_ALLOWED",
+                            "Group image/document captions must be encrypted");
+                }
+            }
         } else if (messageType == MessageType.LOCATION) {
             validateLocation(dto.getLatitude(), dto.getLongitude());
         } else {
@@ -248,9 +275,18 @@ public class MessageService {
 
         if (messageType == MessageType.IMAGE || messageType == MessageType.DOCUMENT) {
             message.setMediaId(linkedMedia.getId());
-            message.setCaption(normalizeCaption(dto.getCaption()));
-            message.setCiphertext("");
-            message.setNonce("");
+            if (groupForSend != null && hasEncryptedCaption) {
+                // Encrypted GROUP caption -- reuses the same Message.ciphertext/nonce columns TEXT
+                // already uses, never Message.caption (which stays unset/null here, exactly like
+                // DIRECT's plaintext caption never gets a ciphertext).
+                message.setCiphertext(dto.getCiphertext());
+                message.setNonce(dto.getNonce());
+                message.setGroupKeyVersion(dto.getGroupKeyVersion());
+            } else {
+                message.setCaption(normalizeCaption(dto.getCaption()));
+                message.setCiphertext("");
+                message.setNonce("");
+            }
         } else if (messageType == MessageType.LOCATION) {
             message.setLatitude(dto.getLatitude());
             message.setLongitude(dto.getLongitude());
@@ -333,9 +369,13 @@ public class MessageService {
         recvPayload.put("locationLabel", savedMessage.getLocationLabel());
         recvPayload.put("mimeType", linkedMedia != null ? linkedMedia.getMimeType() : null);
         recvPayload.put("fileSizeBytes", linkedMedia != null ? linkedMedia.getFileSizeBytes() : null);
+        recvPayload.put("mediaNonce", linkedMedia != null ? linkedMedia.getNonce() : null);
         recvPayload.put("encryptionAlgorithm", savedMessage.getEncryptionAlgorithm());
-        recvPayload.put("ciphertext", messageType == MessageType.TEXT ? dto.getCiphertext() : "");
-        recvPayload.put("nonce", messageType == MessageType.TEXT ? dto.getNonce() : "");
+        // savedMessage's own ciphertext/nonce (not re-derived from dto) -- correct for TEXT, for a
+        // GROUP encrypted caption on IMAGE/DOCUMENT, and stays "" for DIRECT/no-caption media,
+        // exactly matching what was just persisted above.
+        recvPayload.put("ciphertext", savedMessage.getCiphertext());
+        recvPayload.put("nonce", savedMessage.getNonce());
         recvPayload.put("groupKeyVersion", savedMessage.getGroupKeyVersion());
         recvPayload.put("sentAt", savedMessage.getSentAt().toString());
         recvPayload.put("clientTempId", dto.getRequestId());
@@ -417,6 +457,7 @@ public class MessageService {
         Long fileSizeBytes = linkedMedia != null ? linkedMedia.getFileSizeBytes() : null;
         MessageDto resultDto = MessageDto.fromEntity(savedMessage, mimeType);
         resultDto.setFileSizeBytes(fileSizeBytes);
+        resultDto.setMediaNonce(linkedMedia != null ? linkedMedia.getNonce() : null);
         return resultDto;
     }
 
@@ -496,15 +537,18 @@ public class MessageService {
                 .map(message -> {
                     String mimeType = null;
                     Long fileSizeBytes = null;
+                    String mediaNonce = null;
                     if ((message.getMessageType() == MessageType.IMAGE || message.getMessageType() == MessageType.DOCUMENT) && message.getMediaId() != null) {
                         MessageMedia mm = mediaMap.get(message.getMediaId());
                         if (mm != null) {
                             mimeType = mm.getMimeType();
                             fileSizeBytes = mm.getFileSizeBytes();
+                            mediaNonce = mm.getNonce();
                         }
                     }
                     MessageDto resultDto = MessageDto.fromEntity(message, mimeType);
                     resultDto.setFileSizeBytes(fileSizeBytes);
+                    resultDto.setMediaNonce(mediaNonce);
                     resultDto.setReactions(finalReactionsMap.getOrDefault(message.getId(), List.of()));
                     resultDto.setStarred(starredIds.contains(message.getId()));
                     return resultDto;
