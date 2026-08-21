@@ -50,10 +50,19 @@ export const GroupMembersScreen: React.FC<GroupMembersScreenProps> = ({
 
   useEffect(() => {
     loadMembers();
+    // Phase 5A/5B: also re-fetch whenever the passed-down `group` prop itself changes identity, not
+    // just when the screen is opened for a different group id. App.tsx refreshes its cached Group
+    // (via GROUP_KEY_ROTATION_REQUIRED on direct-add/accept/removal/leave, and GROUP_ROLE_CHANGED on
+    // promote/demote/ownership transfer) and that fresh object flows down as this same `group` prop,
+    // so this lets an already-open Members screen pick up any of those changes without being closed
+    // and reopened. Depends on the object reference itself, not a specific field like
+    // activeMemberCount -- a pure role/ownership change never touches the member count, only the
+    // role field, so a narrower count-only dependency (Phase 5A's original fix) misses it entirely.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [group.id]);
+  }, [group.id, group]);
 
-  const viewerRole: GroupRole = group.currentUserRole ?? 'MEMBER';
+  const currentMember = members.find((m) => m.user.id === currentUserId);
+  const viewerRole: GroupRole = group.currentUserRole ?? currentMember?.role ?? 'MEMBER';
 
   const filtered = members.filter((m) => {
     const q = query.trim().toLowerCase();
@@ -107,24 +116,24 @@ export const GroupMembersScreen: React.FC<GroupMembersScreenProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-40 md:static md:inset-auto md:z-20 w-full md:w-80 h-full bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800/80 flex flex-col flex-shrink-0 animate-slide-right overflow-y-auto text-slate-900 dark:text-white select-none">
-      <div className="h-16 px-4 border-b border-slate-200 dark:border-slate-800/80 flex items-center gap-2 flex-shrink-0">
+    <div className="fixed inset-0 z-40 md:static md:inset-auto md:z-20 w-full md:w-[380px] lg:w-[420px] xl:w-[460px] h-full bg-white dark:bg-[#080b12] border-l border-slate-200/90 dark:border-slate-800/80 flex flex-col flex-shrink-0 animate-slide-right overflow-y-auto text-slate-900 dark:text-white select-none">
+      <div className="h-16 px-4 border-b border-slate-200/80 dark:border-slate-800/80 flex items-center gap-2 flex-shrink-0 bg-slate-50/50 dark:bg-[#0c101c]/60 backdrop-blur-sm">
         <button
           onClick={onBack}
-          className="p-1.5 -ml-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+          className="p-2 -ml-1 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800/70 active:scale-95 transition-all cursor-pointer"
           aria-label="Back"
         >
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="min-w-0">
-          <h3 className="font-bold text-base leading-tight">Members</h3>
+          <h3 className="font-bold text-base leading-tight text-slate-900 dark:text-white">Members</h3>
           <p className="text-xs text-slate-500 dark:text-slate-400">
             {group.activeMemberCount} {group.activeMemberCount === 1 ? 'member' : 'members'}
           </p>
         </div>
       </div>
 
-      <div className="p-3 border-b border-slate-200 dark:border-slate-800/80 space-y-2 flex-shrink-0">
+      <div className="p-4 border-b border-slate-200/80 dark:border-slate-800/80 space-y-2 flex-shrink-0">
         <div className="relative">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
           <input
@@ -132,16 +141,16 @@ export const GroupMembersScreen: React.FC<GroupMembersScreenProps> = ({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search members..."
-            className="w-full pl-9 pr-3 py-2 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/60 rounded-xl text-sm outline-none focus:border-indigo-500/50 transition-colors"
+            className="w-full pl-9 pr-3 py-2 bg-slate-100/90 dark:bg-slate-900/80 border border-slate-200/90 dark:border-slate-800/80 rounded-xl text-sm outline-none focus:border-violet-500/60 focus:ring-1 focus:ring-violet-500/30 text-slate-900 dark:text-white placeholder-slate-400 transition-all"
           />
         </div>
         {(viewerRole === 'OWNER' || viewerRole === 'ADMIN' || group.whoCanInvite === 'ALL_MEMBERS') && (
           <button
             onClick={onOpenAddMembers}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
+            className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs sm:text-sm font-semibold bg-violet-600 hover:bg-violet-500 active:scale-95 text-white transition-all shadow-sm hover:shadow-md hover:shadow-violet-600/20 cursor-pointer"
           >
             <UserPlus className="w-4 h-4" />
-            Add members
+            <span>Add members</span>
           </button>
         )}
       </div>
