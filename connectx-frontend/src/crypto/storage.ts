@@ -9,7 +9,17 @@
  */
 
 const DB_NAME = 'ConnectX_Crypto_Vault';
-const DB_VERSION = 6;
+// Phase 7D-2: bumped 6 -> 7. A browser that reached version 6 BEFORE commit 33e007a added
+// GROUP_KEY_STORE_NAME's creation to onupgradeneeded (same commit that bumped 5 -> 6, but some
+// browsers' on-disk DB was already sitting at 6 from an earlier, unrelated version-6 open before
+// that code shipped -- confirmed live on one such browser: version 6, group_keys absent) will
+// never re-run onupgradeneeded at version 6, since IndexedDB only fires it when the requested
+// version is HIGHER than the existing one. Every store-creation check below is already
+// idempotent (`if (!contains(...))`), so this bump is the only change needed: it forces
+// onupgradeneeded to run once more for any browser below 7, safely no-ops for the three stores
+// that already exist, and creates only the missing group_keys store. A browser already correctly
+// at 6 with all four stores is unaffected until it independently reaches 7 (also a no-op then).
+const DB_VERSION = 7;
 const STORE_NAME = 'private_keys';
 const DEVICE_STORE_NAME = 'device_metadata';
 const DECRYPTED_MSG_STORE_NAME = 'decrypted_messages';
