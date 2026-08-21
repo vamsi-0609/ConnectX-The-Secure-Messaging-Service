@@ -368,6 +368,34 @@ export const App: React.FC = () => {
     return () => clearTimeout(timer);
   }, [status, isOffline]);
 
+  // Mobile keyboard fix (Phase 6D.3 follow-up): index.css's .app-shell reads --app-vv-top/
+  // --app-vv-height to pin its exact box to window.visualViewport instead of trusting
+  // position: fixed alone to keep it in place -- on real Android devices the browser still
+  // visibly panned/scrolled the page to keep a focused composer clear of the keyboard, carrying
+  // the fixed header out of view along with it. Setting these as plain CSS custom properties on
+  // the root element (not React state) means every visualViewport event is a direct, synchronous
+  // style write -- no re-render, no risk of a render loop during the keyboard's open/close
+  // animation, which can fire resize/scroll repeatedly in quick succession.
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+
+    const syncViewport = () => {
+      document.documentElement.style.setProperty('--app-vv-top', `${viewport.offsetTop}px`);
+      document.documentElement.style.setProperty('--app-vv-height', `${viewport.height}px`);
+    };
+
+    syncViewport();
+    viewport.addEventListener('resize', syncViewport);
+    viewport.addEventListener('scroll', syncViewport);
+    return () => {
+      viewport.removeEventListener('resize', syncViewport);
+      viewport.removeEventListener('scroll', syncViewport);
+      document.documentElement.style.removeProperty('--app-vv-top');
+      document.documentElement.style.removeProperty('--app-vv-height');
+    };
+  }, []);
+
   const activeConversationRef = useRef<Conversation | null>(null);
   const activeConversationIdRef = useRef<number | null>(null);
   const activeRequestSeqRef = useRef<number>(0);
