@@ -708,11 +708,52 @@ export const App: React.FC = () => {
       const activeConv = activeConversationRef.current;
       if (activeConv) {
         const existing = byId.get(activeConv.id);
-        byId.set(activeConv.id, {
-          ...(existing ?? activeConv),
-          ...activeConv,
-          members: activeConv.members?.length ? activeConv.members : existing?.members ?? activeConv.members,
-        });
+        if (existing || activeConv.type !== 'GROUP') {
+          byId.set(activeConv.id, {
+            ...(existing ?? activeConv),
+            ...activeConv,
+            members: activeConv.members?.length ? activeConv.members : existing?.members ?? activeConv.members,
+          });
+        } else {
+          // Phase 5E.1: this is a SUCCESSFUL, authoritative fetch (the pinned-resurrection pass
+          // above already re-added anything only transiently missing, e.g. a just-created/joined
+          // group not yet reflected server-side) -- if the actively-open conversation is a GROUP
+          // and it's still absent here, the backend no longer considers this account an active
+          // member. That only happens on removal/leave/group-deletion, which is exactly what
+          // GROUP_ACCESS_REVOKED/CONVERSATION_DELETED already handle live -- this covers the one
+          // gap those WS events can't reach: the revocation happened while this session was
+          // offline, so the event was never delivered. Reuses the identical cleanup those
+          // handlers already perform rather than inventing a new path. Deliberately GROUP-only --
+          // a DIRECT conversation's absence here carries different (hide/delete) semantics this
+          // fix doesn't attempt to interpret, so DIRECT keeps the original unconditional
+          // preservation above.
+          const revokedGroupId = activeConv.id;
+          pinnedConversationsRef.current.delete(revokedGroupId);
+          conversationCache.removeConversation(revokedGroupId);
+          setConversationPreviews((prev) => {
+            if (prev[revokedGroupId] === undefined) return prev;
+            const next = { ...prev };
+            delete next[revokedGroupId];
+            return next;
+          });
+          setGroupInfoById((prev) => {
+            if (prev[revokedGroupId] === undefined) return prev;
+            const next = { ...prev };
+            delete next[revokedGroupId];
+            return next;
+          });
+          setGroupMembersById((prev) => {
+            if (prev[revokedGroupId] === undefined) return prev;
+            const next = { ...prev };
+            delete next[revokedGroupId];
+            return next;
+          });
+          groupKeyManager.cleanupGroup(revokedGroupId);
+          if (activeConversationRef.current?.id === revokedGroupId) {
+            setActiveConversation(null);
+            setMessages([]);
+          }
+        }
       }
 
       const merged = Array.from(byId.values()).sort((a, b) => {
@@ -1124,7 +1165,16 @@ export const App: React.FC = () => {
     };
   }, [conversations, currentUser?.id]);
 
-  const prevWsStatusRef = useRef<string>('');
+  // Reconnect lifecycle tracking for the P0-1 effect below. A plain "previous status"
+  // ref doesn't work here: the CONNECTING state that always sits between DISCONNECTED
+  // and CONNECTED overwrites "previous" before the CONNECTED transition is observed, so
+  // a naive `prev === 'DISCONNECTED'` check never fires. Instead we track two flags
+  // directly: whether we've ever completed a connection at all (so the very first
+  // CONNECTING -> CONNECTED on app load isn't mistaken for a reconnect), and whether a
+  // DISCONNECTED was observed since that last successful connection (so any number of
+  // intermediate CONNECTING attempts in between are ignored).
+  const hasConnectedBeforeRef = useRef(false);
+  const disconnectedSinceConnectRef = useRef(false);
 
   // ── P0-5: Mobile back-button navigation ──────────────────────────────────
   // Push a history entry when the user navigates to a sub-screen so the
@@ -1476,16 +1526,30 @@ export const App: React.FC = () => {
     [currentUser, decryptSingleMessage, updatePreviewIfNewer]
   );
 
-  // ── P0-1: Reload conversations when WebSocket reconnects ──────────────────
-  // If the WS was dropped and reconnected, fetch fresh conversations to catch
-  // any messages that arrived while the socket was disconnected.
+  // ── P0-1: Reconcile authoritative state when WebSocket reconnects ─────────
+  // If the WS was dropped and reconnected, refetch state from the same REST endpoints
+  // used at startup to catch anything that changed while the socket was disconnected
+  // (missed messages, connection/invitation changes, etc). See the refs' declaration
+  // comment above for why this can't be a simple `prev === 'DISCONNECTED'` check.
   useEffect(() => {
-    const prev = prevWsStatusRef.current;
-    prevWsStatusRef.current = status;
-    // Only reload on a genuine reconnect (DISCONNECTED → CONNECTED)
-    if (prev === 'DISCONNECTED' && status === 'CONNECTED' && currentUser) {
-      console.log('[ConnectX] WebSocket reconnected — reloading conversations to catch missed messages.');
+    if (status === 'DISCONNECTED' && hasConnectedBeforeRef.current) {
+      disconnectedSinceConnectRef.current = true;
+      return;
+    }
+
+    if (status !== 'CONNECTED') {
+      return;
+    }
+
+    const isReconnect = hasConnectedBeforeRef.current && disconnectedSinceConnectRef.current;
+    hasConnectedBeforeRef.current = true;
+    disconnectedSinceConnectRef.current = false;
+
+    if (isReconnect && currentUser) {
+      console.log('[ConnectX] WebSocket reconnected — reconciling state with authoritative backend data.');
       loadConversations();
+      loadRelationshipData();
+      loadGroupInvitations();
 
       // loadConversations() above only refreshes sidebar/list metadata -- it never
       // refetches the currently-open conversation's own message list, so anything that
@@ -1502,7 +1566,14 @@ export const App: React.FC = () => {
         fetchAndSetMessagesForConversation(activeConvId, ++activeRequestSeqRef.current, controller.signal);
       }
     }
-  }, [status, currentUser, loadConversations, fetchAndSetMessagesForConversation]);
+  }, [
+    status,
+    currentUser,
+    loadConversations,
+    loadRelationshipData,
+    loadGroupInvitations,
+    fetchAndSetMessagesForConversation,
+  ]);
 
   const loadOlderMessages = useCallback(async () => {
     const convId = activeConversationIdRef.current;
@@ -2050,6 +2121,46 @@ export const App: React.FC = () => {
           setActiveConversation(null);
           setMessages([]);
         }
+      } else if (event.type === 'GROUP_ACCESS_REVOKED') {
+        // Phase 5E: private signal that THIS account's own membership in this group just ended
+        // (removal or voluntary leave) -- GroupService#notifyAccessRevoked, delivered to every
+        // active session of this user independently (their /user/queue/messages, not a group
+        // broadcast). Distinct from GROUP_MEMBER_REMOVED, which only reaches remaining members and
+        // deliberately excludes the departed user. Mirrors CONVERSATION_DELETED's local-cleanup
+        // shape just above (unpin, then drop from every local cache) since from this session's own
+        // perspective the group is now exactly as inaccessible as a deleted conversation -- plus
+        // groupMembersById, which CONVERSATION_DELETED's handler doesn't carry. Every step here is
+        // a no-op-safe removal (filter / presence-checked delete), so a duplicate delivery is
+        // harmless. Deliberately does NOT touch auth/session state, does NOT disconnect the
+        // socket, and does NOT reload the page -- losing one group's membership is not an
+        // account-level event, and unrelated conversations/state are left untouched.
+        const revokedGroupId = event.payload.conversationId as number;
+        pinnedConversationsRef.current.delete(revokedGroupId);
+        conversationCache.removeConversation(revokedGroupId);
+        setConversations((prev) => prev.filter((c) => c.id !== revokedGroupId));
+        setConversationPreviews((prev) => {
+          if (prev[revokedGroupId] === undefined) return prev;
+          const next = { ...prev };
+          delete next[revokedGroupId];
+          return next;
+        });
+        setGroupInfoById((prev) => {
+          if (prev[revokedGroupId] === undefined) return prev;
+          const next = { ...prev };
+          delete next[revokedGroupId];
+          return next;
+        });
+        setGroupMembersById((prev) => {
+          if (prev[revokedGroupId] === undefined) return prev;
+          const next = { ...prev };
+          delete next[revokedGroupId];
+          return next;
+        });
+        groupKeyManager.cleanupGroup(revokedGroupId);
+        if (activeConversationRef.current?.id === revokedGroupId) {
+          setActiveConversation(null);
+          setMessages([]);
+        }
       } else if (event.type === 'GROUP_KEY_ROTATION_REQUIRED') {
         // A membership change (join/removal/leave) just advanced this group's key version --
         // drop the in-memory cache so the next send/decrypt re-checks the server rather than
@@ -2060,7 +2171,31 @@ export const App: React.FC = () => {
         groupApi
           .getGroup(rotatedGroupId)
           .then((freshGroup) => {
-            setGroupInfoById((prev) => ({ ...prev, [rotatedGroupId]: freshGroup }));
+            // Phase 5A: reuse the same helper GROUP_INFO_UPDATED already uses, instead of only
+            // setGroupInfoById -- this is the exact event membership changes (direct-add, invite
+            // accept, remove, leave) actually fire, so it's the one that most needs
+            // groupMembersById kept fresh too (message-feed sender lookups, and any already-open
+            // Members screen -- see GroupMembersScreen's own effect, widened to react to this).
+            handleGroupUpdated(freshGroup);
+            // Phase 5C: this same event is already sent to a brand-new member too -- addMember
+            // runs before markKeyRotationRequired re-queries active members, so a direct-added (or
+            // just-accepted) user is already included in the recipient list. No new backend event
+            // needed: the only missing piece was that this handler never touched `conversations`,
+            // so a direct-added member (who never made a REST call of their own to react to,
+            // unlike an accepter) never saw the group appear in their sidebar. Guarded by an
+            // id-presence check so this is a pure no-op for every other recipient (existing
+            // members on a remove/leave rotation, or an accepter whose own
+            // handleAcceptGroupInvitation-driven loadConversations() already added it) --
+            // upsertConversation's own id-keyed merge-or-prepend is the second, redundant layer of
+            // duplicate protection on top of this check.
+            if (!conversationsRef.current.some((c) => c.id === rotatedGroupId)) {
+              conversationApi
+                .getConversationById(rotatedGroupId)
+                .then((freshConversation) => {
+                  upsertConversation(freshConversation);
+                })
+                .catch(() => {});
+            }
             // Passive-only warm-up if this group is the one currently open (never mints --
             // ensureGroupKey is reserved for the specific deterministic trigger points that
             // caused this rotation in the first place; every open client reacting to this
@@ -2079,6 +2214,40 @@ export const App: React.FC = () => {
         const updatedGroupId = event.payload.conversationId as number;
         groupApi
           .getGroup(updatedGroupId)
+          .then((freshGroup) => {
+            handleGroupUpdated(freshGroup);
+          })
+          .catch(() => {});
+      } else if (event.type === 'GROUP_ROLE_CHANGED') {
+        // A promote/demote or ownership transfer just committed (GroupService#changeRole /
+        // #transferOwnership) -- re-fetch the same way GROUP_INFO_UPDATED does, via the same
+        // handleGroupUpdated helper, so groupInfoById (currentUserRole, permission-derived UI) and
+        // groupMembersById (each member's own role, an already-open Members screen via Phase 5A's
+        // activeMemberCount-reactive effect) both reflect the new role immediately. Delivered to
+        // every active member including the actor's own other sessions -- unlike
+        // GROUP_KEY_ROTATION_REQUIRED this is never confidentiality-scoped and never touches
+        // groupKeyManager, since role/ownership changes never affect who can decrypt.
+        const roleChangedGroupId = event.payload.conversationId as number;
+        groupApi
+          .getGroup(roleChangedGroupId)
+          .then((freshGroup) => {
+            handleGroupUpdated(freshGroup);
+          })
+          .catch(() => {});
+      } else if (event.type === 'GROUP_MEMBER_ADDED' || event.type === 'GROUP_MEMBER_REMOVED') {
+        // Explicit membership-domain notification (Stage 5D), distinct from
+        // GROUP_KEY_ROTATION_REQUIRED's cryptographic-synchronization signal -- both fire for the
+        // same join/removal, but this is the one that exists purely so an already-open Members
+        // screen (or the message feed's sender lookups) picks up "someone joined/left" without
+        // having to infer it from a key-rotation notice. Reuses the same authoritative re-fetch +
+        // handleGroupUpdated helper every other group event already uses -- never trusts the WS
+        // payload as the member list itself, and never mutates groupKeyManager/key state here. Only
+        // ever received by remaining active members (backend excludes the added/removed user
+        // themselves per GroupService#notifyMemberAdded/#notifyMemberRemoved), so there is no risk
+        // of this handler running for a user who no longer has access.
+        const memberChangedGroupId = event.payload.conversationId as number;
+        groupApi
+          .getGroup(memberChangedGroupId)
           .then((freshGroup) => {
             handleGroupUpdated(freshGroup);
           })
@@ -2142,6 +2311,111 @@ export const App: React.FC = () => {
 
         setConversations((prev) => prev.map(patchConversation));
         setActiveConversation((prev) => (prev ? patchConversation(prev) : prev));
+      } else if (event.type === 'CONNECTION_REQUEST_RECEIVED') {
+        // Someone else sent *us* a request -- add it to our incoming list. Keyed by requesterId,
+        // same as loadRelationshipData's initial hydration, so this is naturally idempotent: a
+        // duplicate/replayed event just overwrites the same Map entry rather than creating a second.
+        const request = event.payload.request as ConnectionRequestDto;
+        setReceivedRequestsByUserId((prev) => new Map(prev).set(request.requesterId, request));
+      } else if (event.type === 'CONNECTION_REQUEST_ACCEPTED') {
+        // We are the original requester; the recipient just accepted. Clear our pending "sent"
+        // entry for them and mark them connected -- mirrors handleAcceptConnectionRequest's own
+        // local update on the acceptor's side.
+        const request = event.payload.request as ConnectionRequestDto;
+        setSentRequestsByUserId((prev) => {
+          if (!prev.has(request.recipientId)) return prev;
+          const next = new Map(prev);
+          next.delete(request.recipientId);
+          return next;
+        });
+        setConnectedUserIds((prev) => new Set(prev).add(request.recipientId));
+      } else if (event.type === 'CONNECTION_REQUEST_REJECTED') {
+        // We are the original requester; the recipient just rejected. Clear our pending "sent" entry.
+        const request = event.payload.request as ConnectionRequestDto;
+        setSentRequestsByUserId((prev) => {
+          if (!prev.has(request.recipientId)) return prev;
+          const next = new Map(prev);
+          next.delete(request.recipientId);
+          return next;
+        });
+      } else if (event.type === 'CONNECTION_REQUEST_CANCELLED') {
+        // We are the recipient; the requester cancelled. Clear our pending "received" entry.
+        const request = event.payload.request as ConnectionRequestDto;
+        setReceivedRequestsByUserId((prev) => {
+          if (!prev.has(request.requesterId)) return prev;
+          const next = new Map(prev);
+          next.delete(request.requesterId);
+          return next;
+        });
+      } else if (event.type === 'CONNECTION_REMOVED') {
+        // The other party removed the connection -- drop them from our connected set. The existing
+        // DIRECT conversation (if any) is left untouched, same as handleRemoveConnection's own local
+        // update, letting getRelationshipStatus() derive NOT_CONNECTED/LEGACY_CHAT on its own.
+        const removedByUserId = event.payload.removedByUserId as number;
+        setConnectedUserIds((prev) => {
+          if (!prev.has(removedByUserId)) return prev;
+          const next = new Set(prev);
+          next.delete(removedByUserId);
+          return next;
+        });
+      } else if (event.type === 'USER_BLOCKED') {
+        // We are the one who just got blocked. ConnectX has no "blocked by them" UI state --
+        // blockedUserIds only ever tracks who *we* have blocked (see relationship.ts) -- so this
+        // must NOT add the blocker to that set, which would incorrectly flip the relationship to
+        // BLOCKED_BY_ME from our own side. What actually changed server-side is exactly what
+        // BlockService.blockUser already does before inserting the block row: the connection (if
+        // any) was deleted and the single pending request between us (if any) was cancelled.
+        // Mirror only that already-committed side effect, the same way CONNECTION_REMOVED and
+        // CONNECTION_REQUEST_CANCELLED above do for their own triggers.
+        const blockedByUserId = event.payload.blockedByUserId as number;
+        setConnectedUserIds((prev) => {
+          if (!prev.has(blockedByUserId)) return prev;
+          const next = new Set(prev);
+          next.delete(blockedByUserId);
+          return next;
+        });
+        setSentRequestsByUserId((prev) => {
+          if (!prev.has(blockedByUserId)) return prev;
+          const next = new Map(prev);
+          next.delete(blockedByUserId);
+          return next;
+        });
+        setReceivedRequestsByUserId((prev) => {
+          if (!prev.has(blockedByUserId)) return prev;
+          const next = new Map(prev);
+          next.delete(blockedByUserId);
+          return next;
+        });
+      } else if (event.type === 'USER_UNBLOCKED') {
+        // Intentionally a no-op: unblocking only deletes the block row (BlockService.unblockUser)
+        // -- it never restores a connection or pending request -- and since we were never given a
+        // "blocked by them" state to begin with (see USER_BLOCKED above), there is nothing on our
+        // side to update. Event still delivered for architectural symmetry with USER_BLOCKED.
+      } else if (event.type === 'GROUP_INVITATION_RECEIVED') {
+        // Someone invited us to a group -- add it to our received list. Keyed by invitation id,
+        // same identity loadGroupInvitations' initial hydration uses, so a duplicate/replayed event
+        // just replaces the same array entry instead of appending a second one.
+        const invitation = event.payload.invitation as GroupInvitation;
+        setReceivedGroupInvitations((prev) =>
+          prev.some((i) => i.id === invitation.id)
+            ? prev.map((i) => (i.id === invitation.id ? invitation : i))
+            : [...prev, invitation]
+        );
+      } else if (event.type === 'GROUP_INVITATION_ACCEPTED') {
+        // We are the inviter; the invitee just accepted. Clear our pending "sent" entry -- mirrors
+        // handleAcceptGroupInvitation's own local update on the accepter's side. Group membership,
+        // key rotation, and conversation state are untouched here -- those are handled entirely by
+        // the existing (unmodified) backend call chain and the accepter's own client.
+        const invitation = event.payload.invitation as GroupInvitation;
+        setSentGroupInvitations((prev) => prev.filter((i) => i.id !== invitation.id));
+      } else if (event.type === 'GROUP_INVITATION_REJECTED') {
+        // We are the inviter; the invitee just rejected. Clear our pending "sent" entry.
+        const invitation = event.payload.invitation as GroupInvitation;
+        setSentGroupInvitations((prev) => prev.filter((i) => i.id !== invitation.id));
+      } else if (event.type === 'GROUP_INVITATION_CANCELLED') {
+        // We are the invitee; the inviter cancelled. Clear our pending "received" entry.
+        const invitation = event.payload.invitation as GroupInvitation;
+        setReceivedGroupInvitations((prev) => prev.filter((i) => i.id !== invitation.id));
       }
     });
 
@@ -2156,6 +2430,7 @@ export const App: React.FC = () => {
     refreshPinnedMessage,
     updatePreviewIfNewer,
     upsertConversation,
+    handleGroupUpdated,
   ]);
 
   // Defense-in-depth send-boundary guard: ChatScreen already hides the composer entirely (renders

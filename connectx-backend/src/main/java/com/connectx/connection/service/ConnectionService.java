@@ -2,6 +2,7 @@ package com.connectx.connection.service;
 
 import com.connectx.block.repository.UserBlockRepository;
 import com.connectx.common.exception.ApiException;
+import com.connectx.common.util.AfterCommitExecutor;
 import com.connectx.connection.dto.ConnectionRequestDto;
 import com.connectx.connection.dto.SendConnectionRequestDto;
 import com.connectx.connection.dto.UserConnectionDto;
@@ -14,17 +15,20 @@ import com.connectx.connection.repository.UserConnectionRepository;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
 import com.connectx.user.service.ProfileVisibilityService;
+import com.connectx.websocket.dto.WsEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
@@ -37,6 +41,8 @@ public class ConnectionService {
     private final UserRepository userRepository;
     private final UserBlockRepository userBlockRepository;
     private final ProfileVisibilityService profileVisibilityService;
+    private final SimpMessagingTemplate messagingTemplate;
+    private final AfterCommitExecutor afterCommitExecutor;
     // Self-injected proxy so the REQUIRES_NEW methods below actually run through Spring's
     // transactional AOP proxy when invoked from within this class -- the same pattern already
     // proven in MessageService for the reaction/star insert races (see
@@ -51,13 +57,41 @@ public class ConnectionService {
                               UserRepository userRepository,
                               UserBlockRepository userBlockRepository,
                               ProfileVisibilityService profileVisibilityService,
+                              SimpMessagingTemplate messagingTemplate,
+                              AfterCommitExecutor afterCommitExecutor,
                               @Lazy ConnectionService self) {
         this.connectionRequestRepository = connectionRequestRepository;
         this.userConnectionRepository = userConnectionRepository;
         this.userRepository = userRepository;
         this.userBlockRepository = userBlockRepository;
         this.profileVisibilityService = profileVisibilityService;
+        this.messagingTemplate = messagingTemplate;
+        this.afterCommitExecutor = afterCommitExecutor;
         this.self = self;
+    }
+
+    // Connection-lifecycle real-time notifications (Phase 2). REST remains the sole authoritative
+    // mutation path -- these only notify the *other* party's already-open client so it doesn't sit
+    // stale until a manual refresh/reconnect. Always scheduled via afterCommitExecutor so the event
+    // can never reach a client before the row it describes is actually durable (see each call site:
+    // scheduled at the end of an @Transactional method, after all persistence for that method).
+    // Each DTO is built from the perspective of whoever is *receiving* the event (viewerId), not the
+    // actor, so profile-photo visibility (EVERYONE/CONNECTIONS) is evaluated correctly for them.
+    private void notifyConnectionEvent(String type, String recipientUsername, ConnectionRequestDto viewerScopedDto) {
+        afterCommitExecutor.runAfterCommit(() -> {
+            WsEvent event = WsEvent.of(type, Map.of("request", viewerScopedDto));
+            messagingTemplate.convertAndSendToUser(recipientUsername, "/queue/messages", event);
+        });
+    }
+
+    private void notifyConnectionRemoved(String recipientUsername, Long removedByUserId, String removedByUsername) {
+        afterCommitExecutor.runAfterCommit(() -> {
+            WsEvent event = WsEvent.of(
+                    "CONNECTION_REMOVED",
+                    Map.of("removedByUserId", removedByUserId, "removedByUsername", removedByUsername)
+            );
+            messagingTemplate.convertAndSendToUser(recipientUsername, "/queue/messages", event);
+        });
     }
 
     @Transactional
@@ -99,6 +133,11 @@ public class ConnectionService {
 
         try {
             ConnectionRequest saved = self.insertConnectionRequestInNewTransaction(requester, recipient);
+            notifyConnectionEvent(
+                    "CONNECTION_REQUEST_RECEIVED",
+                    recipient.getUsername(),
+                    ConnectionRequestDto.fromEntity(saved, recipientId, profileVisibilityService)
+            );
             return ConnectionRequestDto.fromEntity(saved, currentUserId, profileVisibilityService);
         } catch (DataIntegrityViolationException e) {
             // Lost a race with a concurrent request for the same ordered pair (uk_connreq_pending_pair).
@@ -171,6 +210,12 @@ public class ConnectionService {
             }
         }
 
+        notifyConnectionEvent(
+                "CONNECTION_REQUEST_ACCEPTED",
+                request.getRequester().getUsername(),
+                ConnectionRequestDto.fromEntity(request, requesterId, profileVisibilityService)
+        );
+
         return ConnectionRequestDto.fromEntity(request, currentUserId, profileVisibilityService);
     }
 
@@ -194,6 +239,13 @@ public class ConnectionService {
         request.setStatus(ConnectionRequestStatus.REJECTED);
         request.setRespondedAt(Instant.now());
         connectionRequestRepository.save(request);
+
+        notifyConnectionEvent(
+                "CONNECTION_REQUEST_REJECTED",
+                request.getRequester().getUsername(),
+                ConnectionRequestDto.fromEntity(request, request.getRequester().getId(), profileVisibilityService)
+        );
+
         return ConnectionRequestDto.fromEntity(request, currentUserId, profileVisibilityService);
     }
 
@@ -212,6 +264,13 @@ public class ConnectionService {
         request.setStatus(ConnectionRequestStatus.CANCELLED);
         request.setRespondedAt(Instant.now());
         connectionRequestRepository.save(request);
+
+        notifyConnectionEvent(
+                "CONNECTION_REQUEST_CANCELLED",
+                request.getRecipient().getUsername(),
+                ConnectionRequestDto.fromEntity(request, request.getRecipient().getId(), profileVisibilityService)
+        );
+
         return ConnectionRequestDto.fromEntity(request, currentUserId, profileVisibilityService);
     }
 
@@ -242,6 +301,11 @@ public class ConnectionService {
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "CONNECTION_NOT_FOUND",
                         "You are not connected with this user"));
 
+        User actor = low.equals(currentUserId) ? connection.getUserLow() : connection.getUserHigh();
+        User other = low.equals(currentUserId) ? connection.getUserHigh() : connection.getUserLow();
+
         userConnectionRepository.delete(connection);
+
+        notifyConnectionRemoved(other.getUsername(), currentUserId, actor.getUsername());
     }
 }

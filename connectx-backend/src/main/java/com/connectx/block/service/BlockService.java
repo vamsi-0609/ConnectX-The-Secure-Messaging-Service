@@ -4,16 +4,19 @@ import com.connectx.block.dto.UserBlockDto;
 import com.connectx.block.entity.UserBlock;
 import com.connectx.block.repository.UserBlockRepository;
 import com.connectx.common.exception.ApiException;
+import com.connectx.common.util.AfterCommitExecutor;
 import com.connectx.connection.entity.ConnectionRequestStatus;
 import com.connectx.connection.repository.ConnectionRequestRepository;
 import com.connectx.connection.repository.UserConnectionRepository;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
+import com.connectx.websocket.dto.WsEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Propagation;
@@ -21,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
@@ -32,6 +36,8 @@ public class BlockService {
     private final UserRepository userRepository;
     private final UserConnectionRepository userConnectionRepository;
     private final ConnectionRequestRepository connectionRequestRepository;
+    private final SimpMessagingTemplate messagingTemplate;
+    private final AfterCommitExecutor afterCommitExecutor;
     // Self-injected proxy so insertBlockInNewTransaction below actually runs through Spring's
     // transactional AOP proxy when invoked from within this class -- the same REQUIRES_NEW +
     // DataIntegrityViolationException-catch pattern already proven in ConnectionService
@@ -42,12 +48,42 @@ public class BlockService {
                          UserRepository userRepository,
                          UserConnectionRepository userConnectionRepository,
                          ConnectionRequestRepository connectionRequestRepository,
+                         SimpMessagingTemplate messagingTemplate,
+                         AfterCommitExecutor afterCommitExecutor,
                          @Lazy BlockService self) {
         this.userBlockRepository = userBlockRepository;
         this.userRepository = userRepository;
         this.userConnectionRepository = userConnectionRepository;
         this.connectionRequestRepository = connectionRequestRepository;
+        this.messagingTemplate = messagingTemplate;
+        this.afterCommitExecutor = afterCommitExecutor;
         this.self = self;
+    }
+
+    // Block-lifecycle real-time notifications (Phase 3), following the exact same pattern as
+    // ConnectionService's Phase 2 notifications: REST/DB remain authoritative, this only informs
+    // the *other* party's already-open client after commit. Only the blocked/unblocked user is
+    // notified -- the actor already gets their own local state update from the REST response
+    // (see App.tsx's existing handleBlockUser/handleUnblockUser), matching every other Phase 2
+    // event's actor-vs-recipient targeting.
+    private void notifyUserBlocked(String targetUsername, Long blockedByUserId, String blockedByUsername) {
+        afterCommitExecutor.runAfterCommit(() -> {
+            WsEvent event = WsEvent.of(
+                    "USER_BLOCKED",
+                    Map.of("blockedByUserId", blockedByUserId, "blockedByUsername", blockedByUsername)
+            );
+            messagingTemplate.convertAndSendToUser(targetUsername, "/queue/messages", event);
+        });
+    }
+
+    private void notifyUserUnblocked(String targetUsername, Long unblockedByUserId, String unblockedByUsername) {
+        afterCommitExecutor.runAfterCommit(() -> {
+            WsEvent event = WsEvent.of(
+                    "USER_UNBLOCKED",
+                    Map.of("unblockedByUserId", unblockedByUserId, "unblockedByUsername", unblockedByUsername)
+            );
+            messagingTemplate.convertAndSendToUser(targetUsername, "/queue/messages", event);
+        });
     }
 
     // READ_COMMITTED (not the MySQL default REPEATABLE READ): on the losing side of a race, the
@@ -90,6 +126,7 @@ public class BlockService {
 
         try {
             UserBlock saved = self.insertBlockInNewTransaction(blocker, blocked);
+            notifyUserBlocked(blocked.getUsername(), currentUserId, blocker.getUsername());
             return UserBlockDto.fromEntity(saved);
         } catch (DataIntegrityViolationException e) {
             // Lost a race with a concurrent identical block insert (uk_user_blocks_pair) -- the
@@ -133,7 +170,10 @@ public class BlockService {
         // permission-checked.
         userBlockRepository.findByBlockerIdAndBlockedId(currentUserId, targetUserId)
                 .ifPresentOrElse(
-                        userBlockRepository::delete,
+                        existing -> {
+                            userBlockRepository.delete(existing);
+                            notifyUserUnblocked(existing.getBlocked().getUsername(), currentUserId, existing.getBlocker().getUsername());
+                        },
                         () -> log.debug("Unblock no-op, no existing block: blockerId={}, blockedId={}", currentUserId, targetUserId)
                 );
     }

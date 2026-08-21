@@ -231,6 +231,102 @@ public class GroupService {
     }
 
     /**
+     * Groups Stage 5B: tells every currently-active member's already-open client that a role
+     * changed (promote/demote via {@link #changeRole}, or ownership transfer via
+     * {@link #transferOwnership}) -- same shape and rationale as {@link #notifyGroupInfoChanged},
+     * just a distinct event type so the frontend isn't forced to conflate "a role changed" with
+     * "settings/avatar/name changed" the way reusing GROUP_INFO_UPDATED would. Deliberately
+     * includes the acting user's own username in the recipient list (unlike
+     * {@link #markKeyRotationRequired}'s membership-confidentiality exclusion, which does not apply
+     * here): a role/ownership change is not confidentiality-relevant, and the actor's *other*
+     * devices/tabs still need the same notification a second party would get, since this method
+     * carries no assumption that the caller's own session is the only one open for that account.
+     * No key rotation, no key-material payload -- role/ownership changes never affect who can
+     * decrypt (see {@link #changeRole} and {@link #transferOwnership}'s own javadoc), so this is
+     * purely a UI/authorization-state synchronization signal.
+     */
+    private void notifyGroupRoleChanged(Long groupId, Long affectedUserId, Long changedByUserId) {
+        List<ConversationMember> activeMembers = conversationMemberRepository
+                .findByConversationIdAndDeletedAtIsNullWithUsers(groupId);
+        List<String> usernames = activeMembers.stream()
+                .filter(m -> m.getUser() != null)
+                .map(m -> m.getUser().getUsername())
+                .collect(Collectors.toList());
+
+        afterCommitExecutor.runAfterCommit(() -> {
+            WsEvent roleChangedEvent = WsEvent.of("GROUP_ROLE_CHANGED", Map.of(
+                    "conversationId", groupId,
+                    "affectedUserId", affectedUserId,
+                    "changedByUserId", changedByUserId
+            ));
+            for (String username : usernames) {
+                messagingTemplate.convertAndSendToUser(username, "/queue/messages", roleChangedEvent);
+            }
+        });
+    }
+
+    /**
+     * Groups Stage 5D: explicit membership-domain notification, distinct from
+     * {@link #markKeyRotationRequired}'s cryptographic-synchronization signal -- both fire for the
+     * same join, but this one exists purely so an already-open Members screen can react to "someone
+     * joined" without having to infer it from a key-rotation notice. Deliberately excludes the
+     * newly added member themselves: their own client already has everything it needs from the
+     * existing GROUP_KEY_ROTATION_REQUIRED + Phase 5C conversation-sync path (which they also
+     * receive, since markKeyRotationRequired's active-member query runs after this same addMember
+     * call), so sending them a second, redundant event here would add nothing. Package-visible: called
+     * from GroupInvitationService (direct-add and invitation-accept), the only two paths that add a
+     * member via an actual join rather than group creation -- see the two call sites' own comments for
+     * why {@link #createGroup}'s owner-membership insert must NOT trigger this (there is no one else
+     * in the group yet to notify, and the owner's own initial membership is the group's starting
+     * state, not a "join" event, mirroring markKeyRotationRequired's identical exclusion).
+     */
+    void notifyMemberAdded(Long groupId, Long addedUserId) {
+        List<ConversationMember> activeMembers = conversationMemberRepository
+                .findByConversationIdAndDeletedAtIsNullWithUsers(groupId);
+        List<String> usernames = activeMembers.stream()
+                .filter(m -> m.getUser() != null && !m.getUser().getId().equals(addedUserId))
+                .map(m -> m.getUser().getUsername())
+                .collect(Collectors.toList());
+
+        afterCommitExecutor.runAfterCommit(() -> {
+            WsEvent memberAddedEvent = WsEvent.of("GROUP_MEMBER_ADDED",
+                    Map.of("conversationId", groupId, "memberId", addedUserId));
+            for (String username : usernames) {
+                messagingTemplate.convertAndSendToUser(username, "/queue/messages", memberAddedEvent);
+            }
+        });
+    }
+
+    /**
+     * Groups Stage 5D: the membership-domain counterpart to {@link #notifyMemberAdded}, for removal
+     * and voluntary leave (both go through {@link #endMembership}, so this is added there once
+     * rather than duplicated in removeMember/leaveGroup). SECURITY-CRITICAL: the removed/departed
+     * user must never receive this event -- endMembership always sets the member's deletedAt before
+     * calling this, and this method's active-member query (the same
+     * findByConversationIdAndDeletedAtIsNullWithUsers already used by
+     * {@link #markKeyRotationRequired}, which has excluded a departed member this same way since
+     * Stage 3) naturally excludes them as a result. This is not a separate check to remember to keep
+     * in sync -- it is the same exclusion mechanism the codebase already relies on for
+     * GROUP_KEY_ROTATION_REQUIRED, reused unmodified.
+     */
+    private void notifyMemberRemoved(Long groupId, Long removedUserId) {
+        List<ConversationMember> activeMembers = conversationMemberRepository
+                .findByConversationIdAndDeletedAtIsNullWithUsers(groupId);
+        List<String> usernames = activeMembers.stream()
+                .filter(m -> m.getUser() != null)
+                .map(m -> m.getUser().getUsername())
+                .collect(Collectors.toList());
+
+        afterCommitExecutor.runAfterCommit(() -> {
+            WsEvent memberRemovedEvent = WsEvent.of("GROUP_MEMBER_REMOVED",
+                    Map.of("conversationId", groupId, "memberId", removedUserId));
+            for (String username : usernames) {
+                messagingTemplate.convertAndSendToUser(username, "/queue/messages", memberRemovedEvent);
+            }
+        });
+    }
+
+    /**
      * Group photo upload. Gated by {@code who_can_edit_group_info} (requireCanEditGroupInfo),
      * never a hardcoded owner-only rule -- a group's avatar is part of its "info" exactly like
      * name/description would be. Reuses GroupImageStorage (a completely separate storage root and
@@ -302,6 +398,7 @@ public class GroupService {
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "NOT_GROUP_MEMBER", "Target user is not an active member of this group"));
         target.setRole(newRole);
         conversationMemberRepository.save(target);
+        notifyGroupRoleChanged(groupId, targetUserId, actorUserId);
 
         boolean photoVisible = profileVisibilityService.isProfilePhotoVisible(target.getUser(), actorUserId);
         return ConversationMemberDto.fromEntity(target, photoVisible);
@@ -406,6 +503,45 @@ public class GroupService {
         // group key must rotate so this now-departed member cannot decrypt any future message. See
         // markKeyRotationRequired's own javadoc for the full rationale.
         markKeyRotationRequired(groupId);
+        // Membership-domain notification (Stage 5D) for the remaining members' UI -- see
+        // notifyMemberRemoved's own javadoc for why the departed user is safely excluded.
+        notifyMemberRemoved(groupId, userId);
+        // Phase 5E: private multi-session revocation signal for the departed user's own account --
+        // see notifyAccessRevoked's own javadoc for why this can't just be notifyMemberRemoved
+        // re-targeted at them.
+        notifyAccessRevoked(groupId, userId);
+    }
+
+    /**
+     * Groups Phase 5E: private counterpart to {@link #notifyMemberRemoved}, for the one recipient
+     * that method deliberately excludes -- the user whose own membership just ended (removal or
+     * voluntary leave, both via {@link #endMembership}). Exists because a user can have more than
+     * one active session (multiple tabs/devices); only the session that made the REST call (if any --
+     * a removal is made by the *other* party, so the removed user's sessions never make one at all)
+     * learns about the change locally, leaving any other open session with stale local group state
+     * until it next happens to reconcile. This event carries no membership-list data -- it is purely
+     * a "go invalidate your own local copy of this group" signal, distinct in kind from
+     * GROUP_MEMBER_REMOVED (a membership-roster notice for members who are still active) and from
+     * GROUP_KEY_ROTATION_REQUIRED (a cryptographic-sync signal every remaining member also gets).
+     * Deliberately sent to ONLY the departed user's own queue -- never broadcast, never containing
+     * key material -- via the same convertAndSendToUser mechanism already used for every other
+     * per-user WS notification in this class, so no new delivery path is introduced. Ordering
+     * against GROUP_KEY_ROTATION_REQUIRED is intentionally not guaranteed: the frontend handler for
+     * this event only discards locally-cached UI state, never resolves or mints a group key, so it
+     * is safe regardless of which of the two events a client happens to process first.
+     */
+    private void notifyAccessRevoked(Long groupId, Long revokedUserId) {
+        String username = userRepository.findById(revokedUserId)
+                .map(User::getUsername)
+                .orElse(null);
+        if (username == null) {
+            return;
+        }
+        afterCommitExecutor.runAfterCommit(() -> {
+            WsEvent accessRevokedEvent = WsEvent.of("GROUP_ACCESS_REVOKED",
+                    Map.of("conversationId", groupId));
+            messagingTemplate.convertAndSendToUser(username, "/queue/messages", accessRevokedEvent);
+        });
     }
 
     /**
@@ -487,6 +623,7 @@ public class GroupService {
         newOwner.setRole(GroupRole.OWNER);
         conversationMemberRepository.save(currentOwner);
         conversationMemberRepository.save(newOwner);
+        notifyGroupRoleChanged(groupId, newOwnerUserId, actorUserId);
     }
 
     /**

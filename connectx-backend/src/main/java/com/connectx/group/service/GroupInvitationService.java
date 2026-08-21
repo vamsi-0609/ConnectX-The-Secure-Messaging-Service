@@ -1,6 +1,7 @@
 package com.connectx.group.service;
 
 import com.connectx.common.exception.ApiException;
+import com.connectx.common.util.AfterCommitExecutor;
 import com.connectx.conversation.entity.Conversation;
 import com.connectx.conversation.entity.GroupRole;
 import com.connectx.conversation.repository.ConversationRepository;
@@ -15,11 +16,13 @@ import com.connectx.group.repository.GroupInvitationRepository;
 import com.connectx.user.entity.User;
 import com.connectx.user.repository.UserRepository;
 import com.connectx.user.service.ProfileVisibilityService;
+import com.connectx.websocket.dto.WsEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Propagation;
@@ -50,6 +53,8 @@ public class GroupInvitationService {
     private final ConversationRepository conversationRepository;
     private final UserRepository userRepository;
     private final ProfileVisibilityService profileVisibilityService;
+    private final SimpMessagingTemplate messagingTemplate;
+    private final AfterCommitExecutor afterCommitExecutor;
     // Self-injected proxy so insertPendingInvitationInNewTransaction's REQUIRES_NEW actually runs
     // through Spring's transactional AOP proxy when invoked from createInvitation below -- same
     // pattern and rationale as ConnectionService#self (see that field's javadoc): a duplicate
@@ -65,6 +70,8 @@ public class GroupInvitationService {
                                    ConversationRepository conversationRepository,
                                    UserRepository userRepository,
                                    ProfileVisibilityService profileVisibilityService,
+                                   SimpMessagingTemplate messagingTemplate,
+                                   AfterCommitExecutor afterCommitExecutor,
                                    @Lazy GroupInvitationService self) {
         this.groupAuthorizationService = groupAuthorizationService;
         this.groupService = groupService;
@@ -73,7 +80,25 @@ public class GroupInvitationService {
         this.conversationRepository = conversationRepository;
         this.userRepository = userRepository;
         this.profileVisibilityService = profileVisibilityService;
+        this.messagingTemplate = messagingTemplate;
+        this.afterCommitExecutor = afterCommitExecutor;
         this.self = self;
+    }
+
+    // Group-invitation-lifecycle real-time notifications (Phase 4) -- same pattern as
+    // ConnectionService's Phase 2 / BlockService's Phase 3 notifications: REST/DB remain
+    // authoritative, this only informs the *other* party's already-open client after commit.
+    // Deliberately scoped to the invitation record only (GroupInvitationDto) -- never touches
+    // group membership, key rotation, or conversation state, all of which are handled entirely by
+    // the existing, untouched groupService.addMember/markKeyRotationRequired calls at each call
+    // site. The recipient's own action (accept/reject/cancel) already updates their own state from
+    // the REST response; only the *other* party needs the WS nudge, matching every prior phase's
+    // actor-vs-recipient targeting.
+    private void notifyInvitationEvent(String type, String recipientUsername, GroupInvitationDto viewerScopedDto) {
+        afterCommitExecutor.runAfterCommit(() -> {
+            WsEvent event = WsEvent.of(type, Map.of("invitation", viewerScopedDto));
+            messagingTemplate.convertAndSendToUser(recipientUsername, "/queue/messages", event);
+        });
     }
 
     // ==================== create (invite or direct-add) ====================
@@ -108,6 +133,11 @@ public class GroupInvitationService {
             // New active member obtained access -- the shared group key must rotate so they cannot
             // decrypt any pre-existing message (see GroupService#markKeyRotationRequired's javadoc).
             groupService.markKeyRotationRequired(groupId);
+            // Membership-domain notification (Stage 5D) for the OTHER already-active members' UI --
+            // see GroupService#notifyMemberAdded's javadoc for why the new member themselves is
+            // excluded (they already get everything they need from the rotation event above plus
+            // Stage 5C's conversation sync).
+            groupService.notifyMemberAdded(groupId, targetUserId);
             log.info("Group direct-add: groupId={}, actorUserId={}, targetUserId={}", groupId, actorUserId, targetUserId);
             return new CreateGroupInvitationResponseDto("DIRECT_ADDED", null);
         }
@@ -124,6 +154,7 @@ public class GroupInvitationService {
         }
         log.info("Group invitation created: groupId={}, actorUserId={}, targetUserId={}, invitationId={}",
                 groupId, actorUserId, targetUserId, invitation.getId());
+        notifyInvitationEvent("GROUP_INVITATION_RECEIVED", target.getUsername(), toDto(invitation, targetUserId));
         return new CreateGroupInvitationResponseDto("INVITATION_SENT", toDto(invitation, actorUserId));
     }
 
@@ -194,12 +225,16 @@ public class GroupInvitationService {
         // New active member obtained access -- the shared group key must rotate so they cannot
         // decrypt any pre-existing message (see GroupService#markKeyRotationRequired's javadoc).
         groupService.markKeyRotationRequired(groupId);
+        // Membership-domain notification (Stage 5D) for the OTHER already-active members' UI -- see
+        // GroupService#notifyMemberAdded's javadoc for why the accepter themselves is excluded.
+        groupService.notifyMemberAdded(groupId, currentUserId);
 
         invitation.setStatus(GroupInvitationStatus.ACCEPTED);
         invitation.setRespondedAt(Instant.now());
         groupInvitationRepository.save(invitation);
 
         log.info("Group invitation accepted: invitationId={}, groupId={}, userId={}", invitationId, groupId, currentUserId);
+        notifyInvitationEvent("GROUP_INVITATION_ACCEPTED", invitation.getInvitedBy().getUsername(), toDto(invitation, inviterId));
         return toDto(invitation, currentUserId);
     }
 
@@ -220,6 +255,8 @@ public class GroupInvitationService {
         groupInvitationRepository.save(invitation);
 
         log.info("Group invitation rejected: invitationId={}, userId={}", invitationId, currentUserId);
+        notifyInvitationEvent("GROUP_INVITATION_REJECTED", invitation.getInvitedBy().getUsername(),
+                toDto(invitation, invitation.getInvitedBy().getId()));
         return toDto(invitation, currentUserId);
     }
 
@@ -247,6 +284,8 @@ public class GroupInvitationService {
         groupInvitationRepository.save(invitation);
 
         log.info("Group invitation cancelled: invitationId={}, userId={}", invitationId, currentUserId);
+        notifyInvitationEvent("GROUP_INVITATION_CANCELLED", invitation.getInvitee().getUsername(),
+                toDto(invitation, invitation.getInvitee().getId()));
         return toDto(invitation, currentUserId);
     }
 
