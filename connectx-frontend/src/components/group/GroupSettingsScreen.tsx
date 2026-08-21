@@ -50,16 +50,16 @@ export const GroupSettingsScreen: React.FC<GroupSettingsScreenProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-40 md:static md:inset-auto md:z-20 w-full md:w-80 h-full bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800/80 flex flex-col flex-shrink-0 animate-slide-right overflow-y-auto text-slate-900 dark:text-white select-none">
-      <div className="h-16 px-4 border-b border-slate-200 dark:border-slate-800/80 flex items-center gap-2 flex-shrink-0">
+    <div className="fixed inset-0 z-40 md:static md:inset-auto md:z-20 w-full md:w-[380px] lg:w-[420px] xl:w-[460px] h-full bg-white dark:bg-[#080b12] border-l border-slate-200/90 dark:border-slate-800/80 flex flex-col flex-shrink-0 animate-slide-right overflow-y-auto text-slate-900 dark:text-white select-none">
+      <div className="h-16 px-4 border-b border-slate-200/80 dark:border-slate-800/80 flex items-center gap-2 flex-shrink-0 bg-slate-50/50 dark:bg-[#0c101c]/60 backdrop-blur-sm">
         <button
           onClick={onBack}
-          className="p-1.5 -ml-1.5 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+          className="p-2 -ml-1 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800/70 active:scale-95 transition-all cursor-pointer"
           aria-label="Back"
         >
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <h3 className="font-bold text-base">Group Settings</h3>
+        <h3 className="font-bold text-base text-slate-900 dark:text-white">Group Settings</h3>
       </div>
 
       <div className="p-4 space-y-5">

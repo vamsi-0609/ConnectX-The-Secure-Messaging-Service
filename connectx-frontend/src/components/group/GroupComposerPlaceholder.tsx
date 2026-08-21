@@ -18,7 +18,7 @@ export const GroupComposerPlaceholder: React.FC<GroupComposerPlaceholderProps> =
   const sendRestricted = !loading && group.whoCanSendMessages === 'ADMINS_ONLY' && group.currentUserRole === 'MEMBER';
 
   return (
-    <footer className="chat-composer flex-shrink-0 px-4 py-3.5 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800/80 select-none">
+    <footer className="chat-composer flex-shrink-0 px-4 py-3.5 bg-white/95 dark:bg-[#0a0e1a]/95 backdrop-blur-sm border-t border-slate-200/90 dark:border-slate-800/80 select-none z-20">
       <div className="flex items-center justify-center gap-2 py-1.5 text-sm text-slate-500 dark:text-slate-400">
         {loading ? (
           <>

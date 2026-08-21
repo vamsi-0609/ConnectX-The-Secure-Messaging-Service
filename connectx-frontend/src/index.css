@@ -117,14 +117,14 @@ textarea,
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-/* Chat Wallpaper Background Pattern — subtle */
+/* Chat Wallpaper Background Pattern — subtle & recognizable texture */
 .chat-wallpaper {
   background-color: var(--bg-chat);
   background-image:
-    radial-gradient(circle at 20% 15%, rgba(99, 102, 241, 0.04) 0%, transparent 40%),
-    radial-gradient(circle at 80% 85%, rgba(139, 92, 246, 0.03) 0%, transparent 40%),
-    radial-gradient(rgba(148, 163, 184, 0.04) 0.5px, transparent 0.5px);
-  background-size: 100% 100%, 100% 100%, 20px 20px;
+    radial-gradient(circle at 20% 15%, rgba(124, 58, 237, 0.08) 0%, transparent 45%),
+    radial-gradient(circle at 80% 85%, rgba(99, 102, 241, 0.07) 0%, transparent 45%),
+    radial-gradient(rgba(148, 163, 184, 0.09) 0.75px, transparent 0.75px);
+  background-size: 100% 100%, 100% 100%, 22px 22px;
 }
 
 /* Custom Scrollbars */
@@ -176,8 +176,26 @@ textarea,
   50%       { filter: drop-shadow(0 0 14px rgba(124, 58, 237, 0.55)); }
 }
 
+@keyframes pulseSlow {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50% { opacity: 0.85; transform: scale(1.04); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .animate-pop-in {
   animation: popIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.25s ease-out forwards;
+}
+
+.animate-pulse-slow {
+  animation: pulseSlow 4s infinite ease-in-out;
 }
 
 .animate-slide-right {
