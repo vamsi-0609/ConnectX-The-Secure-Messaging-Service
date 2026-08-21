@@ -153,6 +153,10 @@ class ConversationMemoryCache {
     this.decryptedTextMap.set(messageId, decryptedContent);
   }
 
+  public deleteDecryptedText(messageId: number): void {
+    this.decryptedTextMap.delete(messageId);
+  }
+
   // ── Global Cache Reset (on signout) ───────────────────────────────────────
 
   public clearAll(): void {

@@ -175,6 +175,12 @@ public class MessageService {
         // nothing here to encrypt or validate). The media FILE's own encryption was already
         // validated separately at upload time (MediaService#uploadConversationMedia); this only
         // covers the caption riding alongside it in this same Message row.
+        //
+        // Phase 6A: DIRECT senders may now supply the same ciphertext/nonce pair -- eventually the
+        // ECDH-wrapped {mediaKey + metadata} payload, not a plaintext caption -- reusing this exact
+        // column pair. DIRECT has no shared/versioned group key, so groupKeyVersion is validated
+        // (and persisted) only when groupForSend != null; it must otherwise stay unpersisted, per
+        // MediaService's identical DIRECT contract.
         boolean hasEncryptedCaption = dto.getCiphertext() != null && !dto.getCiphertext().isBlank();
 
         if (messageType == MessageType.IMAGE || messageType == MessageType.DOCUMENT) {
@@ -183,22 +189,21 @@ public class MessageService {
             }
             linkedMedia = mediaService.getMediaForMessageSend(currentUserId, conversation.getId(), dto.getMediaId());
 
-            if (groupForSend != null) {
-                if (hasEncryptedCaption) {
-                    if (dto.getNonce() == null || dto.getNonce().isBlank()) {
-                        throw new ApiException(HttpStatus.BAD_REQUEST, "NONCE_REQUIRED", "Nonce is required when a caption ciphertext is provided");
-                    }
-                    if (dto.getGroupKeyVersion() == null || dto.getGroupKeyVersion() != groupForSend.getKeyVersion()) {
-                        throw new ApiException(HttpStatus.CONFLICT, "GROUP_KEY_VERSION_MISMATCH",
-                                "Your group encryption key is out of date");
-                    }
-                } else if (dto.getCaption() != null && !dto.getCaption().isBlank()) {
-                    // A GROUP sender's client must never fall back to a plaintext caption -- this
-                    // would silently defeat the encryption Part 9 exists to guarantee. Reject rather
-                    // than silently store it, so a client-side bug fails loudly instead of leaking.
-                    throw new ApiException(HttpStatus.BAD_REQUEST, "PLAINTEXT_CAPTION_NOT_ALLOWED",
-                            "Group image/document captions must be encrypted");
+            if (hasEncryptedCaption) {
+                if (dto.getNonce() == null || dto.getNonce().isBlank()) {
+                    throw new ApiException(HttpStatus.BAD_REQUEST, "NONCE_REQUIRED", "Nonce is required when a caption ciphertext is provided");
                 }
+                if (groupForSend != null
+                        && (dto.getGroupKeyVersion() == null || dto.getGroupKeyVersion() != groupForSend.getKeyVersion())) {
+                    throw new ApiException(HttpStatus.CONFLICT, "GROUP_KEY_VERSION_MISMATCH",
+                            "Your group encryption key is out of date");
+                }
+            } else if (groupForSend != null && dto.getCaption() != null && !dto.getCaption().isBlank()) {
+                // A GROUP sender's client must never fall back to a plaintext caption -- this
+                // would silently defeat the encryption Part 9 exists to guarantee. Reject rather
+                // than silently store it, so a client-side bug fails loudly instead of leaking.
+                throw new ApiException(HttpStatus.BAD_REQUEST, "PLAINTEXT_CAPTION_NOT_ALLOWED",
+                        "Group image/document captions must be encrypted");
             }
         } else if (messageType == MessageType.LOCATION) {
             validateLocation(dto.getLatitude(), dto.getLongitude());
@@ -275,13 +280,16 @@ public class MessageService {
 
         if (messageType == MessageType.IMAGE || messageType == MessageType.DOCUMENT) {
             message.setMediaId(linkedMedia.getId());
-            if (groupForSend != null && hasEncryptedCaption) {
-                // Encrypted GROUP caption -- reuses the same Message.ciphertext/nonce columns TEXT
-                // already uses, never Message.caption (which stays unset/null here, exactly like
-                // DIRECT's plaintext caption never gets a ciphertext).
+            if (hasEncryptedCaption) {
+                // Encrypted caption/metadata (GROUP or, as of Phase 6A, DIRECT) -- reuses the same
+                // Message.ciphertext/nonce columns TEXT already uses, never Message.caption (which
+                // stays unset/null here, exactly like a plaintext caption never gets a ciphertext).
+                // groupKeyVersion is GROUP-only -- stays unpersisted (null) for DIRECT.
                 message.setCiphertext(dto.getCiphertext());
                 message.setNonce(dto.getNonce());
-                message.setGroupKeyVersion(dto.getGroupKeyVersion());
+                if (groupForSend != null) {
+                    message.setGroupKeyVersion(dto.getGroupKeyVersion());
+                }
             } else {
                 message.setCaption(normalizeCaption(dto.getCaption()));
                 message.setCiphertext("");

@@ -124,9 +124,9 @@ export interface Message {
   caption?: string;
   mimeType?: string;
   fileSizeBytes?: number;
-  // GROUP TEXT/IMAGE/DOCUMENT only -- the file's own AES-GCM nonce, distinct from `nonce` above
-  // (which for an encrypted GROUP image/document instead protects the optional caption). Absent
-  // for DIRECT media and for GROUP media sent before the media-encryption stage.
+  // GROUP or DIRECT (Phase 6D) IMAGE/DOCUMENT only -- the file's own AES-GCM nonce, distinct from
+  // `nonce` above (which instead protects the optional GROUP caption, or the whole DIRECT
+  // encrypted-media envelope -- see directMediaKey). Absent for plaintext/legacy media.
   mediaNonce?: string;
   latitude?: number;
   longitude?: number;
@@ -144,6 +144,17 @@ export interface Message {
   decryptedContent?: string; // Client-side decrypted plaintext cache
   decryptionError?: boolean;
   localMediaUrl?: string; // Client-only optimistic preview URL
+  // DIRECT encrypted media only (Phase 6D). Populated client-side, once, by App.tsx's
+  // decryptSingleMessage after it decrypts this message's Direct ECDH envelope -- NEVER present
+  // on data received from the backend, NEVER persisted (not IndexedDB, not localStorage, not
+  // re-serialized anywhere). directMediaKey is the imported AES-GCM CryptoKey used to decrypt
+  // this message's media bytes (with MessageMedia.nonce, i.e. `mediaNonce` above -- a completely
+  // separate nonce from `nonce`, which protects this envelope itself). directMediaFilename/
+  // directMediaMimeType are the envelope's authoritative values -- must be preferred over any
+  // plaintext `caption`/`mimeType` field for rendering an encrypted DIRECT media message.
+  directMediaKey?: CryptoKey;
+  directMediaFilename?: string;
+  directMediaMimeType?: string;
   replyToMessageId?: number;
   replyToSenderUsername?: string;
   replyToMessageType?: MessageType;

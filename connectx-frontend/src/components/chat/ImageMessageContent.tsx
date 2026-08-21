@@ -5,6 +5,7 @@ import { ImageViewerModal } from '../common/ImageViewerModal';
 import { saveImageToGallery } from '../../utils/saveMedia';
 import { resolveGroupMediaKey } from '../../crypto/groupMediaKey';
 import { decryptBytesWithGroupKey } from '../../crypto/groupCrypto';
+import { decryptMediaBytes } from '../../crypto/mediaCrypto';
 import { Group } from '../../types';
 
 interface ImageMessageContentProps {
@@ -22,6 +23,12 @@ interface ImageMessageContentProps {
   currentUserId?: number;
   mediaGroupKeyVersion?: number;
   mediaNonce?: string;
+  // DIRECT encrypted media only (Phase 6D). directMediaKey is the CryptoKey App.tsx's
+  // decryptSingleMessage already recovered from this message's Direct ECDH envelope -- this
+  // component never decrypts that envelope itself and never sees mediaKey as a string, only as
+  // an opaque CryptoKey handed down for exactly one AES-GCM operation.
+  directMediaKey?: CryptoKey;
+  directMediaMimeType?: string;
 }
 
 export const ImageMessageContent: React.FC<ImageMessageContentProps> = ({
@@ -36,6 +43,8 @@ export const ImageMessageContent: React.FC<ImageMessageContentProps> = ({
   currentUserId,
   mediaGroupKeyVersion,
   mediaNonce,
+  directMediaKey,
+  directMediaMimeType,
 }) => {
   const [imageUrl, setImageUrl] = useState<string | null>(localMediaUrl ?? null);
   const [loading, setLoading] = useState(!localMediaUrl && !!mediaId);
@@ -43,7 +52,14 @@ export const ImageMessageContent: React.FC<ImageMessageContentProps> = ({
   const [viewerOpen, setViewerOpen] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const isEncrypted = !!(group && currentUserId != null && mediaGroupKeyVersion != null && mediaNonce);
+  const isGroupEncrypted = !!(group && currentUserId != null && mediaGroupKeyVersion != null && mediaNonce);
+  // A nonce is only ever persisted for a client-side-encrypted upload (GROUP or DIRECT -- see
+  // MediaService#uploadConversationMedia); when it's present but this isn't GROUP-encrypted, this
+  // is DIRECT encrypted media (Phase 6D). This never falls back to treating ciphertext as
+  // plaintext: if directMediaKey didn't resolve (envelope decryption failed upstream), that's
+  // handled as an error below, never as "not encrypted".
+  const isDirectEncrypted = !isGroupEncrypted && !!mediaNonce;
+  const effectiveMimeType = directMediaMimeType || mimeType || 'image/jpeg';
 
   useEffect(() => {
     if (localMediaUrl) {
@@ -59,18 +75,32 @@ export const ImageMessageContent: React.FC<ImageMessageContentProps> = ({
       return;
     }
 
+    // The envelope carrying directMediaKey is decrypted upstream (App.tsx) before this message
+    // ever reaches rendering -- if this is DIRECT-encrypted media and no key came through, that
+    // envelope decryption itself failed. Never fall back to fetching/displaying the raw
+    // ciphertext bytes as if they were a plain image in that case.
+    if (isDirectEncrypted && !directMediaKey) {
+      setLoading(false);
+      setError(true);
+      return;
+    }
+
     let cancelled = false;
     setLoading(true);
     setError(false);
 
-    const load = isEncrypted
-      ? mediaApi.getDecryptedGroupMediaObjectUrl(mediaId, mimeType || 'image/jpeg', async (ciphertext) => {
+    const load = isGroupEncrypted
+      ? mediaApi.getDecryptedGroupMediaObjectUrl(mediaId, effectiveMimeType, async (ciphertext) => {
           const groupKey = await resolveGroupMediaKey(group!, mediaGroupKeyVersion!, currentUserId!);
           if (!groupKey) {
             throw new Error('GROUP_KEY_UNAVAILABLE');
           }
           return decryptBytesWithGroupKey(groupKey, ciphertext, mediaNonce!);
         })
+      : isDirectEncrypted
+      ? mediaApi.getDecryptedMediaObjectUrl(mediaId, effectiveMimeType, (ciphertext) =>
+          decryptMediaBytes(directMediaKey!, ciphertext, mediaNonce!)
+        )
       : mediaApi.getMediaObjectUrl(mediaId);
 
     load
@@ -90,15 +120,31 @@ export const ImageMessageContent: React.FC<ImageMessageContentProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [mediaId, localMediaUrl, isEncrypted, mimeType, group, currentUserId, mediaGroupKeyVersion, mediaNonce]);
+  }, [
+    mediaId,
+    localMediaUrl,
+    isGroupEncrypted,
+    isDirectEncrypted,
+    effectiveMimeType,
+    group,
+    currentUserId,
+    mediaGroupKeyVersion,
+    mediaNonce,
+    directMediaKey,
+  ]);
 
   const handleSave = async () => {
     setSaving(true);
     try {
+      // Phase 6D hardening: for GROUP/DIRECT encrypted media, `mediaId` alone (via
+      // mediaApi.getMediaBlob) fetches raw AES-GCM CIPHERTEXT -- saveImageToGallery has no
+      // decryption logic of its own. `imageUrl` (this component's own state) is the one value
+      // that's already correctly resolved to PLAINTEXT bytes regardless of source: the sender's
+      // local file preview, a decrypted GROUP/DIRECT object URL, or a genuinely plaintext
+      // fetch -- so it must always be preferred over re-deriving from mediaId here.
       await saveImageToGallery({
-        mediaId,
-        localMediaUrl,
-        mimeType,
+        localMediaUrl: imageUrl ?? undefined,
+        mimeType: effectiveMimeType,
         filenamePrefix: 'connectx-photo',
       });
     } catch (err: unknown) {

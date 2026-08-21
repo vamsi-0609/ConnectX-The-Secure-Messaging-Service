@@ -203,6 +203,15 @@ export const keyManager = {
     return cryptoStorage.clearAllDecryptedMessages();
   },
 
+  // Purges one message's cached plaintext from both cache layers (in-memory + IndexedDB). Used by
+  // Phase 6D's DIRECT-media decrypt path to defensively drop any entry a pre-fix build may have
+  // already written for a media message id -- that entry could only ever be a decrypted envelope
+  // (mediaKey included), never safe ordinary chat text, so it must never be servable again.
+  async deleteDecryptedMessage(messageId: number): Promise<void> {
+    conversationCache.deleteDecryptedText(messageId);
+    return cryptoStorage.deleteDecryptedMessage(messageId);
+  },
+
   async clearKeys(): Promise<void> {
     conversationCache.clearAll();
     return cryptoStorage.clearKeys();

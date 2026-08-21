@@ -27,7 +27,16 @@
     <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="apple-touch-icon" href="/pwa-192x192.png" />
     <link rel="manifest" href="/manifest.json" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
+    <!-- interactive-widget=resizes-visual (not resizes-content): index.css sizes html/body/#root
+         to 100dvh, and MessageFeed.tsx's scroll-to-bottom-on-keyboard-open logic is written
+         against visualViewport resize events -- both assume the LAYOUT viewport stays fixed and
+         only the VISUAL viewport shrinks when the on-screen keyboard opens (the traditional,
+         broadly-compatible behavior every mobile browser has supported for years). resizes-content
+         instead shrinks the layout viewport itself, which fights with the 100dvh sizing above (two
+         independent mechanisms trying to resize the same root element for the same keyboard event)
+         -- a well-documented class of Android/Chrome interoperability bug, and the most likely
+         cause of "composer visible but keyboard doesn't reliably open" reported on real devices. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-visual" />
     <!-- Default matches ConnectX's default (dark) shell background (--bg-main / bg-slate-100
          dark:bg-[#090d16] in App.tsx); the inline script above corrects this synchronously
          before paint if the stored preference is 'light', and utils/theme.ts's applyTheme()

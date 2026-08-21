@@ -3,6 +3,7 @@ import { Loader2, FileText, Download, ExternalLink, FileArchive, File as FileIco
 import { mediaApi } from '../../api/mediaApi';
 import { resolveGroupMediaKey } from '../../crypto/groupMediaKey';
 import { decryptBytesWithGroupKey } from '../../crypto/groupCrypto';
+import { decryptMediaBytes } from '../../crypto/mediaCrypto';
 import { Group } from '../../types';
 
 interface DocumentMessageContentProps {
@@ -18,6 +19,13 @@ interface DocumentMessageContentProps {
   currentUserId?: number;
   mediaGroupKeyVersion?: number;
   mediaNonce?: string;
+  // DIRECT encrypted media only (Phase 6D) -- see ImageMessageContent's identical props.
+  // directMediaFilename is the AUTHORITATIVE filename (from the decrypted envelope) and must be
+  // preferred over `caption` whenever present -- an encrypted DIRECT document's `caption` is never
+  // the filename (Phase 6C never puts it there; the envelope's own `filename` field is).
+  directMediaKey?: CryptoKey;
+  directMediaMimeType?: string;
+  directMediaFilename?: string;
 }
 
 function formatBytes(bytes?: number): string {
@@ -58,41 +66,65 @@ export const DocumentMessageContent: React.FC<DocumentMessageContentProps> = ({
   currentUserId,
   mediaGroupKeyVersion,
   mediaNonce,
+  directMediaKey,
+  directMediaMimeType,
+  directMediaFilename,
 }) => {
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
 
-  const filename = caption || 'Document';
-  const badgeInfo = getFileBadge(mimeType, filename);
-  const isEncrypted = !!(group && currentUserId != null && mediaGroupKeyVersion != null && mediaNonce);
+  const filename = directMediaFilename || caption || 'Document';
+  const isGroupEncrypted = !!(group && currentUserId != null && mediaGroupKeyVersion != null && mediaNonce);
+  // Same discriminator as ImageMessageContent: a persisted nonce with no GROUP context means
+  // DIRECT encrypted media (Phase 6D) -- see that component's identical comment for why.
+  const isDirectEncrypted = !isGroupEncrypted && !!mediaNonce;
+  const effectiveMimeType = directMediaMimeType || mimeType || 'application/octet-stream';
+  const badgeInfo = getFileBadge(effectiveMimeType, filename);
 
   const getDecryptedBlob = async (): Promise<Blob> => {
+    if (isDirectEncrypted && !directMediaKey) {
+      // Envelope decryption failed upstream (App.tsx) -- never fetch/serve the raw ciphertext as
+      // if it were the real document.
+      throw new Error('MEDIA_KEY_UNAVAILABLE');
+    }
     const rawBlob = await mediaApi.getMediaBlob(mediaId!);
-    if (!isEncrypted) {
+    if (!isGroupEncrypted && !isDirectEncrypted) {
       return rawBlob;
     }
-    const groupKey = await resolveGroupMediaKey(group!, mediaGroupKeyVersion!, currentUserId!);
-    if (!groupKey) {
-      throw new Error('GROUP_KEY_UNAVAILABLE');
-    }
     const ciphertext = await rawBlob.arrayBuffer();
-    const decryptedBytes = await decryptBytesWithGroupKey(groupKey, ciphertext, mediaNonce!);
-    return new Blob([decryptedBytes], { type: mimeType || 'application/octet-stream' });
+    const decryptedBytes = isGroupEncrypted
+      ? await (async () => {
+          const groupKey = await resolveGroupMediaKey(group!, mediaGroupKeyVersion!, currentUserId!);
+          if (!groupKey) {
+            throw new Error('GROUP_KEY_UNAVAILABLE');
+          }
+          return decryptBytesWithGroupKey(groupKey, ciphertext, mediaNonce!);
+        })()
+      : await decryptMediaBytes(directMediaKey!, ciphertext, mediaNonce!);
+    return new Blob([decryptedBytes], { type: effectiveMimeType });
   };
 
   const handleOpen = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!mediaId || loading || downloading) return;
+    if (isDirectEncrypted && !directMediaKey) {
+      alert('Failed to open document');
+      return;
+    }
     setLoading(true);
     try {
-      const url = isEncrypted
-        ? await mediaApi.getDecryptedGroupMediaObjectUrl(mediaId, mimeType || 'application/octet-stream', async (ciphertext) => {
+      const url = isGroupEncrypted
+        ? await mediaApi.getDecryptedGroupMediaObjectUrl(mediaId, effectiveMimeType, async (ciphertext) => {
             const groupKey = await resolveGroupMediaKey(group!, mediaGroupKeyVersion!, currentUserId!);
             if (!groupKey) {
               throw new Error('GROUP_KEY_UNAVAILABLE');
             }
             return decryptBytesWithGroupKey(groupKey, ciphertext, mediaNonce!);
           })
+        : isDirectEncrypted
+        ? await mediaApi.getDecryptedMediaObjectUrl(mediaId, effectiveMimeType, (ciphertext) =>
+            decryptMediaBytes(directMediaKey!, ciphertext, mediaNonce!)
+          )
         : await mediaApi.getMediaObjectUrl(mediaId);
       window.open(url, '_blank');
     } catch {

@@ -84,10 +84,39 @@ export const mediaApi = {
     }
   },
 
-  // GROUP E2EE media only. `encryptedBytes` is already-encrypted ciphertext (see
-  // crypto/groupCrypto.ts#encryptBytesWithGroupKey) -- this function never sees or could produce
-  // plaintext; it only carries the caller's bytes to the upload endpoint alongside the metadata
-  // MediaService#uploadConversationMedia needs to validate the encryption itself.
+  // Shared encrypted-upload plumbing for both GROUP (Part 9) and DIRECT (Phase 6) media.
+  // `encryptedBytes` is already-encrypted ciphertext (see crypto/mediaCrypto.ts#encryptMediaBytes /
+  // crypto/groupCrypto.ts#encryptBytesWithGroupKey) -- this function never sees, produces, or could
+  // produce plaintext; it only carries the caller's bytes plus the metadata
+  // MediaService#uploadConversationMedia needs to validate the encryption contract server-side.
+  // `groupKeyVersion` is GROUP-only -- omit it for a DIRECT upload, exactly as the backend expects
+  // (see MediaService: DIRECT never persists a groupKeyVersion). The media key itself is NEVER
+  // part of this call -- only the caller-supplied ciphertext and mediaNonce ever leave the browser
+  // here; the key stays local (GROUP) or travels separately, wrapped inside the DIRECT message's
+  // own ECDH envelope (Phase 6C).
+  uploadEncryptedMedia: (
+    conversationId: number,
+    encryptedBytes: ArrayBuffer,
+    mediaNonce: string,
+    mimeType: string,
+    options?: { groupKeyVersion?: number; originalFilename?: string }
+  ) => {
+    const formData = new FormData();
+    formData.append(
+      'file',
+      new Blob([encryptedBytes], { type: 'application/octet-stream' }),
+      options?.originalFilename || 'encrypted.bin'
+    );
+    formData.append('nonce', mediaNonce);
+    formData.append('mimeType', mimeType);
+    if (options?.groupKeyVersion !== undefined) {
+      formData.append('groupKeyVersion', String(options.groupKeyVersion));
+    }
+    return uploadRequest<MediaUploadResponse>(`/conversations/${conversationId}/media`, formData);
+  },
+
+  // GROUP E2EE media only -- unchanged call signature, now delegating to the shared
+  // uploadEncryptedMedia above instead of duplicating the FormData construction.
   uploadEncryptedGroupMedia: (
     conversationId: number,
     encryptedBytes: ArrayBuffer,
@@ -96,20 +125,37 @@ export const mediaApi = {
     mimeType: string,
     originalFilename?: string
   ) => {
-    const formData = new FormData();
-    formData.append('file', new Blob([encryptedBytes], { type: 'application/octet-stream' }), originalFilename || 'encrypted.bin');
-    formData.append('nonce', nonce);
-    formData.append('groupKeyVersion', String(groupKeyVersion));
-    formData.append('mimeType', mimeType);
-    return uploadRequest<MediaUploadResponse>(`/conversations/${conversationId}/media`, formData);
+    return mediaApi.uploadEncryptedMedia(conversationId, encryptedBytes, nonce, mimeType, {
+      groupKeyVersion,
+      originalFilename,
+    });
   },
 
-  // GROUP E2EE media only. `decrypt` is supplied by the caller (never imported into this module
-  // directly) so this stays crypto-agnostic like every other function here -- it just fetches the
-  // ciphertext (reusing getMediaBlob's own cache) and hands it to the caller's decrypt function,
-  // then caches the DECRYPTED result separately, keyed by mediaId, so repeated renders of the same
-  // already-decrypted message never re-fetch or re-decrypt.
-  getDecryptedGroupMediaObjectUrl: async (
+  // DIRECT encrypted media (Phase 6 foundation). No groupKeyVersion -- DIRECT has no shared/
+  // versioned key; the media key that decrypts `encryptedBytes` travels wrapped inside the
+  // DIRECT message's own ECDH-encrypted envelope (Message.ciphertext/nonce), never here.
+  uploadEncryptedDirectMedia: (
+    conversationId: number,
+    encryptedBytes: ArrayBuffer,
+    mediaNonce: string,
+    mimeType: string,
+    originalFilename?: string
+  ) => {
+    return mediaApi.uploadEncryptedMedia(conversationId, encryptedBytes, mediaNonce, mimeType, {
+      originalFilename,
+    });
+  },
+
+  // E2EE media download foundation, shared by GROUP (Part 9) and DIRECT (Phase 6). `decrypt` is
+  // supplied by the caller (never imported into this module directly) so this stays entirely
+  // key-source-agnostic -- it just fetches the ciphertext (reusing getMediaBlob's own cache) and
+  // hands it to the caller's decrypt function, then caches the DECRYPTED result separately, keyed
+  // by mediaId, so repeated renders of the same already-decrypted message never re-fetch or
+  // re-decrypt. Key resolution is deliberately NOT this module's job: GROUP callers resolve a
+  // group key via GroupKeyManager (crypto/groupMediaKey.ts), DIRECT callers will extract a
+  // mediaKey from the DIRECT message's decrypted ECDH envelope (Phase 6C) -- either way, by the
+  // time `decrypt` runs here it already has everything it needs.
+  getDecryptedMediaObjectUrl: async (
     mediaId: number,
     mimeType: string,
     decrypt: (ciphertext: ArrayBuffer) => Promise<ArrayBuffer>
@@ -126,5 +172,17 @@ export const mediaApi = {
     const objectUrl = URL.createObjectURL(decryptedBlob);
     decryptedMediaObjectUrlCache.set(mediaId, objectUrl);
     return objectUrl;
+  },
+
+  // GROUP E2EE media only -- unchanged name/signature (ImageMessageContent/DocumentMessageContent
+  // call this directly), now delegating to the generic getDecryptedMediaObjectUrl above so GROUP
+  // and the eventual DIRECT caller (Phase 6D) share one implementation and one decrypted-object-URL
+  // cache.
+  getDecryptedGroupMediaObjectUrl: async (
+    mediaId: number,
+    mimeType: string,
+    decrypt: (ciphertext: ArrayBuffer) => Promise<ArrayBuffer>
+  ): Promise<string> => {
+    return mediaApi.getDecryptedMediaObjectUrl(mediaId, mimeType, decrypt);
   },
 };

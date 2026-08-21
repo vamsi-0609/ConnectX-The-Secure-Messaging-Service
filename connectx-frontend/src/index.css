@@ -117,6 +117,16 @@ textarea,
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
+/* index.html sets viewport-fit=cover, so any fixed full-screen overlay renders edge-to-edge
+   under a real device's status bar/notch unless it accounts for the top inset itself -- this
+   codebase only ever handled safe-area-inset-BOTTOM (above) before now. ImageViewerModal's top
+   bar (Close/Download) is the first place that gap was actually reported as a real, reproducible
+   mobile bug: the buttons were correctly in the DOM but physically rendered under the system
+   status bar on some devices, making Download unreachable despite being logically present. */
+.image-viewer-topbar {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
 /* Chat Wallpaper Background Pattern — subtle & recognizable texture */
 .chat-wallpaper {
   background-color: var(--bg-chat);

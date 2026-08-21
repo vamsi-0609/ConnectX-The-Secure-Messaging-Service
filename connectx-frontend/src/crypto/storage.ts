@@ -173,6 +173,18 @@ export const cryptoStorage = {
     });
   },
 
+  async deleteDecryptedMessage(messageId: number): Promise<void> {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(DECRYPTED_MSG_STORE_NAME, 'readwrite');
+      const store = transaction.objectStore(DECRYPTED_MSG_STORE_NAME);
+      const request = store.delete(`msg_${messageId}`);
+
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  },
+
   async clearKeys(): Promise<void> {
     const db = await openDB();
     return new Promise((resolve, reject) => {

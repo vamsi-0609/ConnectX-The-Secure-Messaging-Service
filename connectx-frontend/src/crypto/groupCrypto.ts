@@ -1,4 +1,5 @@
 import { arrayBufferToBase64, base64ToArrayBuffer } from './keyManager';
+import { encryptMediaBytes, decryptMediaBytes } from './mediaCrypto';
 
 /**
  * AES-256-GCM primitives for the GROUP shared-key E2EE design (docs/CONNECTX_GROUP_ARCHITECTURE.md
@@ -95,25 +96,15 @@ export interface GroupEncryptedBytesResult {
  * ciphertext is returned as raw bytes, not base64 -- callers upload it directly as a Blob/file part
  * rather than inflating it ~33% through base64 first; the small nonce still travels as base64
  * alongside it (mirrors how MessageMedia.nonce is stored/transmitted).
+ *
+ * Phase 6B: this is now a thin delegate to crypto/mediaCrypto.ts's generic (key-source-agnostic)
+ * AES-GCM byte primitives -- generalized there so DIRECT media (Phase 6) reuses the exact same
+ * implementation instead of a second copy. Signature and behavior here are unchanged.
  */
 export async function encryptBytesWithGroupKey(groupKey: CryptoKey, plaintext: ArrayBuffer): Promise<GroupEncryptedBytesResult> {
-  const subtle = getSubtleCrypto();
-  if (!subtle) {
-    throw new Error('Web Crypto API (SubtleCrypto) is unavailable in this environment.');
-  }
-  const iv = window.crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = await subtle.encrypt({ name: 'AES-GCM', iv }, groupKey, plaintext);
-  return {
-    ciphertext,
-    nonce: arrayBufferToBase64(iv.buffer),
-  };
+  return encryptMediaBytes(groupKey, plaintext);
 }
 
 export async function decryptBytesWithGroupKey(groupKey: CryptoKey, ciphertext: ArrayBuffer, nonceBase64: string): Promise<ArrayBuffer> {
-  const subtle = getSubtleCrypto();
-  if (!subtle) {
-    throw new Error('Web Crypto API (SubtleCrypto) is unavailable in this environment.');
-  }
-  const ivBuffer = base64ToArrayBuffer(nonceBase64);
-  return subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(ivBuffer) }, groupKey, ciphertext);
+  return decryptMediaBytes(groupKey, ciphertext, nonceBase64);
 }

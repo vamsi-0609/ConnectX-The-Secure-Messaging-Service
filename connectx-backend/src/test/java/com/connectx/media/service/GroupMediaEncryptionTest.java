@@ -271,8 +271,11 @@ class GroupMediaEncryptionTest {
         assertDoesNotThrow(() -> mediaService.getMediaForUser(b.getId(), result.getMediaId()));
     }
 
+    // Phase 6A: DIRECT encrypted upload is now supported, reusing the exact GROUP storeEncrypted
+    // path -- but with no group key, so groupKeyVersion must never be persisted for DIRECT even
+    // when the encrypted-upload path is taken (unlike GROUP, where it's required and validated).
     @Test
-    void directUpload_withEncryptionFieldsSupplied_rejected() {
+    void directUpload_withEncryption_succeeds() {
         User a = newUser("gmed14_a");
         User b = newUser("gmed14_b");
         connect(a, b);
@@ -280,9 +283,55 @@ class GroupMediaEncryptionTest {
         conversationMemberRepository.save(new ConversationMember(direct, a));
         conversationMemberRepository.save(new ConversationMember(direct, b));
 
+        MediaUploadResponseDto result = mediaService.uploadConversationMedia(
+                a.getId(), direct.getId(), encryptedFile(), "nonce-1", null, "image/jpeg");
+
+        assertEquals("nonce-1", result.getNonce());
+        assertNull(result.getGroupKeyVersion(), "DIRECT media must never persist a group key version");
+        assertDoesNotThrow(() -> mediaService.getMediaForUser(b.getId(), result.getMediaId()));
+    }
+
+    // A groupKeyVersion supplied on a DIRECT upload is simply ignored (DIRECT has no shared key to
+    // validate it against) -- it must not leak into the persisted row.
+    @Test
+    void directUpload_withEncryptionAndStrayGroupKeyVersion_versionIgnored() {
+        User a = newUser("gmed14b_a");
+        User b = newUser("gmed14b_b");
+        connect(a, b);
+        Conversation direct = conversationRepository.save(new Conversation(ConversationType.DIRECT));
+        conversationMemberRepository.save(new ConversationMember(direct, a));
+        conversationMemberRepository.save(new ConversationMember(direct, b));
+
+        MediaUploadResponseDto result = mediaService.uploadConversationMedia(
+                a.getId(), direct.getId(), encryptedFile(), "nonce-1", 1, "image/jpeg");
+
+        assertNull(result.getGroupKeyVersion());
+    }
+
+    @Test
+    void directUpload_encryptedMissingMimeType_rejected() {
+        User a = newUser("gmed14c_a");
+        User b = newUser("gmed14c_b");
+        connect(a, b);
+        Conversation direct = conversationRepository.save(new Conversation(ConversationType.DIRECT));
+        conversationMemberRepository.save(new ConversationMember(direct, a));
+        conversationMemberRepository.save(new ConversationMember(direct, b));
+
         ApiException ex = assertThrows(ApiException.class, () -> mediaService.uploadConversationMedia(
-                a.getId(), direct.getId(), encryptedFile(), "nonce-1", 1, "image/jpeg"));
-        assertEquals("ENCRYPTION_NOT_SUPPORTED", ex.getCode());
+                a.getId(), direct.getId(), encryptedFile(), "nonce-1", null, ""));
+        assertEquals("INVALID_MEDIA", ex.getCode());
+    }
+
+    @Test
+    void directUpload_nonMember_rejected() {
+        User a = newUser("gmed14d_a");
+        User outsider = newUser("gmed14d_outsider");
+        Conversation direct = conversationRepository.save(new Conversation(ConversationType.DIRECT));
+        conversationMemberRepository.save(new ConversationMember(direct, a));
+
+        ApiException ex = assertThrows(ApiException.class, () -> mediaService.uploadConversationMedia(
+                outsider.getId(), direct.getId(), encryptedFile(), "nonce-1", null, "image/jpeg"));
+        assertEquals("NOT_CONVERSATION_MEMBER", ex.getCode());
     }
 
     // ==================== MESSAGE SEND: ENCRYPTED CAPTION ====================
@@ -396,5 +445,66 @@ class GroupMediaEncryptionTest {
         assertEquals("a plain caption", sent.getCaption());
         assertEquals("", sent.getCiphertext());
         assertNull(sent.getMediaNonce());
+    }
+
+    // Phase 6A: a DIRECT sender may now supply ciphertext+nonce for an IMAGE/DOCUMENT message (the
+    // eventual ECDH-wrapped {mediaKey + metadata} payload) and the backend must persist it verbatim
+    // rather than silently discarding it in favor of the plaintext caption path -- this was the
+    // exact gap Phase 6A's MessageService change closes.
+    @Test
+    void directImageSend_withEncryptedCaption_persistsCiphertext() {
+        User a = newUser("gmed21_a");
+        User b = newUser("gmed21_b");
+        connect(a, b);
+        Conversation direct = conversationRepository.save(new Conversation(ConversationType.DIRECT));
+        conversationMemberRepository.save(new ConversationMember(direct, a));
+        conversationMemberRepository.save(new ConversationMember(direct, b));
+        MediaUploadResponseDto media = mediaService.uploadConversationMedia(
+                a.getId(), direct.getId(), encryptedFile(), "media-nonce-1", null, "image/jpeg");
+
+        MessageDto sent = messageService.sendMessage(a.getId(),
+                imageDto(direct.getId(), media.getMediaId(), "direct-ciphertext", "direct-nonce", null));
+
+        assertEquals("direct-ciphertext", sent.getCiphertext());
+        assertEquals("direct-nonce", sent.getNonce());
+        assertNull(sent.getGroupKeyVersion(), "DIRECT must never persist a group key version");
+        assertNull(sent.getCaption(), "plaintext caption must never be set alongside encrypted ciphertext");
+        assertEquals("media-nonce-1", sent.getMediaNonce());
+    }
+
+    @Test
+    void directImageSend_encryptedCaptionWithoutNonce_rejected() {
+        User a = newUser("gmed22_a");
+        User b = newUser("gmed22_b");
+        connect(a, b);
+        Conversation direct = conversationRepository.save(new Conversation(ConversationType.DIRECT));
+        conversationMemberRepository.save(new ConversationMember(direct, a));
+        conversationMemberRepository.save(new ConversationMember(direct, b));
+        MediaUploadResponseDto media = mediaService.uploadConversationMedia(
+                a.getId(), direct.getId(), encryptedFile(), "media-nonce-1", null, "image/jpeg");
+
+        SendMessageRequestDto dto = imageDto(direct.getId(), media.getMediaId(), "direct-ciphertext", null, null);
+        ApiException ex = assertThrows(ApiException.class, () -> messageService.sendMessage(a.getId(), dto));
+        assertEquals("NONCE_REQUIRED", ex.getCode());
+    }
+
+    // getMedia() must serve encrypted DIRECT media as opaque octet-stream, exactly like GROUP --
+    // this is what MediaController's nonce-based (not groupKeyVersion-based) isEncrypted check
+    // exists for.
+    @Test
+    void directDownload_encryptedMedia_servedAsOctetStream() {
+        User a = newUser("gmed23_a");
+        User b = newUser("gmed23_b");
+        connect(a, b);
+        Conversation direct = conversationRepository.save(new Conversation(ConversationType.DIRECT));
+        conversationMemberRepository.save(new ConversationMember(direct, a));
+        conversationMemberRepository.save(new ConversationMember(direct, b));
+        MediaUploadResponseDto media = mediaService.uploadConversationMedia(
+                a.getId(), direct.getId(), encryptedFile(), "media-nonce-1", null, "image/jpeg");
+
+        var entity = mediaService.getMediaEntityForUser(b.getId(), media.getMediaId());
+        assertNotNull(entity.getNonce());
+        assertNull(entity.getGroupKeyVersion());
+        assertDoesNotThrow(() -> mediaService.getMediaForUser(b.getId(), media.getMediaId()));
     }
 }

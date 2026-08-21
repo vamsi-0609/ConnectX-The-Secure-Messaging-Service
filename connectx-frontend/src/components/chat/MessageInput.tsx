@@ -17,11 +17,13 @@ import {
 } from 'lucide-react';
 import { encryptMessage } from '../../crypto/encryption';
 import { encryptWithGroupKey, encryptBytesWithGroupKey } from '../../crypto/groupCrypto';
+import { generateMediaKey, exportMediaKeyRaw, encryptMediaBytes } from '../../crypto/mediaCrypto';
 import { groupKeyManager } from '../../crypto/groupKeyManager';
 import { keyManager } from '../../crypto/keyManager';
 import { deviceApi } from '../../api/deviceApi';
 import { messageApi } from '../../api/messageApi';
 import { mediaApi } from '../../api/mediaApi';
+import { UserPublicKey } from '../../types';
 import { MEDIA_IMAGE_ACCEPT, validateMediaImageFile } from '../../utils/mediaImage';
 import { geolocationErrorMessage, resolveCurrentLocation } from '../../utils/location';
 import { CameraCaptureModal } from './CameraCaptureModal';
@@ -85,7 +87,8 @@ interface MessageInputProps {
     caption: string | undefined,
     localPreviewUrl: string,
     mimeType: string,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    clientTempId?: string
   ) => void;
   onOptimisticLocationMessage: (
     latitude: number,
@@ -99,7 +102,8 @@ interface MessageInputProps {
     filename: string,
     mimeType: string,
     fileSizeBytes: number,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    clientTempId?: string
   ) => void;
   onMessageSent?: () => void;
   initialSharedMedia?: { images: File[]; docs: File[] } | null;
@@ -251,6 +255,65 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     }
   }, [editTarget]);
 
+  // DIRECT only (Phase 6C). Resolves exactly the same recipient-device/sender-key material
+  // handleSendText's DIRECT branch already resolves for TEXT -- factored out here so the new
+  // encrypted-media envelope path (sendImageFile/sendDocumentFile) doesn't duplicate it. Throws
+  // the exact same error strings TEXT already throws, so friendlySendErrorMessage's existing
+  // translations keep working unchanged for media sends too.
+  const resolveDirectRecipientKeys = async (): Promise<{
+    recipientDevice: UserPublicKey;
+    senderPrivateKey: CryptoKey;
+    senderDevice: { deviceId: number };
+  }> => {
+    if (!recipientUserId) {
+      throw new Error('RECIPIENT_UNAVAILABLE');
+    }
+    let recipientPublicKeys = conversationCache.getPublicKeys(recipientUserId);
+    if (!recipientPublicKeys || recipientPublicKeys.length === 0) {
+      recipientPublicKeys = await deviceApi.getUserPublicKeys(recipientUserId);
+      if (recipientPublicKeys && recipientPublicKeys.length > 0) {
+        conversationCache.setPublicKeys(recipientUserId, recipientPublicKeys);
+      }
+    }
+    if (!recipientPublicKeys || recipientPublicKeys.length === 0) {
+      throw new Error('Recipient has no registered public keys on the server.');
+    }
+    const recipientDevice = recipientPublicKeys[0];
+
+    const senderPrivateKey = await keyManager.getPrivateKey(currentUserId);
+    if (!senderPrivateKey) {
+      throw new Error('Sender private key is missing from local browser vault.');
+    }
+    const senderDevice = await keyManager.getLocalDevice(currentUserId);
+    if (!senderDevice) {
+      throw new Error('Sender device metadata is missing. Please sign out and sign in again.');
+    }
+
+    return { recipientDevice, senderPrivateKey, senderDevice };
+  };
+
+  // DIRECT only (Phase 6C). Builds and encrypts the media envelope -- {mediaKey, caption,
+  // filename, mimeType} -- under the EXISTING Direct ECDH message mechanism (encryptMessage,
+  // unmodified). The raw mediaKey exists only for the duration of this call: exported to base64
+  // purely to fold into the JSON string handed straight to encryptMessage, never assigned to any
+  // variable that outlives this function, never logged, never part of the upload request. Returns
+  // only what MessageService's existing ciphertext/nonce contract needs.
+  const encryptDirectMediaEnvelope = async (
+    mediaKey: CryptoKey,
+    senderPrivateKey: CryptoKey,
+    recipientPublicKeyBase64: string,
+    metadata: { caption: string; filename: string; mimeType: string }
+  ): Promise<{ ciphertext: string; nonce: string }> => {
+    const mediaKeyBase64 = await exportMediaKeyRaw(mediaKey);
+    const envelope = JSON.stringify({
+      mediaKey: mediaKeyBase64,
+      caption: metadata.caption,
+      filename: metadata.filename,
+      mimeType: metadata.mimeType,
+    });
+    return encryptMessage(senderPrivateKey, recipientPublicKeyBase64, envelope);
+  };
+
   const sendImageFile = async (file: File) => {
     const validationError = validateMediaImageFile(file);
     if (validationError) {
@@ -261,6 +324,14 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     const caption = text.trim() || undefined;
     const localPreviewUrl = URL.createObjectURL(file);
     const replyToId = replyTarget?.messageId;
+    // DIRECT only (duplicate-bubble follow-up): threaded through to sendMessage's requestId and
+    // to the optimistic-message insert below, exactly like a TEXT send already does, so the
+    // WebSocket echo of this exact send can be matched back to this bubble by identity rather
+    // than racing to see whether the local optimistic insert or the echo lands first.
+    const clientTempId =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     setUploading(true);
     setUploadStatus(`Uploading image ${file.name}...`);
@@ -314,20 +385,62 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           groupKeyVersion: group.keyVersion,
           replyToMessageId: replyToId,
         });
+
+        onOptimisticImageMessage(mediaId, caption, localPreviewUrl, mimeType, replyToId);
       } else {
-        const uploadResponse = await mediaApi.uploadImage(conversationId, file);
+        // DIRECT (Phase 6C): the file itself is encrypted client-side before it ever leaves the
+        // browser -- the plaintext File is never passed to the upload call. See STEP 4/5/6 of the
+        // Phase 6C spec: mediaKey -> encrypt bytes -> upload ciphertext, then separately fold
+        // {mediaKey, caption, filename, mimeType} into the existing Direct ECDH message envelope.
+        const { recipientDevice, senderPrivateKey, senderDevice } = await resolveDirectRecipientKeys();
+
+        setUploadStatus(`Encrypting image ${file.name}...`);
+        const mediaKey = await generateMediaKey();
+        const plaintextBytes = await file.arrayBuffer();
+        const encryptedFile = await encryptMediaBytes(mediaKey, plaintextBytes);
+
+        setUploadStatus(`Uploading image ${file.name}...`);
+        const uploadResponse = await mediaApi.uploadEncryptedDirectMedia(
+          conversationId,
+          encryptedFile.ciphertext,
+          encryptedFile.nonce,
+          file.type,
+          file.name
+        );
         mediaId = uploadResponse.mediaId;
         mimeType = uploadResponse.mimeType;
+
+        // Insert the optimistic bubble now, BEFORE sendMessage is even called -- mediaId is
+        // already known, and since the request that triggers our own WebSocket echo hasn't been
+        // sent yet, that echo cannot possibly arrive before this local entry exists (this is what
+        // was actually racing before: the optimistic insert used to happen only after sendMessage
+        // resolved, so a fast echo could land first, find no optimistic entry to match, and get
+        // appended as a second, separate message -- a duplicate bubble). clientTempId below lets
+        // the existing (unmodified) clientTempId-based reconciliation match this exact bubble the
+        // same way a TEXT send already does.
+        onOptimisticImageMessage(mediaId, caption, localPreviewUrl, mimeType, replyToId, clientTempId);
+
+        const encryptedEnvelope = await encryptDirectMediaEnvelope(
+          mediaKey,
+          senderPrivateKey,
+          recipientDevice.publicKey,
+          { caption: caption || '', filename: file.name, mimeType: file.type }
+        );
+
         await messageApi.sendMessage({
           conversationId,
           messageType: 'IMAGE',
           mediaId,
-          caption,
+          senderDeviceId: senderDevice.deviceId,
+          recipientDeviceId: recipientDevice.deviceId,
+          encryptionAlgorithm: 'ECDH-P256+AES-256-GCM',
+          ciphertext: encryptedEnvelope.ciphertext,
+          nonce: encryptedEnvelope.nonce,
           replyToMessageId: replyToId,
+          requestId: clientTempId,
         });
       }
 
-      onOptimisticImageMessage(mediaId, caption, localPreviewUrl, mimeType, replyToId);
       onMessageSent?.();
       setText('');
       if (textareaRef.current) {
@@ -335,6 +448,12 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       }
       onCancelReply?.();
     } catch (err: unknown) {
+      // DIRECT's optimistic bubble (if it was already inserted -- upload succeeded but the
+      // subsequent envelope-encrypt/sendMessage failed) must not linger stuck in "SENDING"
+      // forever; remove it before revoking the object URL it points at. A no-op when no
+      // optimistic entry with this clientTempId exists (e.g. GROUP, or DIRECT failed before the
+      // optimistic insert), exactly like TEXT's identical cleanup on send failure.
+      onOptimisticMessageFailed?.(clientTempId);
       URL.revokeObjectURL(localPreviewUrl);
       console.error('[ConnectX] Image message failure:', err);
       if (err instanceof ApiRequestError && err.code === 'GROUP_KEY_VERSION_MISMATCH' && group) {
@@ -357,6 +476,11 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
     const filename = file.name;
     const replyToId = replyTarget?.messageId;
+    // DIRECT only -- see sendImageFile's identical comment on why this is threaded through.
+    const clientTempId =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setUploading(true);
     setUploadStatus(`Uploading document ${filename}...`);
 
@@ -404,21 +528,58 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           groupKeyVersion: group.keyVersion,
           replyToMessageId: replyToId,
         });
+
+        onOptimisticDocumentMessage(mediaId, filename, mimeType, fileSizeBytes, replyToId);
       } else {
-        const uploadResponse = await mediaApi.uploadMediaFile(conversationId, file);
+        // DIRECT (Phase 6C): same encrypt-before-upload contract as sendImageFile above --
+        // filename is sensitive metadata here too, so it rides inside the encrypted envelope
+        // (as `filename`) rather than being sent as the plaintext `caption` field the old
+        // plaintext-DIRECT path used.
+        const { recipientDevice, senderPrivateKey, senderDevice } = await resolveDirectRecipientKeys();
+        const mimeTypeForEnvelope = file.type || 'application/octet-stream';
+
+        setUploadStatus(`Encrypting file ${filename}...`);
+        const mediaKey = await generateMediaKey();
+        const plaintextBytes = await file.arrayBuffer();
+        const encryptedFile = await encryptMediaBytes(mediaKey, plaintextBytes);
+
+        setUploadStatus(`Uploading document ${filename}...`);
+        const uploadResponse = await mediaApi.uploadEncryptedDirectMedia(
+          conversationId,
+          encryptedFile.ciphertext,
+          encryptedFile.nonce,
+          mimeTypeForEnvelope,
+          filename
+        );
         mediaId = uploadResponse.mediaId;
         mimeType = uploadResponse.mimeType;
         fileSizeBytes = uploadResponse.fileSizeBytes;
+
+        // See sendImageFile's identical comment: inserted now, before sendMessage is even
+        // called, so our own WebSocket echo cannot possibly race ahead of this local entry.
+        onOptimisticDocumentMessage(mediaId, filename, mimeType, fileSizeBytes, replyToId, clientTempId);
+
+        const encryptedEnvelope = await encryptDirectMediaEnvelope(
+          mediaKey,
+          senderPrivateKey,
+          recipientDevice.publicKey,
+          { caption: '', filename, mimeType: mimeTypeForEnvelope }
+        );
+
         await messageApi.sendMessage({
           conversationId,
           messageType: 'DOCUMENT',
           mediaId,
-          caption: filename,
+          senderDeviceId: senderDevice.deviceId,
+          recipientDeviceId: recipientDevice.deviceId,
+          encryptionAlgorithm: 'ECDH-P256+AES-256-GCM',
+          ciphertext: encryptedEnvelope.ciphertext,
+          nonce: encryptedEnvelope.nonce,
           replyToMessageId: replyToId,
+          requestId: clientTempId,
         });
       }
 
-      onOptimisticDocumentMessage(mediaId, filename, mimeType, fileSizeBytes, replyToId);
       onMessageSent?.();
       setText('');
       if (textareaRef.current) {
@@ -426,6 +587,9 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       }
       onCancelReply?.();
     } catch (err: unknown) {
+      // See sendImageFile's identical cleanup: no-op unless DIRECT's optimistic bubble was
+      // already inserted (upload succeeded, envelope-encrypt/sendMessage then failed).
+      onOptimisticMessageFailed?.(clientTempId);
       console.error('[ConnectX] Document message failure:', err);
       if (err instanceof ApiRequestError && err.code === 'GROUP_KEY_VERSION_MISMATCH' && group) {
         groupKeyManager.invalidate(group.id);

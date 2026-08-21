@@ -46,9 +46,14 @@ public class MediaService {
     }
 
     /**
-     * DIRECT media: unchanged from before this stage -- plaintext, membership-gated via
-     * {@link #ensureConversationMember}. GROUP media (Part 9 hardening stage): the uploaded bytes
-     * MUST already be ciphertext (encrypted client-side under the group's current shared key,
+     * DIRECT media: plaintext upload/storage is still supported (membership-gated via
+     * {@link #ensureConversationMember}), but a DIRECT client may now also upload already-encrypted
+     * bytes (Phase 6A: backend foundation for E2EE direct media) -- signaled the same way GROUP
+     * does, by supplying a non-blank {@code nonce}. Unlike GROUP, DIRECT has no shared/versioned
+     * key, so {@code groupKeyVersion} is never required or persisted for DIRECT; the frontend's
+     * eventual DIRECT media key travels wrapped inside the existing per-recipient ECDH message
+     * ciphertext, not a server-tracked version. GROUP media (Part 9 hardening stage): the uploaded
+     * bytes MUST already be ciphertext (encrypted client-side under the group's current shared key,
      * exactly like GROUP TEXT already requires) -- {@code nonce}/{@code groupKeyVersion} both
      * required and the version checked against {@link ChatGroup#getKeyVersion()}, mirroring
      * MessageService#sendMessage's identical GROUP_KEY_VERSION_MISMATCH contract for text. This
@@ -86,12 +91,18 @@ public class MediaService {
         } else {
             ensureConversationMember(conversationId, currentUserId);
             if (clientSuppliedEncryption) {
-                // Defense-in-depth only -- the frontend never takes this path for DIRECT. Rejecting
-                // outright rather than silently ignoring avoids ever storing a nonce this method
-                // didn't itself validate a key version for.
-                throw new ApiException(HttpStatus.BAD_REQUEST, "ENCRYPTION_NOT_SUPPORTED", "Encrypted uploads are only supported for group conversations");
+                if (claimedMimeType == null || claimedMimeType.isBlank()) {
+                    throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_MEDIA", "Media type is required");
+                }
+                // Same opaque-ciphertext storage path as GROUP -- no magic-byte validation is
+                // possible against encrypted bytes, so `claimedMimeType` is checked against the
+                // same allow-list GROUP already uses (see LocalMediaStorage#storeEncrypted).
+                // No groupKeyVersion for DIRECT: there's no shared/versioned key here, unlike GROUP.
+                stored = mediaStorage.storeEncrypted(storageKey, file, claimedMimeType);
+                persistedNonce = nonce;
+            } else {
+                stored = mediaStorage.store(storageKey, file);
             }
-            stored = mediaStorage.store(storageKey, file);
         }
 
         MessageMedia media = new MessageMedia();

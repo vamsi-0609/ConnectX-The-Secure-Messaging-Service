@@ -25,9 +25,13 @@ import { ImageMessageContent } from './ImageMessageContent';
 import { LocationMessageContent } from './LocationMessageContent';
 import { DocumentMessageContent } from './DocumentMessageContent';
 import { getGoogleMapsLink } from '../../utils/googleMaps';
-import { saveImageToGallery } from '../../utils/saveMedia';
+import { saveImageToGallery, saveImageUrlToGallery } from '../../utils/saveMedia';
 import { linkifyText } from '../../utils/linkify';
 import { UserAvatar } from '../common/UserAvatar';
+import { mediaApi } from '../../api/mediaApi';
+import { resolveGroupMediaKey } from '../../crypto/groupMediaKey';
+import { decryptBytesWithGroupKey } from '../../crypto/groupCrypto';
+import { decryptMediaBytes } from '../../crypto/mediaCrypto';
 
 const QUICK_REACTIONS = ['❤️', '😂', '👍', '😮', '😢', '🔥'];
 const EDIT_WINDOW_MS = 15 * 60 * 1000;
@@ -243,11 +247,49 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
 
     setSavingImage(true);
     try {
-      await saveImageToGallery({
-        mediaId: message.mediaId,
-        localMediaUrl: message.localMediaUrl,
-        mimeType: message.mimeType,
-      });
+      // Phase 6D hardening: mediaId alone (via saveImageToGallery -> mediaApi.getMediaBlob) only
+      // ever fetches the RAW bytes as stored -- ciphertext for GROUP/DIRECT encrypted media. This
+      // menu action has no access to ImageMessageContent's already-decrypted object URL (private
+      // component state), so for encrypted media it must independently decrypt here using the
+      // exact same primitives that component uses, never silently saving ciphertext as if it were
+      // the real photo.
+      const isGroupEncrypted = !!(group && currentUserId != null && message.groupKeyVersion != null && message.mediaNonce);
+      const isDirectEncrypted = !isGroupEncrypted && !!message.mediaNonce;
+
+      if (!isGroupEncrypted && !isDirectEncrypted) {
+        await saveImageToGallery({
+          mediaId: message.mediaId,
+          localMediaUrl: message.localMediaUrl,
+          mimeType: message.mimeType,
+        });
+      } else {
+        if (!message.mediaId) {
+          throw new Error('No image available to save.');
+        }
+        if (isDirectEncrypted && !message.directMediaKey) {
+          throw new Error('Unable to decrypt this image.');
+        }
+        const rawBlob = await mediaApi.getMediaBlob(message.mediaId);
+        const ciphertext = await rawBlob.arrayBuffer();
+        const decryptedBytes = isGroupEncrypted
+          ? await (async () => {
+              const groupKey = await resolveGroupMediaKey(group!, message.groupKeyVersion!, currentUserId!);
+              if (!groupKey) {
+                throw new Error('GROUP_KEY_UNAVAILABLE');
+              }
+              return decryptBytesWithGroupKey(groupKey, ciphertext, message.mediaNonce!);
+            })()
+          : await decryptMediaBytes(message.directMediaKey!, ciphertext, message.mediaNonce!);
+        const decryptedBlob = new Blob([decryptedBytes], {
+          type: message.directMediaMimeType || message.mimeType || 'image/jpeg',
+        });
+        const objectUrl = URL.createObjectURL(decryptedBlob);
+        try {
+          await saveImageUrlToGallery(objectUrl, 'connectx-photo');
+        } finally {
+          URL.revokeObjectURL(objectUrl);
+        }
+      }
       setJustSavedImage(true);
       window.setTimeout(() => {
         setJustSavedImage(false);
@@ -543,6 +585,8 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
             currentUserId={currentUserId}
             mediaGroupKeyVersion={message.groupKeyVersion}
             mediaNonce={message.mediaNonce}
+            directMediaKey={message.directMediaKey}
+            directMediaMimeType={message.directMediaMimeType}
           />
         ) : message.messageType === 'LOCATION' ? (
           <LocationMessageContent
@@ -564,6 +608,9 @@ const MessageBubbleComponent: React.FC<MessageBubbleProps> = ({
             currentUserId={currentUserId}
             mediaGroupKeyVersion={message.groupKeyVersion}
             mediaNonce={message.mediaNonce}
+            directMediaKey={message.directMediaKey}
+            directMediaMimeType={message.directMediaMimeType}
+            directMediaFilename={message.directMediaFilename}
           />
         ) : message.decryptionError ? (
           <div className="flex items-start gap-1.5 text-rose-300 text-xs select-none">

@@ -35,15 +35,18 @@ public class MessageMedia {
     @Column(name = "original_filename", length = 255)
     private String originalFilename;
 
-    // GROUP E2EE media only (Part 9 hardening stage) -- both null for every DIRECT media row
-    // (unencrypted, unchanged) and for every GROUP media row uploaded before this stage. The
-    // AES-GCM nonce used to encrypt the file bytes themselves under the group's shared key at
-    // version `groupKeyVersion` -- distinct from any nonce protecting an accompanying caption
-    // (that one lives on Message.nonce, reusing the same field TEXT messages already use).
-    // Never a plaintext key; the server never sees anything but ciphertext bytes + this nonce.
+    // E2EE media only (GROUP since Part 9; DIRECT since Phase 6A) -- both null for every plaintext
+    // media row (unencrypted DIRECT, or any GROUP row uploaded before Part 9). The AES-GCM nonce
+    // used to encrypt the file bytes themselves under the media key -- distinct from any nonce
+    // protecting an accompanying caption (that one lives on Message.nonce, reusing the same field
+    // TEXT messages already use). Never a plaintext key; the server never sees anything but
+    // ciphertext bytes + this nonce.
     @Column(name = "nonce", length = 100)
     private String nonce;
 
+    // GROUP only -- the shared group key version the media bytes were encrypted under, checked
+    // against ChatGroup#getKeyVersion at upload time. Always null for DIRECT media (encrypted or
+    // not): DIRECT has no shared/versioned key, so this column is meaningless there.
     @Column(name = "group_key_version")
     private Integer groupKeyVersion;
 

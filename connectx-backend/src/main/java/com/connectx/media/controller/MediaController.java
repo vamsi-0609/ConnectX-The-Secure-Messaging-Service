@@ -50,14 +50,18 @@ public class MediaController {
         Resource resource = mediaService.getMediaForUser(currentUser.getId(), mediaId);
         String filename = media.getOriginalFilename() != null ? media.getOriginalFilename() : "document";
 
-        boolean isEncrypted = media.getGroupKeyVersion() != null;
+        // Phase 6A: DIRECT encrypted media has a nonce but (unlike GROUP) no groupKeyVersion, so
+        // groupKeyVersion alone can no longer distinguish encrypted from plaintext media -- nonce
+        // presence is the actual signal (see MediaService#uploadConversationMedia: it's only ever
+        // persisted for a client-supplied-encryption upload, GROUP or DIRECT).
+        boolean isEncrypted = media.getNonce() != null && !media.getNonce().isBlank();
         if (isEncrypted) {
-            // GROUP E2EE media: the bytes served here are ciphertext, not the claimed type's real
-            // content -- the server cannot verify what they actually decrypt to (that's the whole
-            // point of E2EE). Always served as an opaque, forced-download binary regardless of the
-            // claimed mimeType, so a browser can never be tricked into directly rendering untrusted
-            // bytes inline; the app only ever renders the DECRYPTED result, client-side, after a
-            // successful (authenticated) AES-GCM decrypt. See LocalMediaStorage#storeEncrypted.
+            // E2EE media (GROUP or DIRECT): the bytes served here are ciphertext, not the claimed
+            // type's real content -- the server cannot verify what they actually decrypt to (that's
+            // the whole point of E2EE). Always served as an opaque, forced-download binary regardless
+            // of the claimed mimeType, so a browser can never be tricked into directly rendering
+            // untrusted bytes inline; the app only ever renders the DECRYPTED result, client-side,
+            // after a successful (authenticated) AES-GCM decrypt. See LocalMediaStorage#storeEncrypted.
             return ResponseEntity.ok()
                     .header(HttpHeaders.CACHE_CONTROL, "private, max-age=3600")
                     .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + ".enc\"")

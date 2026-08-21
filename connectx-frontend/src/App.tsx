@@ -49,6 +49,7 @@ import { ApiRequestError } from './api/apiClient';
 import { getRelationshipStatus } from './utils/relationship';
 import { keyManager } from './crypto/keyManager';
 import { decryptMessage } from './crypto/decryption';
+import { importMediaKeyRaw } from './crypto/mediaCrypto';
 import { decryptWithGroupKey } from './crypto/groupCrypto';
 import { groupKeyManager } from './crypto/groupKeyManager';
 import { encryptMessage } from './crypto/encryption';
@@ -1266,6 +1267,42 @@ export const App: React.FC = () => {
     showGroupInvitationsModal,
   ]);
 
+  // Shared by decryptSingleMessage's TEXT branch and its DIRECT-encrypted-media branch (Phase 6D)
+  // -- the exact same recipient-device/peer-key resolution either already needs, factored out so
+  // the new media-envelope path doesn't duplicate it. Not memoized: it only closes over refs and
+  // module-level singletons (keyManager/deviceApi/conversationCache), so recreating it each render
+  // is harmless even though decryptSingleMessage itself is a stable (`[]`-deps) callback.
+  const resolveDirectDecryptionKeys = async (
+    msg: Message,
+    userId: number,
+    peerUserId?: number | null
+  ): Promise<{ myPrivateKey: CryptoKey; peerPublicKeyBase64: string; resolvedPeerUserId: number } | null> => {
+    const myPrivateKey = await keyManager.getPrivateKey(userId);
+    if (!myPrivateKey) return null;
+
+    let resolvedPeerUserId: number | null = peerUserId ?? null;
+    if (!resolvedPeerUserId) {
+      resolvedPeerUserId =
+        msg.senderUserId === userId
+          ? activeConversationRef.current
+            ? getOtherParticipant(activeConversationRef.current, userId)?.id ?? null
+            : null
+          : msg.senderUserId;
+    }
+    if (!resolvedPeerUserId) return null;
+
+    let userKeys = conversationCache.getPublicKeys(resolvedPeerUserId);
+    if (!userKeys || userKeys.length === 0) {
+      userKeys = await deviceApi.getUserPublicKeys(resolvedPeerUserId);
+      if (userKeys && userKeys.length > 0) {
+        conversationCache.setPublicKeys(resolvedPeerUserId, userKeys);
+      }
+    }
+    if (!userKeys || userKeys.length === 0) return null;
+
+    return { myPrivateKey, peerPublicKeyBase64: userKeys[0].publicKey, resolvedPeerUserId };
+  };
+
   const decryptSingleMessage = useCallback(
     async (msg: Message, userId: number, peerUserId?: number | null): Promise<Message> => {
       // LOCATION never carries a ciphertext. IMAGE/DOCUMENT only need to skip here when there's
@@ -1281,13 +1318,28 @@ export const App: React.FC = () => {
         return { ...msg, decryptionError: false };
       }
 
-      if (msg.decryptedContent) {
+      if (msg.decryptedContent || msg.directMediaKey) {
         return msg;
       }
 
-      const cached = await keyManager.getDecryptedMessage(msg.id);
-      if (cached) {
-        return { ...msg, decryptedContent: cached, decryptionError: false };
+      const isEncryptedMedia = msg.messageType === 'IMAGE' || msg.messageType === 'DOCUMENT';
+
+      // The generic decrypted-message IndexedDB cache exists for ordinary chat text -- it must
+      // never be consulted for an encrypted media message. Before this Phase 6D fix, a media
+      // message's decrypted envelope (mediaKey included) was wrongly written here by the old
+      // generic-fallback path below; skipping the read here means a message id poisoned by that
+      // now-fixed bug can never resurface the raw envelope again, and forces a fresh in-memory-only
+      // decrypt every time (see the IMAGE/DOCUMENT branch further below, which never writes here).
+      if (!isEncryptedMedia) {
+        const cached = await keyManager.getDecryptedMessage(msg.id);
+        if (cached) {
+          return { ...msg, decryptedContent: cached, decryptionError: false };
+        }
+      } else {
+        // Defense in depth: actively drop any entry a pre-fix build may have already written for
+        // this exact message id, so nothing else that might read this cache directly can ever
+        // resurface a previously-poisoned (mediaKey-bearing) envelope.
+        keyManager.deleteDecryptedMessage(msg.id).catch(() => {});
       }
 
       if (msg.groupKeyVersion != null) {
@@ -1335,6 +1387,78 @@ export const App: React.FC = () => {
           return { ...msg, decryptedContent: decrypted, decryptionError: false };
         } catch (err) {
           console.warn(`[ConnectX Group E2EE] Message ${msg.id} decryption failed:`, err);
+          return { ...msg, decryptionError: true };
+        }
+      }
+
+      // DIRECT encrypted media (Phase 6D). Reaching here means: not LOCATION, not skipped by the
+      // top guard (so it DOES have a ciphertext -- Phase 6C's sender always encrypts a real
+      // envelope, even with an empty caption; only pre-Phase-6C legacy plaintext DIRECT media has
+      // ciphertext === ""), and not GROUP (groupKeyVersion is GROUP-only, always unset for DIRECT
+      // -- see MessageService#sendMessage's identical contract server-side). That's the discriminator:
+      // no separate marker field, no schema change, just the fields the backend already sends.
+      //
+      // Message.ciphertext/nonce here is NOT a plaintext caption -- it's the ECDH-encrypted
+      // {mediaKey, caption, filename, mimeType} envelope Phase 6C's sender pipeline created.
+      // Decrypted via the exact same decryptMessage() TEXT uses above (no second E2EE system), but
+      // handled separately: the envelope carries a raw AES key, so unlike TEXT/GROUP-caption
+      // plaintext it must NEVER be written to keyManager's decrypted-message IndexedDB cache (that
+      // cache exists for ordinary chat text) or stored whole in decryptedContent. Only the
+      // envelope's caption (safe, no secret) becomes decryptedContent -- mirroring how a GROUP
+      // image/document's decrypted caption already becomes decryptedContent above -- while
+      // mediaKey/filename/mimeType go into media-only fields nothing that previews/logs/persists
+      // message text ever reads.
+      if (msg.messageType === 'IMAGE' || msg.messageType === 'DOCUMENT') {
+        let resolvedPeerUserIdForMedia: number | null = null;
+        try {
+          const resolved = await resolveDirectDecryptionKeys(msg, userId, peerUserId);
+          if (!resolved) {
+            return { ...msg, decryptionError: true };
+          }
+          resolvedPeerUserIdForMedia = resolved.resolvedPeerUserId;
+
+          const envelopeJson = await decryptMessage(
+            resolved.myPrivateKey,
+            resolved.peerPublicKeyBase64,
+            msg.ciphertext,
+            msg.nonce
+          );
+
+          let envelope: { mediaKey?: unknown; caption?: unknown; filename?: unknown; mimeType?: unknown };
+          try {
+            envelope = JSON.parse(envelopeJson);
+          } catch {
+            return { ...msg, decryptionError: true };
+          }
+          if (
+            !envelope ||
+            typeof envelope.mediaKey !== 'string' ||
+            typeof envelope.filename !== 'string' ||
+            typeof envelope.mimeType !== 'string' ||
+            (envelope.caption !== undefined && typeof envelope.caption !== 'string')
+          ) {
+            return { ...msg, decryptionError: true };
+          }
+
+          const directMediaKey = await importMediaKeyRaw(envelope.mediaKey).catch(() => null);
+          if (!directMediaKey) {
+            return { ...msg, decryptionError: true };
+          }
+
+          const caption = typeof envelope.caption === 'string' ? envelope.caption : '';
+          return {
+            ...msg,
+            decryptedContent: caption || undefined,
+            decryptionError: false,
+            directMediaKey,
+            directMediaFilename: envelope.filename,
+            directMediaMimeType: envelope.mimeType,
+          };
+        } catch (err) {
+          console.warn(`[ConnectX E2EE] Direct media message ${msg.id} envelope decryption failed:`, err);
+          if (resolvedPeerUserIdForMedia) {
+            conversationCache.invalidatePublicKeys(resolvedPeerUserIdForMedia);
+          }
           return { ...msg, decryptionError: true };
         }
       }

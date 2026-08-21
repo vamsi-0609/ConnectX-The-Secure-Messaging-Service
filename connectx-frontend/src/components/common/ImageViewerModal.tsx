@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { X, Download, Loader2, Check, ShieldCheck } from 'lucide-react';
 
 interface ImageViewerModalProps {
@@ -85,7 +86,17 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     return null;
   }
 
-  return (
+  // Portaled straight to document.body -- this modal is used both standalone (ProfileModal) and
+  // nested inside a chat message bubble (ImageMessageContent, itself inside MessageBubble).
+  // MessageBubble attaches its own onPointerDown/onPointerUp/onClick handlers (for the
+  // long-press-to-select-message gesture) to the bubble's wrapping <div>; without a portal, this
+  // modal renders as a normal DOM/React-tree descendant of that div, so every tap inside it --
+  // Download included -- still bubbles through those handlers even though `fixed` positioning
+  // visually detaches it from the bubble on screen. That's what made Download unreachable on a
+  // real device specifically for chat images (nested inside a bubble) while working fine for
+  // ProfileModal's copy (a standalone top-level modal with no such ancestor). Portaling removes
+  // the nesting entirely, matching the pattern MessageBubble already uses for its own popups.
+  return createPortal(
     <div
       className="fixed inset-0 z-[80] flex flex-col bg-black/95 backdrop-blur-sm select-none"
       onClick={onClose}
@@ -93,7 +104,10 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
       aria-modal="true"
       aria-label={title || alt}
     >
-      <div className="flex items-center justify-between px-4 py-3 border-b border-white/10" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="image-viewer-topbar flex items-center justify-between px-4 py-3 border-b border-white/10 relative z-10"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="min-w-0">
           {title && <h3 className="text-sm font-medium text-white truncate">{title}</h3>}
         </div>
@@ -112,7 +126,12 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
                 type="button"
                 onClick={() => void handleSaveClick()}
                 disabled={saving || justSaved}
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-white text-sm font-medium disabled:opacity-90 transition-colors"
+                aria-label="Download image"
+                // Resting-state contrast raised (bg-white/15, not /10) and an explicit active:
+                // state added -- the previous bg-white/10 with only a hover: state to darken
+                // further relied on a hover affordance touch devices never trigger, making the
+                // button easy to miss at rest on a phone.
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white/15 hover:bg-white/20 active:bg-white/25 text-white text-sm font-semibold disabled:opacity-90 transition-colors"
               >
                 {saving ? (
                   <Loader2 className="w-4 h-4 animate-spin" />
@@ -122,7 +141,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
                   <Download className="w-4 h-4" />
                 )}
                 <span className={justSaved ? 'text-emerald-400' : undefined}>
-                  {justSaved ? 'Saved' : 'Save to gallery'}
+                  {justSaved ? 'Saved' : 'Download'}
                 </span>
               </button>
             )
@@ -157,6 +176,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };
