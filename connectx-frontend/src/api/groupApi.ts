@@ -1,5 +1,5 @@
 import { apiRequest, uploadRequest } from './apiClient';
-import { ConversationMember, CreateGroupInvitationResult, Group, GroupInvitation, GroupMemberKeyPayload } from '../types';
+import { ConversationMember, CreateGroupInvitationResult, Group, GroupInvitation, GroupKeyRequestResult, GroupKeyRotationResult, GroupMemberKeyPayload } from '../types';
 
 export const groupApi = {
   createGroup: (name: string, description?: string) =>
@@ -79,6 +79,24 @@ export const groupApi = {
     apiRequest<GroupMemberKeyPayload>(`/groups/${groupId}/keys`, {
       method: 'POST',
       body: JSON.stringify({ memberUserId, wrappedKey, wrapNonce, keyVersion }),
+    }),
+
+  // Phase 7B key reconciliation: "please re-wrap the group's CURRENT key for me" -- never a
+  // rotation request. See groupKeyManager.ts's requestReconciliation for the caller-side throttle
+  // and crypto/groupKeyManager.ts's module doc for why this exists instead of self-rotating.
+  requestGroupKey: (groupId: number) =>
+    apiRequest<GroupKeyRequestResult>(`/groups/${groupId}/keys/request`, {
+      method: 'POST',
+    }),
+
+  // Phase 7C: last-resort recovery rotation -- called ONLY from groupKeyManager's mint fallback
+  // after requestGroupKey's reconciliation went unfulfilled within its bounded wait. Claims a
+  // genuinely NEW keyVersion (never reuses the current one) so newly-minted key material can never
+  // collide with real key material another member already holds for that exact version -- see
+  // groupKeyManager.ts's resolveInternal for the corruption bug this replaced.
+  rotateGroupKeyForRecovery: (groupId: number) =>
+    apiRequest<GroupKeyRotationResult>(`/groups/${groupId}/keys/rotate-for-recovery`, {
+      method: 'POST',
     }),
 
   deleteGroup: (groupId: number) =>

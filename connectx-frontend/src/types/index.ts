@@ -213,6 +213,7 @@ export interface WsEvent<T = any> {
     | 'TYPING_INDICATOR'
     | 'PRESENCE_UPDATE'
     | 'GROUP_KEY_ROTATION_REQUIRED'
+    | 'GROUP_KEY_REWRAP_REQUESTED'
     | 'GROUP_INFO_UPDATED'
     | 'CONNECTION_REQUEST_RECEIVED'
     | 'CONNECTION_REQUEST_ACCEPTED'
@@ -320,6 +321,20 @@ export interface GroupMemberKeyPayload {
   wrappedKey: string;
   wrapNonce: string;
   wrappedByUserId: number | null;
+}
+
+// Mirrors the backend's GroupKeyRequestResultDto -- Phase 7B key reconciliation. Never key
+// material: just the server-authoritative version this client needs and whether the broadcast
+// asking other members to re-wrap for it actually fired (vs. was throttled).
+export interface GroupKeyRequestResult {
+  keyVersion: number;
+  broadcastSent: boolean;
+}
+
+// Mirrors the backend's GroupKeyRotationResultDto -- Phase 7C last-resort recovery rotation.
+// Distinct from GroupKeyRequestResult (a reconciliation request, not a rotation).
+export interface GroupKeyRotationResult {
+  keyVersion: number;
 }
 
 export type GroupInvitationStatus = 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'CANCELLED';

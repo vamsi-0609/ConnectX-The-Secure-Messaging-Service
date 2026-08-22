@@ -558,7 +558,14 @@ public class GroupService {
      * under a plain read-modify-write.
      * <p>
      * Package-visible: called from GroupInvitationService (join events) as well as this class
-     * (removal/leave via endMembership), both in {@code com.connectx.group.service}.
+     * (removal/leave via endMembership), both in {@code com.connectx.group.service}. Phase 7C also
+     * added a third caller, {@link GroupKeyService#recoverByRotating} -- the client-side "last
+     * resort, nobody fulfilled my reconciliation request" mint fallback now claims a genuinely NEW
+     * version through this same method instead of (as a live-tested bug proved) distributing freshly
+     * minted key material under the CURRENT version number, which silently overwrote the real key
+     * other members already held and had cached for that exact version. Returns the new version so
+     * callers that need it (recoverByRotating) don't have to re-fetch the group; existing callers
+     * that don't care simply ignore the return value.
      * <p>
      * Notifies every remaining ACTIVE member's personal queue (never the group's
      * {@code /topic/conversation/{id}} topic -- see the Part 15 WebSocket-delivery fix elsewhere in
@@ -569,7 +576,7 @@ public class GroupService {
      * regardless of whether anyone is listening, since every group message send is rejected
      * server-side unless its groupKeyVersion matches this counter exactly (MessageService).
      */
-    void markKeyRotationRequired(Long groupId) {
+    int markKeyRotationRequired(Long groupId) {
         ChatGroup chatGroup = chatGroupRepository.findByIdForUpdate(groupId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "GROUP_NOT_FOUND", "Group not found"));
         chatGroup.setKeyVersion(chatGroup.getKeyVersion() + 1);
@@ -600,6 +607,7 @@ public class GroupService {
                 messagingTemplate.convertAndSendToUser(username, "/queue/messages", rotationEvent);
             }
         });
+        return newVersion;
     }
 
     /**

@@ -41,6 +41,23 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
     setImageError(false);
   }, [user.profileImageUrl]);
 
+  // Phase 7F-1: recover automatically once a fresh access token exists, instead of staying in
+  // fallback-initial state until the whole app remounts (logout/login). resolveProfileImageUrl
+  // reads the CURRENT token straight out of localStorage on every render (see profileImage.ts),
+  // so simply clearing imageError is enough to make the next render build a fresh `?token=` URL
+  // and give the <img> a new src to load -- no token value is read/stored here, and no polling
+  // timer is needed since apiClient's existing 401-triggered refresh is what fires this event.
+  // If the fresh token still doesn't work (e.g. genuinely unauthorized), onError below simply
+  // sets imageError back to true -- this listener never loops on its own, it only reacts to a
+  // refresh that already happened elsewhere.
+  useEffect(() => {
+    const handleTokenRefreshed = () => {
+      setImageError(false);
+    };
+    window.addEventListener('connectx_token_refreshed', handleTokenRefreshed);
+    return () => window.removeEventListener('connectx_token_refreshed', handleTokenRefreshed);
+  }, []);
+
   const handleOpenViewer = (event?: React.MouseEvent | React.KeyboardEvent) => {
     event?.stopPropagation();
     event?.preventDefault();

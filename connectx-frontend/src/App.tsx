@@ -2358,6 +2358,23 @@ export const App: React.FC = () => {
             }
           })
           .catch(() => {});
+      } else if (event.type === 'GROUP_KEY_REWRAP_REQUESTED') {
+        // Phase 7B key reconciliation: another active member has no usable copy of the group's
+        // CURRENT key and is asking whoever already holds it to re-wrap a copy for them --
+        // never a rotation (ChatGroup.keyVersion is untouched by this event). If THIS client
+        // holds that exact version, fulfillRewrapRequest re-wraps it for the requester's public
+        // key and submits it via the existing groupApi.submitGroupKey; if this client doesn't
+        // hold it either, fulfillRewrapRequest is a safe no-op (never mints on the requester's
+        // behalf). Re-fetches the group first so the version used to fulfill is the current
+        // server-authoritative one, exactly like every other handler here.
+        const requestedGroupId = event.payload.conversationId as number;
+        const requestingUserId = event.payload.requestingUserId as number;
+        if (currentUser) {
+          groupApi
+            .getGroup(requestedGroupId)
+            .then((freshGroup) => groupKeyManager.fulfillRewrapRequest(freshGroup, currentUser.id, requestingUserId))
+            .catch(() => {});
+        }
       } else if (event.type === 'GROUP_INFO_UPDATED') {
         // Owner changed a setting or the group's photo -- re-fetch so an already-open client
         // (e.g. a MEMBER whose composer availability depends on who_can_send_messages) reflects

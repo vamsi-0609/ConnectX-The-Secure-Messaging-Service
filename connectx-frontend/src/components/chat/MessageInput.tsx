@@ -346,10 +346,15 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         }
         // Same deterministic rotation-trigger call site TEXT already uses for a GROUP send --
         // never a passive resolveGroupKey here (see groupKeyManager's own doc on why).
-        const groupKey = await groupKeyManager.ensureGroupKey(group, currentUserId);
-        if (!groupKey) {
+        const resolvedGroupKey = await groupKeyManager.ensureGroupKey(group, currentUserId);
+        if (!resolvedGroupKey) {
           throw new Error('GROUP_KEY_UNAVAILABLE');
         }
+        const { key: groupKey, keyVersion: resolvedKeyVersion } = resolvedGroupKey;
+        // MUST use the version ensureGroupKey actually resolved, never `group.keyVersion` from
+        // this closure -- a last-resort recovery rotation can claim a NEWER version than this
+        // component last knew about (Phase 7C: tagging with the stale version while encrypting
+        // with the new key corrupted decryption for every recipient).
 
         setUploadStatus(`Encrypting image ${file.name}...`);
         const plaintextBytes = await file.arrayBuffer();
@@ -360,7 +365,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           conversationId,
           encryptedFile.ciphertext,
           encryptedFile.nonce,
-          group.keyVersion,
+          resolvedKeyVersion,
           file.type,
           file.name
         );
@@ -382,7 +387,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           encryptionAlgorithm: 'AES-256-GCM',
           ciphertext: captionCiphertext,
           nonce: captionNonce,
-          groupKeyVersion: group.keyVersion,
+          groupKeyVersion: resolvedKeyVersion,
           replyToMessageId: replyToId,
         });
 
@@ -493,10 +498,13 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         if (!group) {
           throw new Error('GROUP_INFO_UNAVAILABLE');
         }
-        const groupKey = await groupKeyManager.ensureGroupKey(group, currentUserId);
-        if (!groupKey) {
+        const resolvedGroupKey = await groupKeyManager.ensureGroupKey(group, currentUserId);
+        if (!resolvedGroupKey) {
           throw new Error('GROUP_KEY_UNAVAILABLE');
         }
+        const { key: groupKey, keyVersion: resolvedKeyVersion } = resolvedGroupKey;
+        // MUST use the version ensureGroupKey actually resolved, never `group.keyVersion` -- see
+        // sendImageFile's identical comment (Phase 7C corruption fix).
 
         setUploadStatus(`Encrypting file ${filename}...`);
         const plaintextBytes = await file.arrayBuffer();
@@ -507,7 +515,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           conversationId,
           encryptedFile.ciphertext,
           encryptedFile.nonce,
-          group.keyVersion,
+          resolvedKeyVersion,
           file.type || 'application/octet-stream',
           filename
         );
@@ -525,7 +533,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           encryptionAlgorithm: 'AES-256-GCM',
           ciphertext: encryptedName.ciphertext,
           nonce: encryptedName.nonce,
-          groupKeyVersion: group.keyVersion,
+          groupKeyVersion: resolvedKeyVersion,
           replyToMessageId: replyToId,
         });
 
@@ -675,18 +683,20 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         if (!group) {
           throw new Error('GROUP_INFO_UNAVAILABLE');
         }
-        const groupKey = await groupKeyManager.ensureGroupKey(group, currentUserId);
-        if (!groupKey) {
+        const resolvedGroupKey = await groupKeyManager.ensureGroupKey(group, currentUserId);
+        if (!resolvedGroupKey) {
           throw new Error('GROUP_KEY_UNAVAILABLE');
         }
-        const encrypted = await encryptWithGroupKey(groupKey, content);
+        // MUST use the version ensureGroupKey actually resolved, never `group.keyVersion` -- see
+        // sendImageFile's identical comment (Phase 7C corruption fix).
+        const encrypted = await encryptWithGroupKey(resolvedGroupKey.key, content);
         await messageApi.sendMessage({
           conversationId,
           messageType: 'TEXT',
           encryptionAlgorithm: 'AES-256-GCM',
           ciphertext: encrypted.ciphertext,
           nonce: encrypted.nonce,
-          groupKeyVersion: group.keyVersion,
+          groupKeyVersion: resolvedGroupKey.keyVersion,
           replyToMessageId: replyToId,
           requestId: clientTempId,
         });
