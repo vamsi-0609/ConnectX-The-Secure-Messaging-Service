@@ -19,7 +19,12 @@ const DB_NAME = 'ConnectX_Crypto_Vault';
 // onupgradeneeded to run once more for any browser below 7, safely no-ops for the three stores
 // that already exist, and creates only the missing group_keys store. A browser already correctly
 // at 6 with all four stores is unaffected until it independently reaches 7 (also a no-op then).
-const DB_VERSION = 7;
+// Phase 7G-2A: bumped 7 -> 8. Same rationale as the 6 -> 7 bump above -- forces onupgradeneeded
+// to run once more so every browser (regardless of which version it's currently sitting at)
+// creates the new ACCOUNTS_STORE_NAME below. No existing store is touched by this bump; the
+// account-scoped lifecycle logic that will eventually read/write ACCOUNTS_STORE_NAME is a later,
+// separate phase -- this change only makes the store exist.
+const DB_VERSION = 8;
 const STORE_NAME = 'private_keys';
 const DEVICE_STORE_NAME = 'device_metadata';
 const DECRYPTED_MSG_STORE_NAME = 'decrypted_messages';
@@ -28,6 +33,11 @@ const DECRYPTED_MSG_STORE_NAME = 'decrypted_messages';
 // store from STORE_NAME, matching Part 21/28's "group crypto isolated from DIRECT crypto"
 // requirement at the storage layer too.
 const GROUP_KEY_STORE_NAME = 'group_keys';
+// Phase 7G-2A: local account-lifecycle registry (schema only -- nothing reads/writes this store
+// yet). Exists to eventually let logout/account-removal scope crypto-vault cleanup to ONE account
+// instead of the whole vault, without ever touching GROUP_KEY_STORE_NAME's shared, non-account-
+// scoped key material.
+const ACCOUNTS_STORE_NAME = 'accounts';
 
 export interface LocalDeviceMetadata {
   deviceId: number;
@@ -68,6 +78,9 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(GROUP_KEY_STORE_NAME)) {
         db.createObjectStore(GROUP_KEY_STORE_NAME);
+      }
+      if (!db.objectStoreNames.contains(ACCOUNTS_STORE_NAME)) {
+        db.createObjectStore(ACCOUNTS_STORE_NAME);
       }
     };
 
