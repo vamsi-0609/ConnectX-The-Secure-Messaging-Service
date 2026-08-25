@@ -9,11 +9,14 @@
         <include .../>
         <exclude .../>
         -->
+        <!-- N3.1: see backup_rules.xml, same file, same reasoning, for API 31+
+             cloud backup. -->
+        <exclude domain="sharedpref" path="connectx_secure_auth_prefs.xml"/>
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <!-- N3.1: also excluded from device-to-device transfer. The Keystore backed
+             encryption key is non-exportable, so a transferred copy could never be
+             decrypted on the new device either. -->
+        <exclude domain="sharedpref" path="connectx_secure_auth_prefs.xml"/>
     </device-transfer>
-    -->
 </data-extraction-rules>

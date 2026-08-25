@@ -1,6 +1,8 @@
 package com.connectx.app.core.network
 
 import com.connectx.app.BuildConfig
+import com.connectx.app.core.network.auth.AuthInterceptor
+import com.connectx.app.core.network.auth.TokenAuthenticator
 import com.connectx.app.data.remote.auth.AuthApi
 import com.connectx.app.data.remote.block.BlockApi
 import com.connectx.app.data.remote.connection.ConnectionApi
@@ -22,15 +24,36 @@ import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import javax.inject.Singleton
 
+/**
+ * N3.3: two independent `OkHttpClient`/`Retrofit` pairs, not one --
+ *
+ * ```
+ * [UnauthenticatedClient] OkHttpClient (no interceptor, no authenticator)
+ *       -> Retrofit -> AuthApi (register/login/refresh)
+ *
+ * [AuthenticatedClient] OkHttpClient (AuthInterceptor + TokenAuthenticator)
+ *       -> Retrofit -> every other API (User/Connection/Block/Conversation/
+ *                       Message/Media/Device/Push/Group)
+ * ```
+ *
+ * This is a deliberate split, not incidental duplication. A single shared
+ * client would create a real dependency cycle: `OkHttpClient -> Authenticator
+ * -> AuthRepository -> AuthApi -> Retrofit -> OkHttpClient`. Splitting `AuthApi`
+ * onto its own client breaks that cycle (`TokenAuthenticator` depends on
+ * `AuthRepository`, which depends on the UNAUTHENTICATED client -- a
+ * completely separate object from the AUTHENTICATED client `TokenAuthenticator`
+ * is itself attached to; there is no path back). It also solves two smaller
+ * problems for free: a bad-credentials 401 from `login` can never reach
+ * `TokenAuthenticator` (it isn't on that client), and the refresh call
+ * `TokenAuthenticator` makes can never recursively trigger itself (same
+ * reason). See docs Section 38 for the full writeup.
+ *
+ * Both clients still resolve `BuildConfig.BASE_URL` through the same
+ * mechanism as before -- no hostname is hardcoded anywhere in this file.
+ */
 @Module
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
-
-    @Provides
-    @Singleton
-    fun provideOkHttpClient(): OkHttpClient {
-        return OkHttpClient.Builder().build()
-    }
 
     @Provides
     @Singleton
@@ -43,7 +66,18 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideRetrofit(okHttpClient: OkHttpClient, json: Json): Retrofit {
+    @UnauthenticatedClient
+    fun provideUnauthenticatedOkHttpClient(): OkHttpClient {
+        return OkHttpClient.Builder().build()
+    }
+
+    @Provides
+    @Singleton
+    @UnauthenticatedClient
+    fun provideUnauthenticatedRetrofit(
+        @UnauthenticatedClient okHttpClient: OkHttpClient,
+        json: Json
+    ): Retrofit {
         return Retrofit.Builder()
             .baseUrl(BuildConfig.BASE_URL)
             .client(okHttpClient)
@@ -53,61 +87,88 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideAuthApi(retrofit: Retrofit): AuthApi {
+    fun provideAuthApi(@UnauthenticatedClient retrofit: Retrofit): AuthApi {
         return retrofit.create(AuthApi::class.java)
     }
 
     @Provides
     @Singleton
-    fun provideUserApi(retrofit: Retrofit): UserApi {
+    @AuthenticatedClient
+    fun provideAuthenticatedOkHttpClient(
+        authInterceptor: AuthInterceptor,
+        tokenAuthenticator: TokenAuthenticator
+    ): OkHttpClient {
+        return OkHttpClient.Builder()
+            .addInterceptor(authInterceptor)
+            .authenticator(tokenAuthenticator)
+            .build()
+    }
+
+    @Provides
+    @Singleton
+    @AuthenticatedClient
+    fun provideAuthenticatedRetrofit(
+        @AuthenticatedClient okHttpClient: OkHttpClient,
+        json: Json
+    ): Retrofit {
+        return Retrofit.Builder()
+            .baseUrl(BuildConfig.BASE_URL)
+            .client(okHttpClient)
+            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+            .build()
+    }
+
+    @Provides
+    @Singleton
+    fun provideUserApi(@AuthenticatedClient retrofit: Retrofit): UserApi {
         return retrofit.create(UserApi::class.java)
     }
 
     @Provides
     @Singleton
-    fun provideConnectionApi(retrofit: Retrofit): ConnectionApi {
+    fun provideConnectionApi(@AuthenticatedClient retrofit: Retrofit): ConnectionApi {
         return retrofit.create(ConnectionApi::class.java)
     }
 
     @Provides
     @Singleton
-    fun provideBlockApi(retrofit: Retrofit): BlockApi {
+    fun provideBlockApi(@AuthenticatedClient retrofit: Retrofit): BlockApi {
         return retrofit.create(BlockApi::class.java)
     }
 
     @Provides
     @Singleton
-    fun provideConversationApi(retrofit: Retrofit): ConversationApi {
+    fun provideConversationApi(@AuthenticatedClient retrofit: Retrofit): ConversationApi {
         return retrofit.create(ConversationApi::class.java)
     }
 
     @Provides
     @Singleton
-    fun provideMessageApi(retrofit: Retrofit): MessageApi {
+    fun provideMessageApi(@AuthenticatedClient retrofit: Retrofit): MessageApi {
         return retrofit.create(MessageApi::class.java)
     }
 
     @Provides
     @Singleton
-    fun provideMediaApi(retrofit: Retrofit): MediaApi {
+    fun provideMediaApi(@AuthenticatedClient retrofit: Retrofit): MediaApi {
         return retrofit.create(MediaApi::class.java)
     }
 
     @Provides
     @Singleton
-    fun provideDeviceApi(retrofit: Retrofit): DeviceApi {
+    fun provideDeviceApi(@AuthenticatedClient retrofit: Retrofit): DeviceApi {
         return retrofit.create(DeviceApi::class.java)
     }
 
     @Provides
     @Singleton
-    fun providePushApi(retrofit: Retrofit): PushApi {
+    fun providePushApi(@AuthenticatedClient retrofit: Retrofit): PushApi {
         return retrofit.create(PushApi::class.java)
     }
 
     @Provides
     @Singleton
-    fun provideGroupApi(retrofit: Retrofit): GroupApi {
+    fun provideGroupApi(@AuthenticatedClient retrofit: Retrofit): GroupApi {
         return retrofit.create(GroupApi::class.java)
     }
 }

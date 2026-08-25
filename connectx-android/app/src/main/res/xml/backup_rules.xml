@@ -10,4 +10,10 @@
    <include domain="sharedpref" path="."/>
    <exclude domain="sharedpref" path="device.xml"/>
 -->
+    <!-- N3.1: EncryptedSharedPreferences holding the access/refresh token pair.
+         Excluded from legacy (pre-API 31) full backup: an Android Keystore backed
+         encryption key never leaves the device, so a restored copy of this file
+         would be permanently undecryptable garbage on any other device/reinstall
+         anyway; excluding it outright is the correct hygiene, not just a no op. -->
+    <exclude domain="sharedpref" path="connectx_secure_auth_prefs.xml"/>
 </full-backup-content>

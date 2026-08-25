@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     N3.5: debug-variant-only exemption. Android's default cleartext policy
+     (targetSdk >= 28) disallows plain HTTP everywhere, including the debug
+     BASE_URL's "http://10.0.2.2:8080/" (the Android emulator's host-loopback
+     address): confirmed by direct inspection: no network security config
+     and no android:usesCleartextTraffic attribute existed anywhere in this
+     project before this file, so a real request from a debug build would
+     fail with "CLEARTEXT communication not permitted". This file lives
+     under src/debug/ only, compiled into debug builds exclusively and
+     physically absent from the release APK; release keeps the platform
+     default (cleartext disallowed everywhere), matching its HTTPS-only
+     BASE_URL ("https://app.myconnect.sbs/") with no change here. Scoped to
+     exactly the one host the debug BASE_URL actually uses, not a blanket
+     cleartext-everywhere allowance.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>
